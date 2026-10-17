@@ -20,7 +20,10 @@ def look(queries):
     args = []
     try:
         for q in queries or []:
-            args += (['+'] if args else []) + shlex.split(str(q))
+            words = shlex.split(str(q))
+            if words[:2] == ['arbor', 'look']:  # the shell command written out, as the agent may
+                words = words[2:]
+            args += (['+'] if args and words else []) + words
     except ValueError as e:
         return f'cannot read the queries: {e}', True
     r = subprocess.run(['arbor', 'look', *args], stdin=subprocess.DEVNULL, capture_output=True)
