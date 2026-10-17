@@ -5,12 +5,13 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use arbor::cell::{self, Options};
+use arbor::cgroup::{self, Limits};
 use arbor::error::{self, Error, Result};
 use arbor::ledger::{self, Cost, Ledger};
-use arbor::world::{State, World};
+use arbor::world::{self, State, World};
 use arbor::{paths, table, tree};
 use lexopt::prelude::*;
 
@@ -19,13 +20,18 @@ arbor: try changes on a copy of a folder, then keep them or throw them away.
 
   arbor new [NAME] [--from DIR]      make a world: an instant copy of DIR (default: here)
   arbor worlds                       list the worlds
-  arbor shell NAME                   open a shell inside a world
-  arbor run NAME -- CMD...           run one command inside a world
+  arbor shell NAME [LIMITS]          open a shell inside a world
+  arbor run NAME [LIMITS] -- CMD...  run one command inside a world
   arbor diff NAME [--patch]          list what the world changed (--patch: show the lines)
   arbor keep NAME [--force]          apply the world's changes to the real folder
   arbor undo NAME [--force]          take kept changes back out of the real folder
   arbor discard NAME                 throw a world away
+  arbor ps                           list the commands running in worlds and what they use now
   arbor ledger [--last N] [--verify] the record of every step (--verify: check that none was changed)
+  arbor watch [--since N]            print each new step as a JSON line (--since N: the steps after N first)
+
+LIMITS stop a command that takes too much: --mem SIZE (512M, 2G), --cpu CPUS (0.5, 2),
+--pids N (processes at once), --time DURATION (90s, 10m, 2h).
 
 The real folder does not change until `arbor keep`. Inside a world the rest of the computer is read-only,
 changes elsewhere in your home folder vanish when the command ends, and there is no network.
@@ -64,7 +70,10 @@ fn run() -> Result<i32> {
         "keep" => keep(&mut p),
         "undo" => undo(&mut p),
         "discard" => discard(&mut p),
+        "ps" => ps(&mut p),
         "ledger" => ledger_cmd(&mut p),
+        "watch" => watch(&mut p),
+        "serve" => serve(&mut p),
         "help" => help(),
         other => Err(Error::usage(format!(
             "there is no command '{other}'; run `arbor help`"
@@ -102,15 +111,24 @@ fn name_and_flags(p: &mut lexopt::Parser, flags: &[&str]) -> Result<(String, Vec
 #[derive(Default)]
 struct Note {
     world: String,
+    cell: Option<String>,
     what: String,
+    limits: String,
     out: Option<String>,
     cpu_ms: Option<u64>,
     mem_kib: Option<u64>,
+    pids: Option<u64>,
+}
+
+/// Records a step. It has happened by then, so a ledger that cannot be written is a warning, not a failure.
+fn append(step: ledger::New) {
+    if let Err(e) = Ledger::open().and_then(|l| l.append(step)) {
+        eprintln!("arbor: warning: this step is not in the ledger: {e}");
+    }
 }
 
 /// Takes a step and records it in the ledger however it ends, with its outcome, its detail (or the first line of
-/// its error) and its cost. A mistake in how arbor was called changes nothing and is not recorded. The step has
-/// happened by then, so a ledger that cannot be written is a warning, not a failure.
+/// its error) and its cost. A mistake in how arbor was called changes nothing and is not recorded.
 fn recorded(act: &str, world: &str, step: impl FnOnce(&mut Note) -> Result<i32>) -> Result<i32> {
     let started = Instant::now();
     let mut note = Note {
@@ -130,37 +148,21 @@ fn recorded(act: &str, world: &str, step: impl FnOnce(&mut Note) -> Result<i32>)
     {
         note.what = e.msg.lines().next().unwrap_or_default().to_string();
     }
-    let new = ledger::New {
+    append(ledger::New {
         act,
         world: &note.world,
+        cell: note.cell.as_deref(),
         what: &note.what,
+        limits: Some(&note.limits),
         out: &out,
         cost: Cost {
             ms: started.elapsed().as_millis() as u64,
             cpu_ms: note.cpu_ms,
             mem_kib: note.mem_kib,
+            pids: note.pids,
         },
-    };
-    if let Err(e) = Ledger::open().and_then(|l| l.append(new)) {
-        eprintln!("arbor: warning: this step is not in the ledger: {e}");
-    }
+    });
     res
-}
-
-/// A command as a shell would take it back: arguments with spaces or quotes are quoted.
-fn shown(cmd: &[OsString]) -> String {
-    let word = |a: &OsString| {
-        let a = a.to_string_lossy();
-        let plain = !a.is_empty()
-            && a.chars()
-                .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-        if plain {
-            a.into_owned()
-        } else {
-            format!("'{}'", a.replace('\'', "'\\''"))
-        }
-    };
-    cmd.iter().map(word).collect::<Vec<_>>().join(" ")
 }
 
 fn new(p: &mut lexopt::Parser) -> Result<i32> {
@@ -220,7 +222,8 @@ fn worlds(p: &mut lexopt::Parser) -> Result<i32> {
     Ok(0)
 }
 
-/// Runs `cmd` in a world and notes its exit code and cost.
+/// Runs `cmd` in a world and notes how it ended and what it cost. The cell's start is a step of its own, so
+/// watchers see it while it runs.
 fn run_noted(
     note: &mut Note,
     name: &str,
@@ -229,7 +232,8 @@ fn run_noted(
     shell: bool,
 ) -> Result<i32> {
     let (world, lock) = World::load_locked(name)?;
-    note.what = shown(cmd);
+    note.what = cell::shown(cmd);
+    note.limits = opts.limits.describe();
     if shell {
         eprintln!(
             "Inside world {} over {}. Changes stay in the world; `exit` to leave.",
@@ -237,9 +241,27 @@ fn run_noted(
             paths::tilde(&world.base)
         );
     }
-    let ran = cell::run(&world, &lock, cmd, opts)?;
-    note.out = Some(format!("exit {}", ran.code));
-    (note.cpu_ms, note.mem_kib) = (Some(ran.cpu_ms), Some(ran.mem_kib));
+    let begun = Instant::now();
+    let ran = cell::run(&world, &lock, cmd, opts, &mut |id| {
+        append(ledger::New {
+            act: "start",
+            world: &world.name,
+            cell: Some(id),
+            what: &note.what,
+            limits: Some(&note.limits),
+            out: "running",
+            cost: Cost {
+                ms: begun.elapsed().as_millis() as u64,
+                ..Cost::default()
+            },
+        })
+    })?;
+    if let Some(warning) = &ran.warning {
+        eprintln!("arbor: {warning}");
+    }
+    note.cell = Some(ran.id);
+    note.out = Some(ran.out);
+    (note.cpu_ms, note.mem_kib, note.pids) = (Some(ran.cpu_ms), Some(ran.mem_kib), ran.pids);
     if shell {
         hint(&format!(
             "Back outside. See the changes with `arbor diff {}`.",
@@ -250,20 +272,41 @@ fn run_noted(
 }
 
 fn shell(p: &mut lexopt::Parser) -> Result<i32> {
-    let (name, _) = name_and_flags(p, &[])?;
+    let (mut name, mut limits) = (None, Limits::default());
+    while let Some(arg) = p.next()? {
+        match arg {
+            Long(flag) if cgroup::FLAGS.contains(&flag) => {
+                let flag = flag.to_string();
+                limits.set(&flag, &p.value()?.string()?)?;
+            }
+            Value(v) if name.is_none() => name = Some(v.string()?),
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    let name = name.ok_or_else(|| Error::usage("which world? (see `arbor worlds`)"))?;
     let sh = env::var_os("SHELL")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| OsString::from("/bin/sh"));
-    let opts = Options { interactive: true };
+    let opts = Options {
+        interactive: true,
+        limits,
+    };
+    if opts.limits.need_cgroup() {
+        cgroup::enter_user_manager();
+    }
     recorded("shell", &name, |note| {
         run_noted(note, &name, &[sh], &opts, true)
     })
 }
 
 fn run_cmd(p: &mut lexopt::Parser) -> Result<i32> {
-    let (mut name, mut cmd) = (None, Vec::new());
+    let (mut name, mut cmd, mut limits) = (None, Vec::new(), Limits::default());
     while let Some(arg) = p.next()? {
         match arg {
+            Long(flag) if cgroup::FLAGS.contains(&flag) => {
+                let flag = flag.to_string();
+                limits.set(&flag, &p.value()?.string()?)?;
+            }
             Value(v) if name.is_none() => name = Some(v.string()?),
             Value(v) => {
                 cmd.push(v);
@@ -280,7 +323,11 @@ fn run_cmd(p: &mut lexopt::Parser) -> Result<i32> {
     }
     let opts = Options {
         interactive: io::stdin().is_terminal(),
+        limits,
     };
+    if opts.limits.need_cgroup() {
+        cgroup::enter_user_manager();
+    }
     recorded("run", &name, |note| {
         run_noted(note, &name, &cmd, &opts, false)
     })
@@ -388,16 +435,90 @@ fn discard(p: &mut lexopt::Parser) -> Result<i32> {
     })
 }
 
-/// Wall time, then CPU time and peak memory when a command ran.
+/// Wall time, then CPU time, peak memory and peak processes when a command ran.
 fn cost(c: &Cost) -> String {
     let mut s = format!("{}ms", c.ms);
     if let Some(cpu) = c.cpu_ms {
         s += &format!(" cpu {cpu}ms");
     }
     if let Some(kib) = c.mem_kib {
-        s += &format!(" {}MiB", kib.div_ceil(1024));
+        s += &format!(" {}", cgroup::size(kib * 1024));
+    }
+    if let Some(pids) = c.pids {
+        s += &format!(" pids {pids}");
     }
     s
+}
+
+/// `40ms`, `2.5s`.
+fn cpu_time(us: u64) -> String {
+    if us < 1_000_000 {
+        format!("{}ms", us / 1000)
+    } else {
+        format!("{:.1}s", us as f64 / 1e6)
+    }
+}
+
+fn ps(p: &mut lexopt::Parser) -> Result<i32> {
+    if let Some(arg) = p.next()? {
+        return Err(arg.unexpected().into());
+    }
+    let cells = cell::running()?;
+    if cells.is_empty() {
+        hint("Nothing is running in a world.");
+        return Ok(0);
+    }
+    let now = world::now_ns();
+    let rows: Vec<Vec<String>> = cells
+        .iter()
+        .map(|c| {
+            let (cpu, mem) = match &c.cgroup {
+                Some(dir) => (
+                    cpu_time(cgroup::read_usage(dir).cpu_us),
+                    cgroup::memory_now(dir).map_or("-".into(), cgroup::size),
+                ),
+                None => ("-".into(), "-".into()),
+            };
+            vec![
+                c.id.clone(),
+                c.world.clone(),
+                cgroup::duration(Duration::from_nanos(now.saturating_sub(c.started_ns))),
+                cpu,
+                mem,
+                if c.limits.is_empty() {
+                    "-".into()
+                } else {
+                    c.limits.clone()
+                },
+                c.what.clone(),
+            ]
+        })
+        .collect();
+    table::print(
+        &["cell", "world", "running", "cpu", "mem", "limits", "what"],
+        &rows,
+    )?;
+    Ok(0)
+}
+
+fn watch(p: &mut lexopt::Parser) -> Result<i32> {
+    let mut since = None;
+    while let Some(arg) = p.next()? {
+        match arg {
+            Long("since") => since = Some(p.value()?.parse()?),
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    Ledger::open()?.follow(since, &mut io::stdout().lock())?;
+    Ok(0)
+}
+
+/// Run by systemd, not by people: see `cgroup::serve`.
+fn serve(p: &mut lexopt::Parser) -> Result<i32> {
+    if let Some(arg) = p.next()? {
+        return Err(arg.unexpected().into());
+    }
+    cgroup::serve()
 }
 
 fn ledger_cmd(p: &mut lexopt::Parser) -> Result<i32> {
@@ -435,7 +556,10 @@ fn ledger_cmd(p: &mut lexopt::Parser) -> Result<i32> {
                 s.world.clone(),
                 s.out.clone(),
                 cost(&s.cost),
-                s.what.clone(),
+                match &s.limits {
+                    Some(limits) => format!("{} [{limits}]", s.what),
+                    None => s.what.clone(),
+                },
             ]
         })
         .collect();

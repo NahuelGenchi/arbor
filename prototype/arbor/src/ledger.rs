@@ -5,10 +5,13 @@
 //!
 //! Routine steps are not synced to disk one by one. A power cut can lose the last lines, never corrupt earlier
 //! ones; a line torn by a crash mid-write is moved to `ledger.torn` on the next append.
+//!
+//! `follow` streams new lines as they are appended (`arbor watch`), for Mission Control and other watchers.
 
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -33,9 +36,12 @@ pub struct Cost {
     /// CPU time of the command's processes, in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_ms: Option<u64>,
-    /// Peak memory of the command's largest process, in KiB.
+    /// Peak memory in KiB: the whole cell's when it ran in a cgroup of its own, else its largest process's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mem_kib: Option<u64>,
+    /// Peak number of processes and threads in the cell, where it had a cgroup and the kernel keeps the count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pids: Option<u64>,
 }
 
 /// One step, as recorded.
@@ -47,12 +53,19 @@ pub struct Step {
     pub ts: u64,
     /// Who acted: `you` for the arbor command. Keys and agents come with cells (M3).
     pub by: String,
-    /// `new`, `run`, `shell`, `keep`, `undo` or `discard`.
+    /// `new`, `start`, `run`, `shell`, `keep`, `undo` or `discard`. A command's cell records `start` when it
+    /// begins, then `run` or `shell` when it ends.
     pub act: String,
     pub world: String,
+    /// The cell a command ran in, as `arbor ps` names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell: Option<String>,
     /// What exactly: the command, the folder, or a summary of the changes.
     pub what: String,
-    /// `ok`, `exit N`, `refused`, `failed` or `stopped`.
+    /// The limits a command ran under: `mem 512MiB, cpu 0.5, pids 64, time 10m`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<String>,
+    /// `ok`, `running`, `exit N`, `killed: time limit`, `killed: memory limit`, `refused`, `failed` or `stopped`.
     pub out: String,
     pub cost: Cost,
 }
@@ -61,7 +74,9 @@ pub struct Step {
 pub struct New<'a> {
     pub act: &'a str,
     pub world: &'a str,
+    pub cell: Option<&'a str>,
     pub what: &'a str,
+    pub limits: Option<&'a str>,
     pub out: &'a str,
     pub cost: Cost,
 }
@@ -145,7 +160,9 @@ impl Ledger {
             by: "you".into(),
             act: new.act.into(),
             world: new.world.into(),
+            cell: new.cell.map(Into::into),
             what: short(new.what),
+            limits: new.limits.filter(|l| !l.is_empty()).map(Into::into),
             out: new.out.into(),
             cost: new.cost,
         };
@@ -225,6 +242,56 @@ impl Ledger {
             }
         }
         Ok(steps.into())
+    }
+
+    /// Writes the steps after `since` to `out` as their JSON lines, then each new step as it is appended, until
+    /// `out`'s reader goes away; without `since`, only new steps. It waits on inotify, so it costs nothing while
+    /// nothing happens. A reader that missed steps asks again from the last number it has.
+    pub fn follow<W: Write + AsFd>(&self, since: Option<u64>, out: &mut W) -> Result<()> {
+        let dir = self.path.parent().unwrap_or(Path::new("."));
+        fs::create_dir_all(dir).ctx(|| format!("cannot create {}", dir.display()))?;
+        // Watching starts before the first read, so a step appended in between is not missed.
+        let watch = sys::DirWatch::new(dir)?;
+        let (mut at, mut last, mut quiet) = (0u64, since.unwrap_or(0), since.is_none());
+        let mut buf = Vec::new();
+        loop {
+            match File::open(&self.path) {
+                Ok(mut file) => {
+                    if file.metadata()?.len() < at {
+                        at = 0; // rewritten: read it again, going by step numbers
+                    }
+                    file.seek(SeekFrom::Start(at))?;
+                    buf.clear();
+                    file.read_to_end(&mut buf)?;
+                    // Whole lines only: one still being written is read once it is done.
+                    let whole = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+                    for line in buf[..whole].split(|&b| b == b'\n') {
+                        let seq = std::str::from_utf8(line)
+                            .ok()
+                            .and_then(split)
+                            .and_then(|(body, _)| serde_json::from_str::<Step>(&body).ok())
+                            .map(|s| s.seq);
+                        if let Some(seq) = seq
+                            && seq > last
+                        {
+                            if !quiet {
+                                out.write_all(line)?;
+                                out.write_all(b"\n")?;
+                            }
+                            last = seq;
+                        }
+                    }
+                    at += whole as u64;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => at = 0,
+                Err(e) => return Err(e).ctx(|| format!("cannot read {}", self.path.display())),
+            }
+            out.flush()?;
+            quiet = false;
+            if !watch.wait(out.as_fd())? {
+                return Ok(());
+            }
+        }
     }
 
     /// Checks every line: numbered one after another, each hash right. Returns the count and the head hash.
@@ -309,12 +376,14 @@ mod tests {
         l.append(New {
             act: "run",
             world: "demo",
+            cell: Some("0badcafe"),
             what,
+            limits: None,
             out: "exit 0",
             cost: Cost {
                 ms: 3,
                 cpu_ms: Some(1),
-                mem_kib: None,
+                ..Cost::default()
             },
         })
         .unwrap()
@@ -395,6 +464,32 @@ mod tests {
         let l = Ledger::at(path);
         assert_eq!(l.verify().unwrap().steps, 200);
         assert_eq!(l.last(1000).unwrap().len(), 200);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn follow_sends_the_steps_after_a_number_then_each_new_one() {
+        let dir = temp("follow");
+        let path = dir.join("ledger.jsonl");
+        let l = Ledger::at(path.clone());
+        add(&l, "one");
+        add(&l, "two");
+        let (reader, mut writer) = io::pipe().unwrap();
+        let follower = std::thread::spawn(move || Ledger::at(path).follow(Some(1), &mut writer));
+        let mut lines = BufReader::new(reader).lines();
+        let mut next = || {
+            let line = lines.next().unwrap().unwrap();
+            let (body, hash) = split(&line).unwrap();
+            assert_eq!(hash.len(), 64);
+            serde_json::from_str::<Step>(&body).unwrap()
+        };
+        assert_eq!(next().what, "two");
+        add(&l, "three");
+        let three = next();
+        assert_eq!((three.seq, three.cell.as_deref()), (3, Some("0badcafe")));
+        // The reader goes away, so the follower stops instead of waiting forever.
+        drop(lines);
+        assert!(follower.join().unwrap().is_ok());
         fs::remove_dir_all(dir).unwrap();
     }
 
