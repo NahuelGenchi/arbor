@@ -13,9 +13,10 @@ interleaved across the cases, output to /dev/null and errors to a file:
   arbor.run_cgroup_ms  the same in a cgroup of its own, under `arbor serve`. If the service is not running, a first
                        run starts it, and the section stops it again once its rows are read, unless a cell that is
                        not the section's runs in it by then
-  arbor.run_net_ms     `arbor run W --key net -- true` with ARBOR_NO_CGROUP=1, where key net opens one host (`--net`):
-                       the cell's first process is then arbor, which opens the port of the cell's proxy, hands it to
-                       the arbor outside and becomes `true`; the proxy runs in that outer arbor until the cell ends
+  arbor.run_net_ms     `arbor run W --key net -- true` in a cgroup of its own, as arbor.run_cgroup_ms, where key net
+                       opens one host (`--net`): the cell's first process is then arbor, which opens the port of the
+                       cell's proxy, hands it to the arbor outside and becomes `true`; the proxy runs in that outer
+                       arbor until the cell ends
   arbor.ask_ms         asking for an effect from inside the cell: `arbor run W -- arbor effect -- true` against
                        `arbor run W -- true`, the difference of the block medians. Each block asks in a world of its
                        own, since a world may have 64 effects waiting
@@ -239,9 +240,7 @@ def main():
              ('ask', lambda b: arbor.argv('run', f'ask{b}', '--', 'arbor', 'effect', '--', 'true'), arbor.sealed)]
     missing = {}  # why a row's case is not timed
     # The key that opens the network, to the server the connections reach where this computer has a network address.
-    # Its case comes last in each block, so the cases before it run as they did before it existed.
-    listener = target = None
-    net = []
+    listener = target = net_err = None
     try:
         ip = own_address()
         if ip:
@@ -249,10 +248,8 @@ def main():
             threading.Thread(target=pong, args=(listener, ip), daemon=True).start()
             target = f'{ip}:{listener.getsockname()[1]}'
         arbor('key', 'new', 'net', '--net', target or 'example.com')
-        net.append(('arbor.run_net_ms', lambda b: arbor.argv('run', 'cell', '--key', 'net', '--', 'true'),
-                    arbor.sealed))
     except Exception as e:
-        missing['arbor.run_net_ms'] = e
+        net_err = e
     # A cell in a cgroup of its own needs `arbor serve`. A limit is refused without a cgroup, so a run with one shows
     # that the cell got one; that run starts the service if it was not running.
     before = None
@@ -265,8 +262,14 @@ def main():
             cases.append(('arbor.run_cgroup_ms', lambda b: arbor.argv('run', 'cell', '--', 'true'), arbor.env))
         except Exception as e:
             missing['arbor.run_cgroup_ms'] = e
+        # Last in each block, so the cases before it run as they did before it existed.
+        if net_err or 'arbor.run_cgroup_ms' in missing:
+            missing['arbor.run_net_ms'] = net_err or missing['arbor.run_cgroup_ms']
+        else:
+            cases.append(('arbor.run_net_ms', lambda b: arbor.argv('run', 'cell', '--key', 'net', '--', 'true'),
+                          arbor.env))
         started = before not in (None, 'active') and service() == 'active'
-        errs = timed(arbor, binary, cases + net, fs, started, missing)
+        errs = timed(arbor, binary, cases, fs, started, missing)
     finally:
         if before not in (None, 'active') and service() == 'active':
             # The section started it: stopped again, unless a cell that is not the section's runs in it by now.
@@ -289,8 +292,8 @@ def main():
         fail('arbor.release_ms', e)
 
     try:
-        if 'arbor.run_net_ms' in missing:
-            raise missing['arbor.run_net_ms']
+        if net_err:
+            raise net_err
         if not target:
             raise RuntimeError('this computer has no network address for a key to open')
         connections(arbor, target)
@@ -319,9 +322,11 @@ def timed(arbor, binary, cases, fs, started, missing):
     Returns the errors of the cases that failed."""
     meds, errs = blocks(cases)
     # A cell with no limit runs without a cgroup when it cannot have one, so the service must still run at the end.
-    if meds.get('arbor.run_cgroup_ms') and 'arbor.run_cgroup_ms' not in errs and service() != 'active':
-        errs['arbor.run_cgroup_ms'] = RuntimeError('arbor serve was not running when the section finished timing '
-                                                   'cells, so some may have run without a cgroup')
+    in_cgroups = [key for key in ('arbor.run_cgroup_ms', 'arbor.run_net_ms') if meds.get(key)]
+    if in_cgroups and service() != 'active':
+        for key in in_cgroups:
+            errs.setdefault(key, RuntimeError('arbor serve was not running when the section finished timing cells, '
+                                              'so some may have run without a cgroup'))
     ctx = {'state_fs': fs}
     for key in ('arbor.run_ms', 'arbor.run_cgroup_ms', 'arbor.run_net_ms'):
         if key in errs:
