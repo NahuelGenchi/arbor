@@ -15,7 +15,7 @@ use arbor::key::{self, Key};
 use arbor::ledger::{self, Cost, Ledger};
 use arbor::outbox::{self, Answer, Effect, Outbox};
 use arbor::world::{self, State, World};
-use arbor::{paths, table, tree};
+use arbor::{net, paths, table, tree};
 use lexopt::prelude::*;
 
 const HELP: &str = "\
@@ -44,8 +44,9 @@ OPTIONS: --key KEY opens what the key opens. LIMITS stop a command that takes to
 --mem SIZE (512M, 2G), --cpu CPUS (0.5, 2), --pids N (processes at once), --time DURATION (90s, 10m, 2h).
 
 GRANTS: --read PATH (a folder or file), --toolchains (~/.cargo, ~/.npm, ~/.pyenv and the like),
---env VAR (passes a variable in), --world W (only that world), LIMITS, --spend AMOUNT (what its effects
-may cost in all: 5, 2.50), --for DURATION or --until HH:MM (8h if neither), --within KEY (a narrower key,
+--env VAR (passes a variable in), --net HOST (a host it may reach over https: api.example.com,
+*.example.com, HOST:PORT), --world W (only that world), LIMITS, --spend AMOUNT (what its effects may
+cost in all: 5, 2.50), --for DURATION or --until HH:MM (8h if neither), --within KEY (a narrower key,
 made from another).
 
 Inside a world, `arbor effect [--cost AMOUNT] [--why TEXT] [--input FILE] [--wait] -- CMD...` asks for CMD
@@ -53,7 +54,8 @@ to run outside: in the real folder, as you, with the network, once you release i
 answer and prints what CMD printed.
 
 The real folder does not change until `arbor keep`. Inside a world the rest of the computer is read-only,
-your home folder is empty but for what a key opens, password files stay hidden, and there is no network.
+your home folder is empty but for what a key opens, password files stay hidden, and there is no network
+but the hosts a key opens.
 Read the diff before keeping: kept files such as .git/hooks run later on your computer.
 ";
 
@@ -85,7 +87,7 @@ fn run() -> Result<i32> {
     };
     // Inside a world arbor's own folder is hidden: there, arbor can only ask, through the cell's socket.
     if env::var_os(outbox::SOCKET_VAR).is_some_and(|s| !s.is_empty())
-        && !matches!(command.as_str(), "effect" | "help")
+        && !matches!(command.as_str(), "effect" | "help" | "proxy-port")
     {
         return Err(Error::refused(
             "inside a world, arbor only asks for effects: `arbor effect -- CMD` (see `arbor help`)",
@@ -111,6 +113,7 @@ fn run() -> Result<i32> {
         "ledger" => ledger_cmd(&mut p),
         "watch" => watch(&mut p),
         "serve" => serve(&mut p),
+        "proxy-port" => proxy_port(&mut p),
         "help" => help(),
         other => Err(Error::usage(format!(
             "there is no command '{other}'; run `arbor help`"
@@ -354,6 +357,14 @@ fn run_noted(note: &mut Note, asked: Asked, cmd: &[OsString], shell: bool) -> Re
             },
         })
     })?;
+    if let Some(net) = &ran.net {
+        noted_net(
+            note.key.as_deref().unwrap_or_default(),
+            &world.name,
+            &ran.id,
+            net,
+        );
+    }
     if let Some(warning) = &ran.warning {
         eprintln!("arbor: {warning}");
     }
@@ -367,6 +378,64 @@ fn run_noted(note: &mut Note, asked: Asked, cmd: &[OsString], shell: bool) -> Re
         ));
     }
     Ok(ran.code)
+}
+
+/// Records what went through a cell's proxy as a step of the cell's, and names the hosts its key kept it from.
+fn noted_net(key: &str, world: &str, cell: &str, net: &net::Tally) {
+    if net.is_empty() {
+        return;
+    }
+    append(ledger::New {
+        act: "net",
+        by: "cell",
+        key: Some(key),
+        world,
+        cell: Some(cell),
+        effect: None,
+        what: &net.summary(),
+        limits: None,
+        out: net.outcome(),
+        cost: Cost {
+            ms: net.ms,
+            ..Cost::default()
+        },
+    });
+    for line in net.refusals(key) {
+        eprintln!("arbor: {line}");
+    }
+}
+
+/// `arbor proxy-port FD -- CMD...`, which arbor runs itself as the first process of a cell whose key opens hosts:
+/// it opens the cell's proxy port, hands it out over the descriptor FD, and becomes CMD (see `net`).
+fn proxy_port(p: &mut lexopt::Parser) -> Result<i32> {
+    let inside = env::var_os(outbox::SOCKET_VAR).is_some_and(|s| !s.is_empty());
+    let fd = match p.next()? {
+        Some(Value(v)) if inside => v.string()?,
+        _ => {
+            return Err(Error::usage(
+                "`arbor proxy-port` is run by arbor itself, as the first process of a world whose key opens hosts",
+            ));
+        }
+    };
+    let mut cmd: Vec<OsString> = p.raw_args()?.collect();
+    if cmd.first().is_some_and(|a| a == "--") {
+        cmd.remove(0);
+    }
+    if cmd.is_empty() {
+        return Err(Error::usage(
+            "which command? usage: arbor proxy-port FD -- CMD...",
+        ));
+    }
+    let opened = fd
+        .parse()
+        .ok()
+        .and_then(net::inherited)
+        .ok_or_else(|| Error::new("there is no port to hand over"))
+        .and_then(net::open_port);
+    if let Err(e) = opened {
+        eprintln!("arbor: warning: this command has no network: {e}");
+    }
+    Ok(cell::exec(&cmd))
 }
 
 fn shell(p: &mut lexopt::Parser) -> Result<i32> {
@@ -658,6 +727,7 @@ fn key_new(p: &mut lexopt::Parser) -> Result<i32> {
             Long("read") => spec.read.push(PathBuf::from(p.value()?)),
             Long("toolchains") => spec.toolchains = true,
             Long("env") => spec.env.push(p.value()?.string()?),
+            Long("net") => spec.net.push(p.value()?.string()?),
             Long("within") => spec.within = Some(p.value()?.string()?),
             Long("for") => {
                 let life = cgroup::parse_duration(&p.value()?.string()?)?;
@@ -769,13 +839,14 @@ fn keys(p: &mut lexopt::Parser) -> Result<i32> {
                 or_dash(k.limits.describe()),
                 spend,
                 or_dash(k.env.join(", ")),
+                or_dash(k.hosts()),
                 or_dash(k.reads()),
             ]
         })
         .collect();
     table::print(
         &[
-            "name", "until", "within", "opens", "limits", "spend", "env", "reads",
+            "name", "until", "within", "opens", "limits", "spend", "env", "net", "reads",
         ],
         &rows,
     )?;

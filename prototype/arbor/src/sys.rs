@@ -263,16 +263,109 @@ pub fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 pub fn spawn_quiet<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> io::Result<JoinHandle<T>> {
+    spawn_quiet_on(std::thread::Builder::new(), f)
+}
+
+/// The same, on a thread that `builder` makes, such as one with a smaller stack.
+pub fn spawn_quiet_on<T: Send + 'static>(
+    builder: std::thread::Builder,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> io::Result<JoinHandle<T>> {
     unsafe {
         let mut all: libc::sigset_t = std::mem::zeroed();
         libc::sigfillset(&mut all);
         let mut before: libc::sigset_t = std::mem::zeroed();
         libc::pthread_sigmask(libc::SIG_SETMASK, &all, &mut before);
         // The new thread starts with the mask of the one that makes it.
-        let thread = std::thread::Builder::new().spawn(f);
+        let thread = builder.spawn(f);
         libc::pthread_sigmask(libc::SIG_SETMASK, &before, std::ptr::null_mut());
         thread
     }
+}
+
+/// Room for one descriptor in a message's control data, aligned as the kernel's `cmsghdr` needs.
+#[repr(C)]
+union FdRoom {
+    _align: libc::cmsghdr,
+    _bytes: [u8; 64],
+}
+
+/// Sends the open descriptor `fd` over the Unix socket `sock`, the receiver getting a copy of its own. One byte of
+/// data goes with it, as the kernel requires.
+pub fn send_fd(sock: BorrowedFd, fd: BorrowedFd) -> io::Result<()> {
+    let mut byte = [0u8; 1];
+    let mut iov = libc::iovec {
+        iov_base: byte.as_mut_ptr().cast(),
+        iov_len: 1,
+    };
+    let mut room: FdRoom = unsafe { std::mem::zeroed() };
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = (&raw mut room).cast();
+    msg.msg_controllen = unsafe { libc::CMSG_SPACE(size_of::<RawFd>() as u32) } as _;
+    unsafe {
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        (*cmsg).cmsg_level = libc::SOL_SOCKET;
+        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(size_of::<RawFd>() as u32) as _;
+        std::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<RawFd>(), fd.as_raw_fd());
+    }
+    loop {
+        if unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, libc::MSG_NOSIGNAL) } >= 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// Receives one descriptor sent with `send_fd`, closing on exec. `None` when the other end closed without
+/// sending one. Any further descriptors in the message are closed.
+pub fn recv_fd(sock: BorrowedFd) -> io::Result<Option<OwnedFd>> {
+    let mut byte = [0u8; 1];
+    let mut iov = libc::iovec {
+        iov_base: byte.as_mut_ptr().cast(),
+        iov_len: 1,
+    };
+    let mut room: FdRoom = unsafe { std::mem::zeroed() };
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = (&raw mut room).cast();
+    msg.msg_controllen = size_of::<FdRoom>() as _;
+    loop {
+        let n = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
+        if n >= 0 {
+            break;
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+    let mut got = None;
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+                let data = libc::CMSG_DATA(cmsg).cast::<RawFd>();
+                let count =
+                    ((*cmsg).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / size_of::<RawFd>();
+                for i in 0..count {
+                    let fd = OwnedFd::from_raw_fd(std::ptr::read_unaligned(data.add(i)));
+                    // The first is kept; the others close as they drop.
+                    if got.is_none() {
+                        got = Some(fd);
+                    }
+                }
+            }
+            cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+        }
+    }
+    Ok(got)
 }
 
 /// What this process's finished children have used so far: CPU milliseconds and the largest peak memory in KiB.

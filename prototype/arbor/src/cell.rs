@@ -6,10 +6,12 @@
 //! cleared environment; no network, no new user namespaces and an empty session keyring; and a filter that refuses
 //! the kernel calls sandbox escapes start from (see `seccomp`). Its one way out is a socket to the outbox, where it
 //! asks for effects that a person may release (see `outbox`). A key (see `key`) opens more folders and files and
-//! passes variables in; password files stay hidden even then. Where the user's systemd manager allows it, each cell
+//! passes variables in; password files stay hidden even then. A key can also open the network to the hosts it names:
+//! the cell's first process is then arbor itself, which hands the arbor outside a port on the cell's loopback to
+//! answer as a proxy, and becomes the command (see `net`). Where the user's systemd manager allows it, each cell
 //! also runs in its own cgroup (see `cgroup`), with its limits, and its whole cost is read from there. A command
 //! the cell would not find is refused before it starts, in plain words: where it is hidden, and the key option that
-//! opens it (see `View::check`). Network through a filter comes later.
+//! opens it (see `View::check`).
 
 use std::env;
 use std::ffi::{CStr, CString, OsStr, OsString};
@@ -18,6 +20,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -31,7 +34,7 @@ use crate::key::{self, Key};
 use crate::ledger::Ledger;
 use crate::outbox::{self, Outbox};
 use crate::world::{self, Lock, State, World};
-use crate::{paths, seccomp, sys, table, tree};
+use crate::{net, paths, seccomp, sys, table, tree};
 
 pub struct Options {
     /// The command will talk to the person at the terminal.
@@ -77,6 +80,31 @@ pub fn which(name: &str) -> Option<PathBuf> {
         .flat_map(|p| env::split_paths(&p).collect::<Vec<_>>())
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())
+}
+
+/// Becomes `cmd`, found as `execvp` finds it, as bwrap would have run it. Returns only when it cannot, after
+/// saying why, with the code a shell gives: 127 for a command not found, 126 for one that cannot run.
+pub fn exec(cmd: &[OsString]) -> i32 {
+    let Ok(args) = cmd
+        .iter()
+        .map(|a| CString::new(a.as_bytes()))
+        .collect::<std::result::Result<Vec<_>, _>>()
+    else {
+        eprintln!("arbor: cannot run {}: it holds a NUL byte", shown(cmd));
+        return 126;
+    };
+    let Some(program) = args.first() else {
+        return 126;
+    };
+    let argv = pointers(&args);
+    unsafe { libc::execvp(program.as_ptr(), argv.as_ptr()) };
+    let e = io::Error::last_os_error();
+    eprintln!("arbor: cannot run {}: {e}", shown(&cmd[..1]));
+    if e.kind() == io::ErrorKind::NotFound {
+        127
+    } else {
+        126
+    }
 }
 
 pub fn bwrap() -> Result<PathBuf> {
@@ -242,6 +270,7 @@ impl View {
         path: &OsStr,
         filter: RawFd,
         socket: &Path,
+        port: Option<RawFd>,
         opts: &Options,
     ) -> Result<Vec<OsString>> {
         let mut a: Vec<OsString> = Vec::new();
@@ -316,9 +345,19 @@ impl View {
                 &"--setenv",
                 &"PATH",
                 &path,
-                &"--",
             ],
         );
+        // Under a key that opens hosts, tools find the cell's proxy through these, and arbor runs first to open its
+        // port (see `net`).
+        if port.is_some() {
+            for (name, value) in net::vars() {
+                add(&mut a, &[&"--setenv", &name, &value]);
+            }
+        }
+        add(&mut a, &[&"--"]);
+        if let Some(fd) = port {
+            add(&mut a, &[&arbor, &"proxy-port", &fd.to_string(), &"--"]);
+        }
         a.extend(cmd.iter().cloned());
         Ok(a)
     }
@@ -793,6 +832,8 @@ pub struct Ran {
     pub mem_kib: u64,
     /// Peak number of processes and threads, when it had its own cgroup.
     pub pids: Option<u64>,
+    /// What went through its proxy, under a key that opens hosts.
+    pub net: Option<net::Tally>,
 }
 
 /// The cell's own cgroup, where this session can have one. Memory, CPU and process limits need it; a cell
@@ -828,14 +869,14 @@ fn pointers(items: &[CString]) -> Vec<*const libc::c_char> {
 }
 
 /// Starts `program` with `argv` and `envp`, inside the cell's cgroup when it has one, with the session keyring
-/// left behind, death tied to arbor's, and `filter` left open for it. Returns its process ID and a descriptor that
-/// becomes readable when it exits.
+/// left behind, death tied to arbor's, and the descriptors in `inherit` left open for it. Returns its process ID
+/// and a descriptor that becomes readable when it exits.
 fn spawn(
     program: &CStr,
     argv: &[*const libc::c_char],
     envp: &[*const libc::c_char],
     group: Option<&Group>,
-    filter: BorrowedFd,
+    inherit: &[BorrowedFd],
 ) -> io::Result<(libc::pid_t, OwnedFd)> {
     let (report, told) = sys::pipe()?;
     let parent = unsafe { libc::getpid() };
@@ -869,9 +910,12 @@ fn spawn(
             {
                 fail(libc::ESRCH);
             }
-            // bwrap reads the seccomp filter from this descriptor, so it stays open across exec.
-            if unsafe { libc::fcntl(filter.as_raw_fd(), libc::F_SETFD, 0) } != 0 {
-                fail(errno());
+            // bwrap reads the seccomp filter from one of these, and the cell's first process hands its proxy port
+            // over another, so they stay open across exec.
+            for fd in inherit {
+                if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, 0) } != 0 {
+                    fail(errno());
+                }
             }
             unsafe { libc::execve(program.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
             fail(errno())
@@ -1071,6 +1115,13 @@ pub fn run(
     // now and that end closed.
     let (filter, to_filter) = sys::pipe()?;
     File::from(to_filter).write_all(&seccomp::bytes())?;
+    // Under a key that opens hosts, the cell's first process hands its proxy port out over this pair (see `net`).
+    let hosts = key.map(|k| k.net.clone()).unwrap_or_default();
+    let pair = if hosts.is_empty() {
+        None
+    } else {
+        Some(UnixStream::pair()?)
+    };
     let args = view.args(
         world,
         cmd,
@@ -1078,6 +1129,7 @@ pub fn run(
         &path,
         filter.as_raw_fd(),
         socket.path(),
+        pair.as_ref().map(|(_, inside)| inside.as_raw_fd()),
         opts,
     )?;
     // Everything exec needs is made before the fork: the child may not allocate.
@@ -1111,16 +1163,38 @@ pub fn run(
     .into_iter()
     .flatten()
     .min_by_key(|(at, _)| *at);
+    let mut inherit = vec![filter.as_fd()];
+    if let Some((_, inside)) = &pair {
+        inherit.push(inside.as_fd());
+    }
     let (pid, exited) = spawn(
         &program,
         &pointers(&argv),
         &pointers(&envp),
         group.as_ref(),
-        filter.as_fd(),
+        &inherit,
     )
     .ctx(|| "cannot start the cell".to_string())?;
+    drop(inherit);
     drop(filter);
     started(&id);
+    // The cell holds its end of the pair now. Arbor's copy closes, so that a cell that ends before handing its
+    // port over closes the pair, and arbor stops waiting for the port.
+    let proxy = pair.and_then(|(outside, inside)| {
+        drop(inside);
+        let who = net::Who {
+            world: world.name.clone(),
+            cell: id.clone(),
+            key: key.map(|k| k.name.clone()).unwrap_or_default(),
+        };
+        match net::Proxy::start(outside, hosts, who) {
+            Ok(proxy) => Some(proxy),
+            Err(e) => {
+                eprintln!("arbor: warning: this command has no network: {e}");
+                None
+            }
+        }
+    });
     // Until the server answers, what the cell asks waits; without one, it is refused.
     let server = Outbox::open()
         .and_then(|o| Ok((o, Ledger::open()?)))
@@ -1148,8 +1222,9 @@ pub fn run(
         libc::signal(libc::SIGINT, old_int);
         libc::signal(libc::SIGQUIT, old_quit);
     }
-    // Every process of the cell has ended, so its requests have too.
+    // Every process of the cell has ended, so its requests and connections have too.
     drop(server);
+    let net = proxy.map(net::Proxy::finish);
     drop(stops);
     let (status, ended) = waited?;
     let code = status
@@ -1178,6 +1253,7 @@ pub fn run(
             .and_then(|u| u.mem_peak)
             .map_or(max_rss, |b| b.div_ceil(1024)),
         pids: usage.and_then(|u| u.pids_peak),
+        net,
     })
 }
 
@@ -1335,6 +1411,7 @@ mod tests {
             worlds: Vec::new(),
             read: Vec::new(),
             env: vec!["CARGO_HOME".into()],
+            net: Vec::new(),
             limits: Limits::default(),
             spend: None,
             made_ns: 0,
