@@ -44,14 +44,12 @@ Ctrl-C during a keep or an undo stops it between two changes, never halfway thro
 
 ## Limits
 
-`arbor run` and `arbor shell` take limits before the command:
+`arbor run` and `arbor shell` take limits before the command. When the command reaches one:
 
-| Limit | When the command reaches it |
-| :--- | :--- |
-| `--mem 2G` | the whole command is stopped at once. Files it writes in `/tmp` count, and there is no swap to spill into |
-| `--cpu 0.5` | it runs slower: never more than half of one CPU's time, or two CPUs' with `--cpu 2` |
-| `--pids 64` | new processes are refused, so a runaway loop of them stops growing |
-| `--time 10m` | the whole command is stopped |
+- `--mem 2G`: the whole command is stopped at once. Files it writes in `/tmp` count, and there is no swap to spill into.
+- `--cpu 0.5`: it runs slower, never taking more than half of one CPU's time (`2` would allow two CPUs).
+- `--pids 64`: new processes are refused, so a runaway loop of them stops growing.
+- `--time 10m`: the whole command is stopped.
 
 Sizes take K, M, G or T (powers of 1024), and durations ms, s, m or h.
 
