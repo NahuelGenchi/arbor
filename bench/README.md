@@ -187,3 +187,64 @@ M numbers in OPTIMIZATION.md outside the seven areas this suite was asked to cov
   energy preference of CPU 0.
 
 Energy numbers in OPTIMIZATION.md come from the cited papers; reading RAPL counters on this kernel needs root.
+
+## Whole agent sessions
+
+`arbor look` answers in a fraction of the tokens of the usual commands, but an agent pays for a read at every step
+after it, and for every step it takes. `sessions/ab.py` measures what that comes to over whole sessions: an A/B of
+OpenCode, unchanged, doing small tasks on this repository in worlds of the prototype.
+
+```bash
+python3 sessions/ab.py                 # 5 sessions per task and arm, 60 in all
+python3 sessions/ab.py --reps 8 --tasks find,fix-clock
+python3 sessions/ab.py --resume results/sessions_<date>_<host>.jsonl   # go on with a stopped run
+python3 sessions/summary.py results/sessions_<date>_<host>.jsonl       # the report again
+```
+
+On 17 Oct 2026 a session took 18 s at the median (1–93 s) and the next one started 19 s after it, so the 120 sessions
+of 10 rounds took about 48 minutes (**M**).
+
+- **The tasks** (`sessions/tasks.py`) work on this repository at a pinned commit, exported into a new git repository of
+  one commit, with three bugs planted for the fix tasks: find where something is defined (`find`), gather a list from
+  a large file (`list`), work out what a function does with four inputs (`explain`), and find a bug from its symptom
+  and fix it, twice in Rust (`fix-clock`, `fix-plural`) and once in Python (`fix-python`). Each task's check, written
+  before the runs, decides success from the agent's last answer or from the files it left in the world.
+- **The arms** differ only in the world's `AGENTS.md`: **A** describes the repository; **B** adds a paragraph that says
+  to read with `arbor look`, a large file by its outline and lines, several reads in one call.
+- **Each session starts afresh**: a copy of the arm's repository at the same path, a new world over it, and a new key
+  with a home folder of its own that opens OpenCode's program, its two hosts and that world. The arms alternate (AB,
+  then BA).
+- **What it counts**, from OpenCode's own database in the key's home, read-only and from the session tables only: each
+  model call (a step) with its input, cache-read, cache-write, output and reasoning tokens, the tools called and what
+  they returned, and the last answer. `sessions/summary.py` reports the medians and spread per task and arm, the
+  suite's weighted cost (input 1, cache write 1.25, cache read 0.1, output 5, where output includes reasoning), and B
+  against A as a ratio of medians with a bootstrap 95% interval.
+- **Every session the agent ends counts**, failed or not, since a failed session is paid for too, and one that runs out
+  of time (`AB_TIMEOUT`, 900 s) counts as failed. A session that the provider ends, as the free model's rate limit does
+  after heavy use, runs again, twice at most; a slot whose every attempt the provider ended is left out of the report,
+  named, and runs again on `--resume`.
+
+**It spends nothing.** Every call goes to OpenCode's free model, `opencode/deepseek-v4.1-flash-free` (`AB_MODEL`, which
+must be one whose name ends in `-free`). No login goes into the key's home: the free model needs none, and the
+settings there allow only OpenCode's own provider, so no plan's quota can be reached. The run stops if a step names
+another model or records a cost. Your own OpenCode settings and login are never read or changed.
+
+**What it needs and touches.** OpenCode in `~/.opencode/bin` (`OPENCODE`), the network to `opencode.ai` and
+`models.opencode.ai`, and what the `arbor` section needs to build the prototype (or `ARBOR_BIN`). arbor runs with its
+state in the temp folder and with `ARBOR_NO_CGROUP=1`, so the runs neither touch your worlds and keys nor need
+`arbor serve`. The temp folder is removed at the end, also on Ctrl-C. It writes
+`results/sessions_<date>_<host>.jsonl`, one record per session with the agent's last answer, and the report next to
+it as `.md`. Run it from an ordinary process (`systemd-run --user --pipe --wait …`), as the suite.
+
+**What it found on 17 October 2026: no clear saving** (**M**: 119 of the 120 sessions of `--reps 10`, since the free
+model's rate limit ended every attempt of the last; `SESSIONS_REF` in `lib/reference.py` keeps the result). Told to
+read with `arbor look`, the agent used it in 48 of 59 sessions and got about two fifths less text back from its tools
+(B/A 0.61, 95% interval 0.54–0.76), but it took about a quarter more steps (1.27, 1.19–1.52), and each step rereads
+the conversation. Its input fell by about a fifth (0.82, 0.65–1.00) and its output rose (1.18, 0.99–1.43), so the
+weighted tokens came out the same: 1.01 (0.85–1.15) over all tasks. No task's interval excludes 1, from 0.78
+(0.45–1.23) on `fix-python` to 1.19 (0.88–1.65) on `fix-clock`. 58 of A's 60 sessions and 57 of B's 59 passed their
+checks. These are small tasks on one repository, with one agent and one model; what longer tasks, another agent or
+another model would show is not measured.
+
+**A free remote model's answers vary** from one session to the next, and the model behind the name can change, so a
+new run will not repeat the numbers exactly; compare the arms within one run.

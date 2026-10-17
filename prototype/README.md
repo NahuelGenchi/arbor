@@ -293,6 +293,8 @@ line	text
 - in shell, a function whose body is in parentheses;
 - in Markdown, headings inside HTML, and all but the last line of a setext heading's text.
 
+A shorter answer is not yet a cheaper session: an agent told to read this way may take more steps to reach the same lines. [`bench/README.md`](../bench/README.md#whole-agent-sessions), *Whole agent sessions*, measures both over whole sessions of OpenCode, with and without `arbor look`.
+
 ## The outbox
 
 A command in a world reaches no network but the hosts its key opens, and nothing it does reaches your real files until you keep the world. When the work needs something done outside, such as pushing a branch, sending an email or paying for a service, the command asks for it:
