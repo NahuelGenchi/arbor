@@ -133,6 +133,39 @@ arbor shell shop --key agent
 
 Inside, the agent changes only the world, reaches only its API, and asks for anything else through [the outbox](#the-outbox); `arbor diff shop` shows what it changed. An agent may try other hosts too, such as its maker's telemetry: arbor names each one it refused, so you can decide whether to open it. What it keeps in its home folder, such as Claude Code's `~/.claude` and `~/.claude.json`, is still there the next time it runs under the key, in [the key's own home folder](#a-keys-own-home-folder), and goes when the key is taken back. When the key ends, `arbor key renew agent` lets it last another 8 hours, and the agent starts with the settings it left. Every world the key opens shares that folder, so a key for each project, made with `--world`, keeps them apart.
 
+#### OpenCode, with the login it already has
+
+OpenCode keeps the login of a plan, such as OpenCode Go, in its database, `~/.local/share/opencode/opencode.db`, next to every session it has had. A key cannot open that login alone, so it goes into the key's own home folder as a copy, once:
+
+```sh
+arbor key new opencode --read ~/.opencode/bin --home --net opencode.ai --net models.opencode.ai
+opencode auth export opencode-go | arbor run shop --key opencode -- opencode auth import --standalone
+arbor run shop --key opencode -- opencode models --standalone
+arbor run shop --key opencode -- opencode run --standalone -m opencode/deepseek-v4.1-flash-free "say hi"
+```
+
+- **The key** opens OpenCode's program, which its installer puts in `~/.opencode/bin`, and two hosts: `opencode.ai`, its models' API, for a plan's models and for its free ones, and `models.opencode.ai`, its list of models. OpenCode asked for no other host.
+- **The copy.** `opencode auth export opencode-go` prints the plan's login, its secret included, and `opencode auth import`, in the world, stores it in the key's home folder. The pipe keeps it off the disk on the way, and naming `opencode-go` copies that login alone: without it, every login OpenCode has would go in. Only commands under the key see the copy, and taking the key back deletes it. Opening the login with `--read` does not work: OpenCode 2 reads its old login file, `~/.local/share/opencode/auth.json`, only while it upgrades a database from OpenCode 1, and the key's home starts with a new one.
+- **Its list of models.** In a new home folder, OpenCode knows only the models it was built with until it has fetched the current list, in the background, and kept it there. Until then, `opencode run -m` with a newer model ends with `Model unavailable`. `opencode models` lists the ones it knows; if yours is not there yet, run it again.
+- **`--standalone`** runs OpenCode's server inside the command. Without it, OpenCode starts its background service in the world, which works too and ends with the command.
+- **Its settings** are those in the key's home folder, never yours. The checks below spent nothing, background calls such as session titles included, with this `~/.config/opencode/opencode.json` there, put in with `arbor run shop --key opencode -- sh -c 'mkdir -p ~/.config/opencode && cat > ~/.config/opencode/opencode.json' < opencode.json`. `enabled_providers` allows only OpenCode's own models, whose free ones need no login, so not even the plan's login can be used: leave it out to work on the plan.
+
+  ```json
+  {
+    "model": "opencode/deepseek-v4.1-flash-free",
+    "small_model": "opencode/deepseek-v4.1-flash-free",
+    "enabled_providers": ["opencode"],
+    "autoupdate": false
+  }
+  ```
+
+Checked on 17 October 2026 with OpenCode 2.0.29, on its free model only:
+
+- In a world, OpenCode read a file and changed it, with `--auto`, which lets it make changes without asking: they land in the world. `arbor diff shop` showed that change and nothing else, and the real folder kept its old version until `arbor keep`.
+- A later run under the key went on with the same session (`opencode run -c`), also once the key had ended and `arbor key renew` had brought it back.
+- With an `AGENTS.md` in the world saying so, OpenCode read the file it was asked about with `arbor look outline` and `arbor look lines`.
+- The copy of a login was checked with a made-up one. No call was made on the plan's models, which would have used its quota.
+
 ## Reads for an agent
 
 At every step an agent's model reads its whole conversation again, so a read that takes one step instead of three, and prints only what was asked, saves twice. `arbor look` answers the reads an agent makes most as short tables, several in one call:
