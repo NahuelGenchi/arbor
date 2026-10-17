@@ -58,7 +58,7 @@ pub const TOOLCHAINS: [&str; 19] = [
 
 /// Password and key files and folders, relative to the home folder. They stay hidden in a cell even when its world
 /// or its key includes the folder they are in, unless that world or key is the file or folder itself.
-pub const SECRETS: [&str; 66] = [
+pub const SECRETS: [&str; 67] = [
     // Keys and passwords
     ".ssh",
     ".gnupg",
@@ -123,6 +123,9 @@ pub const SECRETS: [&str; 66] = [
     ".openhands",
     ".local/share/amazon-q",
     ".config/Cursor",
+    // The browser profile Gemini CLI's browser agent signs in to sites with, which stays hidden from a key that opens
+    // Gemini's folder for its own login
+    ".gemini/cli-browser-profile",
     // Kimi Code's logins and the API keys in its settings, and those of Kimi CLI before it
     ".kimi-code/credentials",
     ".kimi-code/config.toml",
@@ -151,8 +154,8 @@ pub const SECRETS: [&str; 66] = [
 /// What AI agents keep of your sessions, relative to the home folder: the transcripts, with each file read and each
 /// command's output, the prompts you typed, their notes from past sessions, and their copies of files, pastes and
 /// logs. They stay hidden like `SECRETS`, by the same rules. A `*` in an entry's last part stands for any run of
-/// characters, for names that change between versions.
-pub const RECORDS: [&str; 25] = [
+/// characters, for names that change between versions and the files SQLite keeps beside a database.
+pub const RECORDS: [&str; 35] = [
     // Claude Code: transcripts, with each project's notes; your prompts; files as they were before an edit; pastes
     // and attachments; plans and task lists; debug logs; transcripts packed for feedback, and drafts; `/insights`
     // reports; background sessions; subagents' notes
@@ -186,6 +189,24 @@ pub const RECORDS: [&str; 25] = [
     // OpenCode's prompt history, stashed prompts and recently opened files. Its sessions are in its data folder,
     // among `SECRETS`.
     ".local/state/opencode",
+    // Gemini CLI: for each project, transcripts, your prompts and shell commands, saved chats, checkpoints, plans,
+    // long tool outputs and its notes; and the git repositories with each project's snapshots for its checkpoints.
+    // Its whole folder is among `SECRETS`, so these stay hidden from a key that opens that folder by name.
+    ".gemini/tmp",
+    ".gemini/history",
+    // The Copilot CLI: each session's events, plan, reports and copies of files before an edit; the database of all
+    // sessions and the files SQLite keeps beside it; your prompts, in a folder, or a file before; logs; and sessions
+    // from versions before 1.0
+    ".copilot/session-state",
+    ".copilot/session-store.db*",
+    ".copilot/command-history-state*",
+    ".copilot/logs",
+    ".copilot/history-session-state",
+    // Aider: the chat, the lines you typed, and, when turned on, the messages to and from the model. It keeps them in
+    // the project's folder, so they are found here only where it ran in the home folder.
+    ".aider.chat.history.md",
+    ".aider.input.history",
+    ".aider.llm.history",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1354,10 +1375,45 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_s_records_stay_hidden_from_a_key_that_opens_its_hidden_folder() {
+        let root = std::env::temp_dir().join(format!("arbor-gemini-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for dir in [
+            "tmp/shop/chats",
+            "history/shop",
+            "cli-browser-profile",
+            "commands",
+        ] {
+            fs::create_dir_all(root.join("home/.gemini").join(dir)).unwrap();
+        }
+        let home = fs::canonicalize(root.join("home")).unwrap();
+        let gemini = home.join(".gemini");
+        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown);
+
+        // Inside the home folder, the folder hidden whole covers what is in it...
+        assert_eq!(
+            found(std::slice::from_ref(&home)),
+            vec![(gemini.clone(), true)]
+        );
+        // ...and a key that opens it by name opens its settings, but not its records or its browser profile.
+        assert_eq!(
+            found(std::slice::from_ref(&gemini)),
+            vec![
+                (gemini.join("cli-browser-profile"), true),
+                (gemini.join("tmp"), true),
+                (gemini.join("history"), true)
+            ]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn a_star_in_a_listed_name_stands_for_any_run_of_characters() {
         for (pattern, name) in [
             ("*.sqlite*", "state_5.sqlite"),
             ("*.sqlite*", "logs_2.sqlite-wal"),
+            ("session-store.db*", "session-store.db-shm"),
+            ("command-history-state*", "command-history-state.json"),
             ("a*", "a"),
             ("*", ""),
             ("a*b*c", "abc"),
@@ -1369,6 +1425,7 @@ mod tests {
         for (pattern, name) in [
             ("*.sqlite*", "config.toml"),
             ("*.sqlite*", "sqlite"),
+            ("session-store.db*", "session-store"),
             ("a*a", "a"),
             ("a*b*c", "acb"),
             ("abc", "abcd"),

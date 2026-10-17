@@ -48,7 +48,7 @@ fn path_of(dirs: &[PathBuf]) -> std::ffi::OsString {
 
 /// Where AI agents keep their logins, in the home folder, each with what a command reads there while it is hidden:
 /// nothing from a hidden file, and `-` in a hidden folder, which looks empty.
-const AGENT_LOGINS: [(&str, &str); 40] = [
+const AGENT_LOGINS: [(&str, &str); 41] = [
     (".local/share/opencode/opencode.db", "-"),
     (".local/share/opencode/opencode.db-wal", "-"),
     (".local/share/opencode/opencode.db-shm", "-"),
@@ -62,6 +62,7 @@ const AGENT_LOGINS: [(&str, &str); 40] = [
     (".codex/.credentials.json", ""),
     (".codex/secrets/codex_auth.age", "-"),
     (".gemini/oauth_creds.json", "-"),
+    (".gemini/cli-browser-profile/Default/Cookies", "-"),
     (".qwen/settings.json", "-"),
     (".config/github-copilot/auth.db", "-"),
     (".local/share/amp/secrets.json", "-"),
@@ -92,12 +93,13 @@ const AGENT_LOGINS: [(&str, &str); 40] = [
 ];
 
 /// The folders among them that stay hidden whole.
-const LOGIN_FOLDERS: [&str; 21] = [
+const LOGIN_FOLDERS: [&str; 22] = [
     ".local/share/opencode",
     ".claude/backups",
     ".config/anthropic/credentials",
     ".codex/secrets",
     ".gemini",
+    ".gemini/cli-browser-profile",
     ".qwen",
     ".config/github-copilot",
     ".local/share/amp",
@@ -135,8 +137,8 @@ const NEXT_TO_LOGINS: [&str; 13] = [
 
 /// Where AI agents keep their records of your sessions, in the home folder, each with what a command reads there
 /// while it is hidden: nothing from a hidden file, and `-` in a hidden folder, which looks empty. Codex's databases
-/// have made-up version numbers, since the list takes any.
-const AGENT_RECORDS: [(&str, &str); 28] = [
+/// have made-up version numbers, since the list takes any. Aider's are in the home folder, as when it runs there.
+const AGENT_RECORDS: [(&str, &str); 41] = [
     (".claude/projects/-home-you-work-shop/0c1d.jsonl", "-"),
     (".claude/projects/-home-you-work-shop/memory/MEMORY.md", "-"),
     (".claude/history.jsonl", ""),
@@ -165,16 +167,32 @@ const AGENT_RECORDS: [(&str, &str); 28] = [
     (".codex/state_7.sqlite-wal", ""),
     (".codex/thread_history_3.sqlite", ""),
     (".local/state/opencode/prompt-history.jsonl", "-"),
+    (".gemini/tmp/shop/chats/session-0c1d.jsonl", "-"),
+    (".gemini/tmp/shop/logs.json", "-"),
+    (".gemini/history/shop/.git/HEAD", "-"),
+    (".copilot/session-state/0c1d/events.jsonl", "-"),
+    (".copilot/session-store.db", ""),
+    (".copilot/session-store.db-wal", ""),
+    (".copilot/command-history-state/history.json", "-"),
+    (".copilot/command-history-state.json", ""),
+    (".copilot/logs/process-1-2.log", "-"),
+    (".copilot/history-session-state/session_0c1d_1.json", "-"),
+    (".aider.chat.history.md", ""),
+    (".aider.input.history", ""),
+    (".aider.llm.history", ""),
 ];
 
 /// Files next to them that hold none: the settings, instructions and skills a broad grant is for.
-const NEXT_TO_RECORDS: [&str; 6] = [
+const NEXT_TO_RECORDS: [&str; 9] = [
     ".claude/settings.json",
     ".claude/CLAUDE.md",
     ".claude/skills/review/SKILL.md",
     ".codex/config.toml",
     ".codex/AGENTS.md",
     ".local/state/notes",
+    ".copilot/settings.json",
+    ".copilot/copilot-instructions.md",
+    ".aider.model.settings.yml",
 ];
 
 /// Writes `text` in each of `files` in the home folder `home`.
@@ -341,6 +359,20 @@ fn agents_logins_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_the
         reads(&e, "demo", Some("whole"), &in_folders),
         vec!["login"; in_folders.len()]
     );
+    // ...while one that names Gemini CLI's folder alone opens its login but not its browser agent's profile...
+    key("gemini", &[".gemini"]);
+    assert_eq!(
+        reads(
+            &e,
+            "demo",
+            Some("gemini"),
+            &[
+                ".gemini/oauth_creds.json",
+                ".gemini/cli-browser-profile/Default/Cookies"
+            ]
+        ),
+        ["login", "-"]
+    );
     // ...and one that names a login inside a folder it opens shows that login, while the rest of OpenCode's folder
     // stays hidden.
     key(
@@ -374,6 +406,8 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
     new_world(&e);
     let home = &e.user_home;
     made_up_records(home);
+    // Gemini CLI's settings, in its folder that stays hidden whole with its logins.
+    put(home, &[".gemini/settings.json"], "other");
     let h = home.to_str().unwrap();
     let key = |name: &str, opens: &[&str]| key_opening(&e, name, opens);
     let records = AGENT_RECORDS.map(|(f, _)| f);
@@ -382,15 +416,24 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
     let hidden: Vec<&str> = AGENT_RECORDS
         .iter()
         .map(|(_, seen)| *seen)
-        .chain(["other"; 6])
+        .chain(NEXT_TO_RECORDS.map(|_| "other"))
         .collect();
 
-    // A key that opens the folders they are in, or the whole home folder, hides them...
-    key("folders", &[".claude", ".codex", ".local/state"]);
-    assert_eq!(reads(&e, "demo", Some("folders"), &every), hidden);
+    // A key that opens the whole home folder hides them...
     e.ok(&["key", "new", "all", "--read", h]);
     assert_eq!(reads(&e, "demo", Some("all"), &every), hidden);
-    // ...and so does a world of the home folder, where writes to them vanish and leave nothing in the world.
+    // ...as does one that opens the folders they are in, short of the home folder, for those in them, Gemini CLI's
+    // too, which this key opens by name...
+    let folders = [".claude", ".codex", ".local/state", ".gemini", ".copilot"];
+    key("folders", &folders);
+    let (inside, seen): (Vec<&str>, Vec<&str>) = every
+        .iter()
+        .zip(&hidden)
+        .filter(|(f, _)| folders.iter().any(|d| Path::new(f).starts_with(d)))
+        .map(|(f, r)| (*f, *r))
+        .unzip();
+    assert_eq!(reads(&e, "demo", Some("folders"), &inside), seen);
+    // ...and a world of the home folder, where writes to them vanish and leave nothing in the world.
     e.ok(&["new", "home", "--from", h]);
     assert_eq!(reads(&e, "home", None, &every), hidden);
     let writes = records
@@ -410,6 +453,10 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
             ".codex/history.jsonl",
             ".codex/state_7.sqlite",
             ".local/state/opencode",
+            ".gemini/tmp/shop",
+            ".copilot/session-state",
+            ".copilot/session-store.db",
+            ".aider.chat.history.md",
         ],
     );
     let files = [
@@ -418,10 +465,19 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
         ".codex/state_7.sqlite",
         ".codex/state_7.sqlite-wal",
         ".local/state/opencode/prompt-history.jsonl",
+        ".gemini/tmp/shop/logs.json",
+        ".gemini/history/shop/.git/HEAD",
+        ".copilot/session-state/0c1d/events.jsonl",
+        ".copilot/session-store.db",
+        ".copilot/session-store.db-wal",
+        ".aider.chat.history.md",
     ];
     assert_eq!(
         reads(&e, "demo", Some("named"), &files),
-        ["record", "record", "record", "-", "record"]
+        [
+            "record", "record", "record", "-", "record", "record", "-", "record", "record", "-",
+            "record"
+        ]
     );
     // ...also inside a folder the key opens, where the other records stay hidden.
     key(
@@ -431,6 +487,8 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
             ".claude/projects/-home-you-work-shop/memory",
             ".codex",
             ".codex/state_7.sqlite",
+            ".gemini",
+            ".gemini/tmp/shop",
         ],
     );
     let files = [
@@ -439,10 +497,13 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
         ".claude/projects/-home-you-work-shop/0c1d.jsonl",
         ".codex/state_7.sqlite",
         ".codex/state_7.sqlite-wal",
+        ".gemini/settings.json",
+        ".gemini/tmp/shop/chats/session-0c1d.jsonl",
+        ".gemini/history/shop/.git/HEAD",
     ];
     assert_eq!(
         reads(&e, "demo", Some("within"), &files),
-        ["other", "record", "-", "record", ""]
+        ["other", "record", "-", "record", "", "other", "record", "-"]
     );
 }
 
