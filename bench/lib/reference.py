@@ -52,6 +52,24 @@ def rss_why(r, key):
             'also maps the cached neighbours of the page it needs, so the reading moves with the page cache '
             f"({r.meta.get('mem_available_gib', '?')} GiB RAM available at the start)")
 
+
+# The arbor rows' reference: the last of five `ONLY=arbor` runs in a row from an ordinary context (a systemd --user
+# unit), the one closest to their medians, with arbor's state on tmpfs and `arbor serve` started by the section.
+ARBOR_REF = {'ref_date': '17 Oct 2026', 'ref_load': 1.18}
+
+
+def cycles(r, key):
+    runs = r.ctx(key, 'runs_ms')
+    return f'its {len(runs)} cycles took {min(runs):.1f}–{max(runs):.1f} ms' if runs else ''
+
+
+def placement(r, *parts):
+    """A row timed on one arbor process at a time moves with the kind of core the scheduler puts it on."""
+    if 'E cores' in str(r.meta.get('cores', '')):
+        parts += ('this CPU mixes P- and E-cores, and one arbor process runs slower on an E-core',)
+    return '; '.join(p for p in parts if p)
+
+
 ENTRIES = [
     # 1. Runtimes
     E('rt.start.c_static', 'Runtime', 'start: static C', 0.21, 'ms', 'perf'),
@@ -281,4 +299,31 @@ ENTRIES = [
     E('fmt.ip_br', 'Tokens', '`ip -br addr`', 124, 'tok', 'state'),
     E('fmt.df', 'Tokens', '`df -h`', 274, 'tok', 'state'),
     E('fmt.df_real', 'Tokens', '`df -h` real filesystems only', 73, 'tok', 'state'),
+
+    # 8. The arbor prototype, built from this checkout (sections/arbor.py). It came after M, so its rows have no M
+    # value; their reference is the suite's own (ARBOR_REF).
+    E('arbor.binary_mib', 'Prototype', 'the arbor binary, release build', 1.23, 'MiB', 'config', 'suite', dp=2,
+      why=lambda r: "the prototype's code, its dependencies or its toolchain changed since the reference", **ARBOR_REF),
+    E('arbor.new_ms', 'Prototype', 'make a world: `arbor new`', 2.01, 'ms', 'perf', 'suite', **ARBOR_REF,
+      why=placement),
+    E('arbor.run_ms', 'Prototype', 'start a sealed command: `arbor run W -- true`, no cgroup', 4.79, 'ms', 'perf',
+      'suite', **ARBOR_REF),
+    E('arbor.run_cgroup_ms', 'Prototype', 'start a sealed command in a cgroup of its own', 5.13, 'ms', 'perf', 'suite',
+      **ARBOR_REF),
+    E('arbor.ask_ms', 'Prototype', "ask for an effect from inside: its share of the command's time", 0.61, 'ms',
+      'perf', 'suite', dp=2, blocks_label='block differences', **ARBOR_REF,
+      why=lambda r: f"the difference of two close medians: {r.ctx('arbor.ask_ms', 'with_ask_ms'):.2f} ms with the "
+                    f"ask, {r.ctx('arbor.ask_ms', 'run_ms'):.2f} ms without; each ask reads every effect in the "
+                    "outbox (0 to 128 here), so later blocks read more"),
+    E('arbor.release_ms', 'Prototype', 'release an effect (`true`), with its receipt', 1.47, 'ms', 'perf', 'suite',
+      **ARBOR_REF),
+    E('arbor.keep_ms', 'Prototype', 'keep a world that added 1,000 files', 6.22, 'ms', 'perf', 'suite', **ARBOR_REF,
+      why=lambda r: placement(r, cycles(r, 'arbor.keep_ms'))),
+    E('arbor.undo_ms', 'Prototype', 'undo that keep', 4.09, 'ms', 'perf', 'suite', **ARBOR_REF,
+      why=lambda r: placement(r, cycles(r, 'arbor.undo_ms'))),
+    E('arbor.serve_rss_mib', 'Prototype', 'idle RSS: `arbor serve`', 2.66, 'MiB', 'rss', 'suite', dp=2, **ARBOR_REF,
+      why=lambda r: rss_why(r, 'arbor.serve_rss_mib')),
+    E('arbor.serve_pss_mib', 'Prototype', 'idle PSS: `arbor serve`', 0.87, 'MiB', 'pss', 'suite', dp=2, **ARBOR_REF),
+    E('arbor.diff100_tokens', 'Tokens', '`arbor diff`, 100 files changed', 700, 'tok', 'input', 'suite', **ARBOR_REF,
+      why=lambda r: '`arbor diff` lists the same 100 changes differently than at the reference'),
 ]

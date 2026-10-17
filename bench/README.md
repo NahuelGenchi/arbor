@@ -1,7 +1,8 @@
 # Arbor baseline suite
 
-Re-measures, on today's Ubuntu install, the numbers marked **M** in [../OPTIMIZATION.md](../OPTIMIZATION.md), so the
-Arbor prototype can later be measured the same way on the same PC and compared row by row.
+Re-measures, on today's Ubuntu install, the numbers marked **M** in [../OPTIMIZATION.md](../OPTIMIZATION.md), and
+measures the Arbor prototype in [../prototype](../prototype) the same way on the same PC, so the two can be compared row
+by row.
 
 ```bash
 ./run.sh
@@ -18,7 +19,7 @@ One run takes about 2½ minutes on the M machine (i7-14700KF, 15 GiB RAM) and wr
 git ignores `results/`: a report names the machine, its hardware and the programs running on it, so runs stay local.
 
 Run a subset with `ONLY="boot search" ./run.sh`, or leave sections out with `SKIP="storage" ./run.sh`. Sections:
-`memstate boot runtimes cells pycell search heap transcripts formats storage`.
+`memstate boot runtimes cells pycell search heap transcripts formats storage arbor`.
 
 `./check.sh` only checks that every script parses (`bash -n`, `py_compile`, `node --check`, `gcc -fsyntax-only`); it
 measures nothing and reads no personal data. The Checks workflow runs it on every PR.
@@ -43,6 +44,7 @@ sits.
 | `GIT_LOG_REPO`, `GIT_LOG_REF` | the repo under `$PROJECTS_DIR` holding the M commit, that commit | `git log` tokens |
 | `DOCKER_IMAGE` | `ubuntu:24.04` (must already be present; never pulled) | docker cell |
 | `INITRD` | `/boot/initrd.img` | initramfs breakdown |
+| `ARBOR_BIN` | empty: a release build of `../prototype` in the temp dir | the prototype |
 | `BENCH_TMP`, `RESULTS_DIR` | `$TMPDIR` or `/tmp`, `bench/results` | temp files, reports |
 
 Inputs that keep growing are pinned by content where M used a fixed one: `git log` starts at the commit M saw, and the
@@ -55,14 +57,24 @@ heap test loads the transcript of M's exact byte size.
 - **Temp files** live in one `mktemp -d` directory under `$BENCH_TMP` (tmpfs, as in the M run) and are removed on
   exit, also on Ctrl-C or a section timeout. Docker runs with `--rm --pull never --network none`. Python runs with
   `-I -B`, so no `__pycache__` appears in `bench/`. The bwrap fork keeps its writes in a tmpfs inside its sandbox.
-  The only files left behind are the reports in `results/`.
+  The `arbor` section builds the prototype there, with a `CARGO_HOME` of its own so that cargo's lock and records of
+  use stay out of `~/.cargo`, and gives arbor its state folder there (`ARBOR_HOME`), so it sees none of the person's
+  worlds, keys, outbox or ledger. The only files left behind are the reports in `results/`.
 - **Reads, never writes:** `$HOME` (names only), the projects folder (text files for the code index, all files for
   hashing; files of 256 KiB and up are read with `O_DIRECT` so the scan does not flush the page cache), the
-  transcripts (only aggregates leave the process), `/boot/initrd.img`, `/proc` and `/sys`.
+  transcripts (only aggregates leave the process), `/boot/initrd.img`, `/proc` and `/sys`. To build the prototype,
+  cargo also reads the crates it has already downloaded and its config in `~/.cargo`, through links.
+- **The prototype's service.** A cell in a cgroup of its own needs `arbor serve`, a transient systemd user service
+  (`arbor.service` in `arbor.slice`). If it is not running, the section starts it and stops it again once its rows
+  are read, also when the run is interrupted or times out, unless a cell that is not the section's runs in it by then.
+  It never stops a service it did not start: if the service already runs another arbor binary, the two memory rows
+  fail and their note says how to stop it.
 - **Tools:** Python 3.14+ (`compression.zstd`), node, gcc with static glibc (`libc6-dev`), rustc (optional,
   `~/.cargo/bin` is searched), rg, bwrap (0.11 or later for the overlay), unshare, docker (the user in the `docker`
-  group, the image present), zstd, systemd-analyze, git, liblzo2 and liblz4 (for the heap compressors). A missing
-  tool fails only its rows, with the reason in the note.
+  group, the image present), zstd, systemd-analyze, git, liblzo2 and liblz4 (for the heap compressors). The `arbor`
+  section needs cargo with the toolchain that `../prototype/rust-toolchain.toml` pins and the prototype's crates
+  already downloaded, since it builds offline and installs nothing (or `ARBOR_BIN`), and a systemd user manager for
+  the cgroup and service rows. A missing tool fails only its rows, with the reason in the note.
 - **User namespaces.** `cell.unshare_user`, `cell.unshare_4ns`, `storage.fork_ms` and `storage.fork_syscall_ms` run
   `unshare` from the suite's own process. `cell.bwrap`, `storage.fork_bwrap_ms` and `storage.fork_bwrap_overlay_ms`
   go through bwrap. Ubuntu 24.04 and later set `kernel.apparmor_restrict_unprivileged_userns = 1`: a process whose
@@ -91,6 +103,7 @@ heap test loads the transcript of M's exact byte size.
 | `transcripts` | cost shares (input 1, cache write 1.25, cache read 0.1, output 5), opening context, context per call, step cost, read-only follow-up steps, tool-result tokens, errors, repeat reads, image tokens | one pass over every transcript, reproducing the four counting rules behind the M values (see the header of `sections/transcripts.js`); o200k tokens |
 | `formats` | o200k tokens of one 100-file listing printed eight ways; `git log` with and without projection; `ps`, `ip`, `df` full vs only the asked fields | tokenizer in `lib/o200k.js`: the tiktoken regex and byte-pair merges over `o200k_base.tiktoken` |
 | `storage` | duplicate bytes in the projects folder, counted once per inode and split by path class; time to fork the largest project with an overlay CoW mount, inside `unshare -Urm` and through bwrap; `git worktree add` as the baseline | `find -printf` for inodes and sizes, BLAKE2b over size-collision groups on all cores; mount timed as in M (`mount(8)` bracketed by `date`) and as the bare `mount(2)` syscall; through bwrap: `true` started in a sandbox with the overlay over the tree's own path (`--overlay-src` and `--tmp-overlay`), against the same sandbox without it, with the start-time method in 5 interleaved blocks; a write into either fork is checked not to reach the lower tree |
+| `arbor` | the prototype, in a state folder of its own: making a world, starting a sealed command without and with a cgroup, asking for an effect from inside a world and releasing one, keeping and undoing a world that added 1,000 files, the idle memory of `arbor serve`, the size of the release binary, and the o200k tokens of `arbor diff` for 100 changed files | the start-time method in 3 interleaved blocks for the cell rows; asking is the difference between `arbor run W -- arbor effect -- true` and `arbor run W -- true`; `arbor new` median of 20, release median of 40, keep and undo median of 11 cycles; memory from `/proc/<pid>/smaps_rollup` of the service; each keep and undo is checked to move all 1,000 files, and `arbor diff` to list all 100 |
 
 ## Reading the report
 
@@ -104,9 +117,9 @@ Each row shows the M value, the value now, the difference and a status:
 **†** marks an M value that comes from the M run's raw output rather than from the text of OPTIMIZATION.md (rows
 next to the quoted ones, kept so they have a baseline too).
 
-**‡** marks a reference that is not an M value: the row was added after the M investigation (the bwrap fork), and its
-reference comes from the suite's own run on the date in the report header (see `lib/reference.py`). It is compared
-the same way.
+**‡** marks a reference that is not an M value: the row was added after the M investigation (the bwrap fork, the
+prototype), and its reference comes from the suite's own run on the date in the report header (see `lib/reference.py`).
+It is compared the same way.
 
 The note on a ⚠️ row depends on what kind of number it is:
 
@@ -123,7 +136,9 @@ The note on a ⚠️ row depends on what kind of number it is:
 For a fair before/after comparison: same PC, same CPU energy preference (the header records it), a quiet machine
 (load average near 0; the header records it with the busiest processes), and a fresh boot if the boot rows matter.
 This CPU mixes P- and E-cores, so under load a short single-thread timing may run on an E-core; runs at a load
-average near 10 read 20–40% slower than M. Join two `.json` files on `key` to diff runs.
+average near 10 read 20–40% slower than M. Nothing is pinned to a core, so the prototype's rows timed on one arbor
+process at a time (`arbor new`, keep, undo) move with where the scheduler puts it even on a quiet machine, and can
+fall outside ±15% of their reference either way; their note says so. Join two `.json` files on `key` to diff runs.
 
 Two M values needed a closer look:
 
