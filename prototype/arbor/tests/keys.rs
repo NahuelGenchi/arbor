@@ -507,6 +507,198 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
     );
 }
 
+/// Where AI agents keep their records of your sessions in a project's folder, as Aider and Crush do, each with what a
+/// command reads there while it is hidden: nothing from a hidden file, and `-` in Crush's folder, which looks empty
+/// with the settings and commands in it.
+const PROJECT_RECORDS: [(&str, &str); 6] = [
+    (".aider.chat.history.md", ""),
+    (".aider.input.history", ""),
+    (".aider.llm.history", ""),
+    (".crush/crush.db", "-"),
+    (".crush/logs/crush.log", "-"),
+    (".crush/commands/review.md", "-"),
+];
+
+/// Writes a made-up record, `record`, where each agent keeps one in the folder `dir`, and `other` in a file next to
+/// them, and returns their paths, the records first.
+fn made_up_project(dir: &Path) -> Vec<PathBuf> {
+    let files: Vec<PathBuf> = PROJECT_RECORDS
+        .iter()
+        .map(|(f, _)| dir.join(f))
+        .chain([dir.join("notes.md")])
+        .collect();
+    for (i, f) in files.iter().enumerate() {
+        fs::create_dir_all(f.parent().unwrap()).unwrap();
+        fs::write(
+            f,
+            if i < PROJECT_RECORDS.len() {
+                "record"
+            } else {
+                "other"
+            },
+        )
+        .unwrap();
+    }
+    files
+}
+
+/// What `made_up_project` wrote reads as while the records are hidden.
+fn hidden_in_project() -> Vec<String> {
+    PROJECT_RECORDS
+        .iter()
+        .map(|(_, seen)| seen.to_string())
+        .chain(["other".to_string()])
+        .collect()
+}
+
+/// What `made_up_project` wrote reads as while it shows.
+fn shown_in_project() -> Vec<String> {
+    let mut seen = vec!["record".to_string(); PROJECT_RECORDS.len()];
+    seen.push("other".into());
+    seen
+}
+
+/// What a command in `world`, under `key` if given, started from `dir`, reads in each of `files`, as `reads` does.
+fn reads_at(e: &Env, world: &str, key: Option<&str>, dir: &Path, files: &[PathBuf]) -> Vec<String> {
+    let script = files
+        .iter()
+        .map(|f| format!("cat '{}' 2>/dev/null || printf -; echo", f.display()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut args = vec!["run", world];
+    if let Some(k) = key {
+        args.extend(["--key", k]);
+    }
+    args.extend(["--", "sh", "-c", &script]);
+    let out = e.command(&args).current_dir(dir).output().unwrap();
+    assert!(
+        out.status.success(),
+        "arbor {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn agents_records_in_a_project_stay_hidden_in_its_world_and_what_a_command_writes_is_its_own() {
+    let Some(e) = Env::new("projectrecords") else {
+        return;
+    };
+    let base = &e.base;
+    // At the top of the project, in a folder right inside it, and in one two levels down.
+    let top = made_up_project(base);
+    let app = made_up_project(&base.join("app"));
+    let api = made_up_project(&base.join("docs/api"));
+    fs::create_dir_all(base.join("docs/api/v1")).unwrap();
+    new_world(&e);
+    let all: Vec<PathBuf> = [&top, &app, &api].into_iter().flatten().cloned().collect();
+    let (hidden, shown) = (hidden_in_project(), shown_in_project());
+
+    // From the top, those at the top and one level down are hidden, but not deeper ones...
+    assert_eq!(
+        reads_at(&e, "demo", None, base, &all),
+        [hidden.clone(), hidden.clone(), shown.clone()].concat()
+    );
+    // ...unless the command starts below them.
+    assert_eq!(
+        reads_at(&e, "demo", None, &base.join("docs/api/v1"), &all),
+        [hidden.clone(), hidden.clone(), hidden.clone()].concat()
+    );
+
+    // Writes to them vanish and leave nothing in the world, and the real files stay as they were.
+    let records = |files: &[PathBuf]| files[..PROJECT_RECORDS.len()].to_vec();
+    let writes = [records(&top), records(&app)]
+        .concat()
+        .iter()
+        .map(|f| {
+            format!(
+                "mkdir -p '{0}' && echo x >> '{1}'",
+                f.parent().unwrap().display(),
+                f.display()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" && ");
+    e.ok(&["run", "demo", "--", "sh", "-c", &writes]);
+    assert_eq!(e.ok(&["diff", "demo"]), "no changes\n");
+    for f in [records(&top), records(&app)].concat() {
+        assert_eq!(fs::read_to_string(&f).unwrap(), "record", "{}", f.display());
+    }
+
+    // A record a command writes where the project had none is the world's own: it shows among the world's changes,
+    // and to the world's next command.
+    inside(&e, None, "echo mine > docs/.aider.chat.history.md");
+    assert_eq!(e.ok(&["diff", "demo"]), "A docs/.aider.chat.history.md\n");
+    assert_eq!(
+        inside(&e, None, "cat docs/.aider.chat.history.md"),
+        "mine\n"
+    );
+
+    // A key that names one in the world opens it.
+    let named = base.join(".aider.input.history");
+    e.ok(&["key", "new", "named", "--read", named.to_str().unwrap()]);
+    assert_eq!(
+        reads_at(&e, "demo", Some("named"), base, &[named, top[0].clone()]),
+        ["record", ""]
+    );
+}
+
+#[test]
+fn agents_records_in_projects_a_key_opens_stay_hidden_unless_it_names_them() {
+    let Some(e) = Env::new("keyprojects") else {
+        return;
+    };
+    new_world(&e);
+    // A folder of projects: records at its top, in a project in it, and in a folder inside that project.
+    let work = e.user_home.join("work");
+    let top = made_up_project(&work);
+    let shop = made_up_project(&work.join("shop"));
+    let deep = made_up_project(&work.join("shop/deep"));
+    let all: Vec<PathBuf> = [&top, &shop, &deep]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+    let (hidden, shown) = (hidden_in_project(), shown_in_project());
+    let w = work.to_str().unwrap();
+
+    // A key that opens it hides those at its top and in each project in it.
+    e.ok(&["key", "new", "work", "--read", w]);
+    assert_eq!(
+        reads_at(&e, "demo", Some("work"), &e.base, &all),
+        [hidden.clone(), hidden.clone(), shown.clone()].concat()
+    );
+    // A key that opens one project hides those at its top and one level down.
+    let s = format!("{w}/shop");
+    e.ok(&["key", "new", "shop", "--read", &s]);
+    assert_eq!(
+        reads_at(
+            &e,
+            "demo",
+            Some("shop"),
+            &e.base,
+            &[shop.clone(), deep.clone()].concat()
+        ),
+        [hidden.clone(), hidden.clone()].concat()
+    );
+    // A key that names a record, or Crush's folder, opens it, also inside a folder it opens.
+    let (input, crush) = (
+        format!("{w}/shop/.aider.input.history"),
+        format!("{w}/shop/.crush"),
+    );
+    e.ok(&[
+        "key", "new", "named", "--read", w, "--read", &input, "--read", &crush,
+    ]);
+    assert_eq!(
+        reads_at(&e, "demo", Some("named"), &e.base, &shop),
+        ["", "record", "", "record", "record", "record", "other"]
+    );
+}
+
 /// A folder of the computer that a cell sees as the computer's own: outside the home folder and the other folders a
 /// cell hides, and outside /tmp, which a cell gets fresh. Removed when dropped.
 struct Outside(PathBuf);
