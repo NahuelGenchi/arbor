@@ -24,13 +24,15 @@ use crate::{paths, sys, world};
 pub const DEFAULT_LIFE: Duration = Duration::from_secs(8 * 3600);
 
 /// The language toolchains `--toolchains` opens where they exist, relative to the home folder.
-pub const TOOLCHAINS: [&str; 18] = [
+pub const TOOLCHAINS: [&str; 19] = [
     // Rust
     ".cargo",
     ".rustup",
     // JavaScript
     ".nvm",
     ".npm",
+    // npm's own folder for tools installed with `npm install -g` without root
+    ".npm-global",
     ".bun",
     ".deno",
     ".volta",

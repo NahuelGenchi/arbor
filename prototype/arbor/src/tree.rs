@@ -20,7 +20,7 @@ use crate::error::{self, Context, Error, Result};
 use crate::world::{self, State, World};
 use crate::{paths, sys};
 
-const OPAQUE: &str = "user.overlay.opaque";
+pub const OPAQUE: &str = "user.overlay.opaque";
 /// overlayfs features Arbor does not apply. They need privileged mounts, so a world should never hold them.
 const UNSUPPORTED: [&str; 2] = ["user.overlay.redirect", "user.overlay.metacopy"];
 

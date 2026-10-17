@@ -6,6 +6,8 @@ use std::{fmt, io};
 pub const USAGE: i32 = 2;
 /// Exit code for a request Arbor refuses on purpose: a busy world, conflicts, a world already kept.
 pub const REFUSED: i32 = 3;
+/// Exit code for a command a world cannot find, as shells give for a command they cannot find.
+pub const NOT_FOUND: i32 = 127;
 /// Exit code for a keep or undo stopped by Ctrl-C, a closed terminal or `kill`, as shells report SIGINT.
 pub const STOPPED: i32 = 130;
 
@@ -36,6 +38,13 @@ impl Error {
         Error {
             msg: msg.into(),
             code: REFUSED,
+        }
+    }
+
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        Error {
+            msg: msg.into(),
+            code: NOT_FOUND,
         }
     }
 }
