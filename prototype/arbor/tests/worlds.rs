@@ -4,8 +4,10 @@ mod common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use arbor::seccomp;
 use common::Env;
 
 #[test]
@@ -110,6 +112,100 @@ fn a_cell_is_sealed() {
         !e.user_home.join("leak").exists(),
         "a write to the home folder escaped the cell"
     );
+}
+
+/// Makes each kernel call given on its command line, as `number,argument,...` where `c` points to one character,
+/// and prints the error it returned, or 0.
+const CALLS: &str = r#"import ctypes, sys
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+c = ctypes.create_string_buffer(b"x")
+for call in sys.argv[1:]:
+    ctypes.set_errno(0)
+    ok = libc.syscall(*[c if a == "c" else ctypes.c_long(int(a)) for a in call.split(",")]) != -1
+    print(0 if ok else ctypes.get_errno())
+"#;
+
+/// Makes `getpid` as a 32-bit program would on x86_64 (`int 0x80`), from this 64-bit one, and prints the result.
+#[cfg(target_arch = "x86_64")]
+const X86_CALL: &str = r#"import ctypes, mmap
+m = mmap.mmap(-1, 4096, prot=mmap.PROT_READ | mmap.PROT_WRITE | mmap.PROT_EXEC)
+m.write(bytes([0xB8, 20, 0, 0, 0, 0xCD, 0x80, 0xC3]))
+print(ctypes.CFUNCTYPE(ctypes.c_int)(ctypes.addressof(ctypes.c_char.from_buffer(m)))())
+"#;
+
+#[test]
+fn a_cell_refuses_kernel_calls() {
+    let Some(e) = Env::new("filter") else { return };
+    let python = "/usr/bin/python3";
+    if !Path::new(python).exists() {
+        return common::skip(&format!("this test needs {python}"));
+    }
+    e.ok(&["new", "demo", "--from", e.base.to_str().unwrap()]);
+    // Each call and the error it must get inside a cell. Outside one, the kernel itself answers each refused call
+    // here differently, so these errors come from the filter.
+    let mut calls = vec![
+        (format!("{}", libc::SYS_getpid), 0),
+        (format!("{},0,-3,0", libc::SYS_keyctl), libc::EPERM),
+        (format!("{},0", libc::SYS_unshare), libc::EPERM),
+        (format!("{},-1,0", libc::SYS_setns), libc::EPERM),
+        (
+            format!("{},0,0,0,0,0", libc::SYS_get_mempolicy),
+            libc::EPERM,
+        ),
+        (
+            format!("{},0,0,-1,-1,0", libc::SYS_perf_event_open),
+            libc::EPERM,
+        ),
+        (format!("{},0,0", libc::SYS_io_uring_setup), libc::ENOSYS),
+        (format!("{},c,0", libc::SYS_fsopen), libc::ENOSYS),
+        // Typing into the terminal and pasting into a console are refused before the kernel looks at the
+        // descriptor. Another request reaches it, and finds that /dev/null is no terminal.
+        (
+            format!("{},0,{},c", libc::SYS_ioctl, libc::TIOCSTI),
+            libc::EPERM,
+        ),
+        (
+            format!("{},0,{},c", libc::SYS_ioctl, libc::TIOCLINUX),
+            libc::EPERM,
+        ),
+        (
+            format!("{},0,{},c", libc::SYS_ioctl, libc::TIOCGWINSZ),
+            libc::ENOTTY,
+        ),
+    ];
+    // Then every call the filter refuses, with arguments of 0.
+    for (list, errno) in [
+        (seccomp::REFUSED, libc::EPERM),
+        (seccomp::ABSENT, libc::ENOSYS),
+    ] {
+        calls.extend(list.iter().map(|nr| (format!("{nr},0,0,0,0,0,0"), errno)));
+    }
+    let mut args = vec!["run", "demo", "--", python, "-c", CALLS];
+    args.extend(calls.iter().map(|(call, _)| call.as_str()));
+    let out = e.ok(&args);
+    let got: Vec<(&str, i32)> = calls
+        .iter()
+        .zip(out.lines())
+        .map(|((call, _), errno)| (call.as_str(), errno.parse().unwrap()))
+        .collect();
+    let want: Vec<(&str, i32)> = calls.iter().map(|(c, e)| (c.as_str(), *e)).collect();
+    assert_eq!(got, want);
+    // A program that makes a 32-bit call is stopped, where this computer takes such calls at all.
+    #[cfg(target_arch = "x86_64")]
+    if std::process::Command::new(python)
+        .args(["-c", X86_CALL])
+        .output()
+        .unwrap()
+        .status
+        .success()
+    {
+        let stopped = e.arbor(&["run", "demo", "--", python, "-c", X86_CALL]);
+        assert_eq!(stopped.status.code(), Some(128 + libc::SIGSYS));
+        assert!(stopped.stdout.is_empty());
+    } else {
+        common::skip("this computer does not take 32-bit calls");
+    }
 }
 
 #[test]

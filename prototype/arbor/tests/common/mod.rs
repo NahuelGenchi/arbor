@@ -1,10 +1,20 @@
 //! What the end-to-end tests share: a throwaway project, home folder and Arbor state, and the `arbor` binary run
 //! against them. Where `bwrap` cannot mount an overlay (no bubblewrap, or user namespaces blocked), each test prints
 //! why and passes without checking anything, unless `ARBOR_REQUIRE_BWRAP` is set, as in CI, where that is a
-//! failure. Memory, CPU and process limits need a cgroup from the systemd user manager: where there is none, the
-//! tests that need one print why and pass without checking it, unless `ARBOR_REQUIRE_CGROUPS` is set.
+//! failure. The same goes for a check that needs something else this computer may lack (`skip`). Memory, CPU and
+//! process limits need a cgroup from the systemd user manager: where there is none, the tests that need one print
+//! why and pass without checking it, unless `ARBOR_REQUIRE_CGROUPS` is set.
 
 #![allow(dead_code)] // each test file uses some of it
+
+/// Says why a test leaves out a check this computer cannot make, or fails where `ARBOR_REQUIRE_BWRAP` is set, as in
+/// CI, so that there every check runs.
+pub fn skip(why: &str) {
+    if std::env::var_os("ARBOR_REQUIRE_BWRAP").is_some() {
+        panic!("{why}, and ARBOR_REQUIRE_BWRAP is set");
+    }
+    eprintln!("skipped: {why}");
+}
 
 use std::fs;
 use std::path::{Path, PathBuf};
