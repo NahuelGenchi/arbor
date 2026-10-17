@@ -19,8 +19,10 @@ When it ends, or after AB_TIMEOUT seconds (900 when unset, counted a failure), t
 own records, its database in the key's home, read-only and from the session tables only, never the one with logins:
 each model call (a step) with its input, cache-read, cache-write, output and reasoning tokens, the tools it called,
 and its last answer. The task's check then decides success, from that answer or from the files left in the world.
-A session that OpenCode ends with an error of the provider's, such as a refused call, runs again, at most twice; the
-attempts stay in the records. Then the key is taken back, which deletes its home, and the world is thrown away.
+A session that OpenCode ends with an error of the provider's, such as the free model's rate limit, runs again, at most
+twice; the attempts stay in the records. `--resume` runs again, later, a session whose every attempt the provider
+ended, as well as those a stopped run did not reach. Then the key is taken back, which deletes its home, and the
+world is thrown away.
 
 The run stops if a step names another model or records a cost other than 0, or if MODEL is not one of the free ones
 (its name ends in `-free`). arbor runs with ARBOR_HOME in the temp folder, so none of the person's worlds, keys or
@@ -264,19 +266,13 @@ def stop(arbor):
             arbor('stop', cols[0], check=False)
 
 
-def provider_error(rec):
-    """A session OpenCode ended because of the provider, not the agent: an error and no answer."""
-    return not rec.get('timed_out') and (rec.get('outcome') not in (None, 'succeeded') or
-                                         (rec.get('errors') and not rec.get('answer')))
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--reps', type=int, default=5)
     ap.add_argument('--tasks', default=','.join(T.TASKS))
     ap.add_argument('--arms', default='A,B')
     ap.add_argument('--resume', metavar='JSONL', help="an earlier run's records: its sessions are kept, and the run "
-                    'goes on with its settings from the first session it did not finish')
+                    'goes on with its settings, running the sessions it did not finish, or that the provider ended')
     a = ap.parse_args()
     names, arms, done, n = a.tasks.split(','), a.arms.split(','), set(), 0
     if a.resume:
@@ -286,7 +282,7 @@ def main():
         if (meta['commit'], meta['model']) != (T.COMMIT, MODEL):
             sys.exit(f'ab.py: {a.resume} ran on another commit or model')
         names, arms, a.reps = meta['tasks'], meta['arms'], meta['reps']
-        done = {(r['rep'], r['task'], r['arm']) for r in old if r.get('final')}
+        done = {(r['rep'], r['task'], r['arm']) for r in old if r.get('final') and not summary.provider_error(r)}
         n = max((r.get('n', 0) for r in old), default=0)
     if not MODEL.endswith('-free'):
         sys.exit(f'ab.py: {MODEL} is not one of the free models; this A/B spends nothing')
@@ -325,7 +321,7 @@ def main():
                             with open(out, 'a') as f:
                                 f.write(json.dumps(rec) + '\n')
                             sys.exit(f'ab.py: session {n} used {bad or MODEL} at a cost of {rec.get("cost")}; stopped')
-                        again = provider_error(rec) and attempt < RETRIES
+                        again = summary.provider_error(rec) and attempt < RETRIES
                         rec['final'] = not again
                         with open(out, 'a') as f:
                             f.write(json.dumps(rec) + '\n')

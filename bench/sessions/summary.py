@@ -3,10 +3,11 @@ what arm B changed against arm A, with its uncertainty.
 
 usage: python3 bench/sessions/summary.py RESULTS.jsonl   (prints Markdown)
 
-Only each slot's final attempt counts (ab.py runs a session again after an error of the provider's). Every session
-counts, failed or not, since a failed session was paid for too. The weighted cost is the suite's
-(bench/sections/transcripts.js): input 1, cache write 1.25, cache read 0.1, output 5, where output is what OpenCode
-records as output plus reasoning, which it keeps apart and the provider bills as output.
+Only each slot's last final attempt counts (ab.py runs a session again after an error of the provider's, and
+`--resume` runs a slot again whose every attempt the provider ended). Every session the agent finished counts, failed
+or not, since a failed session was paid for too; one that the provider ended is left out, and named. The weighted
+cost is the suite's (bench/sections/transcripts.js): input 1, cache write 1.25, cache read 0.1, output 5, where output
+is what OpenCode records as output plus reasoning, which it keeps apart and the provider bills as output.
 
 B/A is the ratio of the arms' medians for one task. Its 95% interval is a bootstrap: 4,000 times, each arm's sessions
 of the task are drawn again with replacement, and the 2.5th and 97.5th percentiles of the ratio are kept. All tasks is
@@ -43,8 +44,15 @@ METRICS = [  # (label, value of a record)
 ]
 
 
+def provider_error(rec):
+    """A session OpenCode ended because of the provider, not the agent: an error and no answer."""
+    return not rec.get('timed_out') and (rec.get('outcome') not in (None, 'succeeded') or
+                                         bool(rec.get('errors') and not rec.get('answer')))
+
+
 def load(path):
-    meta, end, recs = {}, {}, []
+    """(meta, end, the sessions that count, the slots the provider ended): each slot's last final attempt."""
+    meta, end, slots = {}, {}, {}
     for line in open(path):
         r = json.loads(line)
         if r.get('meta'):
@@ -54,8 +62,9 @@ def load(path):
         elif r.get('meta_end'):
             end = r
         elif r.get('final'):
-            recs.append(r)
-    return meta, end, recs
+            slots[r['rep'], r['task'], r['arm']] = r
+    recs = sorted(slots.values(), key=lambda r: r['n'])
+    return meta, end, [r for r in recs if not provider_error(r)], [r for r in recs if provider_error(r)]
 
 
 def load_avg(m):
@@ -95,7 +104,7 @@ def spread(vs):
 
 
 def report(path):
-    meta, end, recs = load(path)
+    meta, end, recs, lost = load(path)
     tasks = [t for t in meta.get('tasks', []) if any(r['task'] == t for r in recs)]
     arms = meta.get('arms', ['A', 'B'])
     rng = random.Random(1)
@@ -173,6 +182,10 @@ def report(path):
     timed = sum(1 for r in recs if r.get('timed_out'))
     out += ['', f'{retried} attempts ended with an error of the provider and ran again; {timed} sessions ran out of '
             f"time ({meta.get('timeout_s', '?')} s) and count as failed."]
+    if lost:
+        out.append(f"{len(lost)} {'session is' if len(lost) == 1 else 'sessions are'} left out: the provider ended "
+                   "every attempt ("
+                   + ', '.join(f"{r['task']} {r['arm']} round {r['rep']}" for r in lost) + ').')
     return '\n'.join(out) + '\n'
 
 
