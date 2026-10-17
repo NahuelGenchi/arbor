@@ -3,21 +3,22 @@
 //! the whole context; and that the usual commands print far more than is asked: `ls -la` of 100 files is 2,776
 //! tokens against 401 for their names, `git log -20` 18,928 against 530, `ps aux` 9,900 against 286
 //! (OPTIMIZATION.md §6). Each answer is a title line, then a header and rows separated by tabs, which cost fewer
-//! tokens than aligned columns. Nothing here writes: git runs as a reader, and nothing goes to the ledger.
+//! tokens than aligned columns. A large file is read in parts: its outline first, then only the lines asked for.
+//! Nothing here writes: git runs as a reader, and nothing goes to the ledger.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, OsStr, OsString};
 use std::fs::{self, FileType};
-use std::io::{self, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
-use std::path::PathBuf;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use lexopt::prelude::*;
 
 use crate::error::{Error, Result};
-use crate::table;
+use crate::{outline, table};
 
 /// What `arbor look` alone prints: all an agent needs to use it, and nothing until it asks.
 pub const ABOUT: &str = "\
@@ -33,13 +34,19 @@ arbor look: answers reads as short tables, several in one call.
                         hash subject | date author files added removed
   procs [TEXT]          processes (with TEXT, those whose command holds it), most memory first, 30 rows:
                         pid mem name | parent user cpu started cmd
+  outline FILE          the definitions in a Rust, Python, JavaScript, TypeScript or shell file, or a
+                        Markdown file's headings, in order, 200 rows:
+                        line end kind name | parent signature
+  lines FILE [A[-B]]    a file's lines A to B (from 1, to the end), 200 rows:
+                        line text
 
 After a query: -f FIELDS (a,b,c or all; by default the fields before |), -n ROWS (0 for all).
 Each answer is a line `# QUERY`, which says what was cut or why the query failed, then a header and
 rows, separated by tabs. Sizes and mem (memory in use) are bytes, cpu is seconds used, times are
 YYYY-MM-DDTHH:MM local, modes are octal. change: added, modified, deleted, renamed, copied, typechange,
-untracked, conflict. staged: yes, no, partly. arbor look only reads; inside a world it sees what the
-world sees.
+untracked, conflict. staged: yes, no, partly. A definition spans line to end with the comments,
+attributes and decorators above it: `lines FILE LINE-END` reads it whole. arbor look only reads;
+inside a world it sees what the world sees.
 ";
 
 /// A kind of query: its name, every field it has with the default ones first, and how many rows it gives unless
@@ -51,6 +58,8 @@ struct Spec {
     rows: usize,
     /// How many words may follow the name, when there is a limit.
     words: Option<usize>,
+    /// Checks the words, before any query runs.
+    check: Option<fn(&Query) -> Result<()>>,
     answer: fn(&Query) -> Result<Found>,
 }
 
@@ -61,6 +70,7 @@ const SPECS: &[Spec] = &[
         defaults: 1,
         rows: 100,
         words: Some(1),
+        check: None,
         answer: files,
     },
     Spec {
@@ -69,6 +79,7 @@ const SPECS: &[Spec] = &[
         defaults: 2,
         rows: 100,
         words: Some(0),
+        check: None,
         answer: status,
     },
     Spec {
@@ -79,6 +90,7 @@ const SPECS: &[Spec] = &[
         defaults: 2,
         rows: 20,
         words: None,
+        check: None,
         answer: log,
     },
     Spec {
@@ -89,7 +101,26 @@ const SPECS: &[Spec] = &[
         defaults: 3,
         rows: 30,
         words: Some(1),
+        check: None,
         answer: procs,
+    },
+    Spec {
+        name: "outline",
+        fields: &["line", "end", "kind", "name", "parent", "signature"],
+        defaults: 4,
+        rows: 200,
+        words: Some(1),
+        check: Some(one_file),
+        answer: outline,
+    },
+    Spec {
+        name: "lines",
+        fields: &["line", "text"],
+        defaults: 2,
+        rows: 200,
+        words: Some(2),
+        check: Some(file_and_span),
+        answer: lines,
     },
 ];
 
@@ -157,6 +188,9 @@ fn query(words: &[OsString]) -> Result<Query> {
                 return Err(Error::usage(format!("{}: {}", spec.name, arg.unexpected())));
             }
         }
+    }
+    if let Some(check) = spec.check {
+        check(&q)?;
     }
     Ok(q)
 }
@@ -238,6 +272,11 @@ fn word(w: &OsStr) -> String {
     } else {
         shown
     }
+}
+
+/// `1 line`, `2 lines`.
+fn count(n: usize, what: &str) -> String {
+    format!("{n} {what}{}", if n == 1 { "" } else { "s" })
 }
 
 /// Keeps the first `n` items, or all when `n` is 0, and says what was cut.
@@ -696,6 +735,156 @@ fn procs(q: &Query) -> Result<Found> {
     Ok(Found { rows, notes })
 }
 
+fn one_file(q: &Query) -> Result<()> {
+    match q.words.is_empty() {
+        true => Err(Error::usage(format!("{} needs a FILE", q.spec.name))),
+        false => Ok(()),
+    }
+}
+
+fn file_and_span(q: &Query) -> Result<()> {
+    one_file(q)?;
+    span(q.words.get(1)).map(|_| ())
+}
+
+/// The lines asked for: `START`, `START-` or `START-END`, counted from 1; all of them when nothing is asked.
+fn span(asked: Option<&OsString>) -> Result<(usize, Option<usize>)> {
+    let Some(asked) = asked else {
+        return Ok((1, None));
+    };
+    let s = asked.to_str().unwrap_or("");
+    let n = |x: &str| x.parse::<usize>().ok().filter(|n| *n > 0);
+    let found = match s.split_once('-') {
+        None => n(s).map(|a| (a, None)),
+        Some((a, "")) => n(a).map(|a| (a, None)),
+        Some((a, b)) => n(a)
+            .zip(n(b))
+            .filter(|(a, b)| a <= b)
+            .map(|(a, b)| (a, Some(b))),
+    };
+    found.ok_or_else(|| {
+        Error::usage(format!(
+            "lines: {} is not a range of lines: START, or START-END, from 1",
+            word(asked)
+        ))
+    })
+}
+
+/// Why a file with a NUL byte in its first 8,000 bytes is not read, as git tells binary files from text.
+const BINARY: &str = "a binary file: it holds NUL bytes";
+
+fn binary(head: &[u8]) -> bool {
+    head[..head.len().min(8000)].contains(&0)
+}
+
+/// Opens a file to read. A folder, a device or a pipe is refused, without waiting for a pipe's writer.
+fn open_file(path: &Path) -> Result<fs::File> {
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)
+        .map_err(|e| {
+            Error::new(match e.kind() {
+                io::ErrorKind::NotFound => "no such file".to_string(),
+                io::ErrorKind::PermissionDenied => "not allowed to read it".to_string(),
+                _ => e.to_string(),
+            })
+        })?;
+    let m = f.metadata()?;
+    if m.is_dir() {
+        return Err(Error::new("a folder, not a file"));
+    }
+    if !m.is_file() {
+        return Err(Error::new("not a regular file"));
+    }
+    Ok(f)
+}
+
+fn outline(q: &Query) -> Result<Found> {
+    let path = Path::new(&q.words[0]);
+    let mut text = Vec::new();
+    open_file(path)?.read_to_end(&mut text)?;
+    if binary(&text) {
+        return Err(Error::new(BINARY));
+    }
+    let lang = outline::language(path, &text).ok_or_else(|| {
+        Error::new(format!(
+            "no outline for this kind of file: it reads {}",
+            outline::LANGUAGES
+        ))
+    })?;
+    let defs = outline::read(lang, &text);
+    let names: Vec<String> = defs.iter().map(|d| cell(&d.name)).collect();
+    let shown = |s: &str| {
+        if s.is_empty() {
+            "-".into()
+        } else {
+            s.to_string()
+        }
+    };
+    let mut rows: Vec<Vec<String>> = defs
+        .iter()
+        .zip(&names)
+        .map(|(d, name)| {
+            vec![
+                d.line.to_string(),
+                d.end.to_string(),
+                d.kind.to_string(),
+                shown(name),
+                d.parent
+                    .map_or_else(|| "-".to_string(), |p| shown(&names[p])),
+                shown(&cell(&d.head)),
+            ]
+        })
+        .collect();
+    let mut notes = vec![count(outline::split(&text).len(), "line")];
+    notes.extend(cut(&mut rows, q.rows));
+    Ok(Found { rows, notes })
+}
+
+fn lines(q: &Query) -> Result<Found> {
+    let (from, to) = span(q.words.get(1))?;
+    let mut file = open_file(Path::new(&q.words[0]))?;
+    let mut head = Vec::new();
+    (&mut file).take(8000).read_to_end(&mut head)?;
+    if binary(&head) {
+        return Err(Error::new(BINARY));
+    }
+    let shown = match q.rows {
+        0 => usize::MAX,
+        n => from.saturating_add(n - 1),
+    };
+    let last = to.unwrap_or(usize::MAX).min(shown);
+    let mut text = io::Cursor::new(head).chain(io::BufReader::new(file));
+    let mut rows = Vec::new();
+    let mut line = Vec::new();
+    let mut total = 0;
+    loop {
+        line.clear();
+        if text.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        total += 1;
+        if (from..=last).contains(&total) {
+            let l = line.strip_suffix(b"\n").unwrap_or(&line);
+            let l = l.strip_suffix(b"\r").unwrap_or(l);
+            rows.push(vec![total.to_string(), cell(l)]);
+        }
+    }
+    let mut notes = Vec::new();
+    if total == 0 {
+        notes.push("the file is empty".to_string());
+    } else if from > total {
+        return Err(Error::new(format!(
+            "line {from} is past the end: it has {}",
+            count(total, "line")
+        )));
+    } else if from > 1 || from + rows.len() - 1 < total {
+        notes.push(format!("lines {from}-{} of {total}", from + rows.len() - 1));
+    }
+    Ok(Found { rows, notes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,6 +980,89 @@ mod tests {
         );
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(cell(b"caf\xc3\xa9 \xff\x1b[2J"), "café \\xff\\e[2J");
+    }
+
+    #[test]
+    fn reads_files_and_ranges_of_lines() {
+        let q = &parse(args("lines src/a.rs 10-20 -f text + outline a.py -n 5")).unwrap();
+        assert_eq!(
+            q.iter().map(asked).collect::<Vec<_>>(),
+            [
+                ("lines src/a.rs 10-20 -f text".into(), vec!["text"], 200),
+                (
+                    "outline a.py -n 5".into(),
+                    vec!["line", "end", "kind", "name"],
+                    5
+                ),
+            ]
+        );
+        let span_of = |s: &str| span(Some(&OsString::from(s))).ok();
+        assert_eq!(span(None).ok(), Some((1, None)));
+        assert_eq!(span_of("7"), Some((7, None)));
+        assert_eq!(span_of("7-"), Some((7, None)));
+        assert_eq!(span_of("3-3"), Some((3, Some(3))));
+        for bad in ["0", "0-4", "9-3", "x", "-", "1-x", "1-2-3", ""] {
+            assert_eq!(span_of(bad), None, "{bad}");
+        }
+        for bad in [
+            "outline",
+            "lines",
+            "outline a b",
+            "lines a 1-2 3",
+            "lines a 9-3",
+            "lines a -5",
+        ] {
+            let e = parse(args(bad)).err().unwrap_or_else(|| panic!("{bad}"));
+            assert_eq!(e.code, crate::error::USAGE, "{bad}: {}", e.msg);
+        }
+        assert_eq!(
+            parse(args("outline")).err().unwrap().msg,
+            "outline needs a FILE"
+        );
+        assert_eq!(
+            parse(args("lines a 9-3")).err().unwrap().msg,
+            "lines: 9-3 is not a range of lines: START, or START-END, from 1"
+        );
+    }
+
+    #[test]
+    fn reads_a_file_in_parts_and_refuses_what_is_not_text() {
+        let dir = std::env::temp_dir().join(format!("arbor-look-parts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.py"), "X = 1\n\ndef f():\n    return 'a\tb'\r\n").unwrap();
+        fs::write(dir.join("logo.png"), b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+        fs::write(dir.join("notes.txt"), "a\n\x1b[2J\nc").unwrap();
+        fs::write(dir.join("empty.md"), "").unwrap();
+        let d = dir.to_str().unwrap();
+        let qs = parse(args(&format!(
+            "outline {d}/a.py -f all + lines {d}/a.py 3 + lines {d}/notes.txt 2-2 + lines {d}/notes.txt -n 0 + \
+             lines {d}/notes.txt 5 + lines {d}/empty.md + outline {d}/empty.md + outline {d}/notes.txt + \
+             lines {d}/logo.png + outline {d}/logo.png + lines {d} + lines {d}/none"
+        )))
+        .unwrap();
+        let mut out = Vec::new();
+        assert!(!answer(&qs, &mut out).unwrap());
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!(
+                "# outline {d}/a.py -f all: 4 lines\nline\tend\tkind\tname\tparent\tsignature\n\
+                 1\t1\tconst\tX\t-\tX\n3\t4\tfn\tf\t-\tdef f()\n\
+                 # lines {d}/a.py 3: lines 3-4 of 4\nline\ttext\n3\tdef f():\n4\t    return 'a\\tb'\n\
+                 # lines {d}/notes.txt 2-2: lines 2-2 of 3\nline\ttext\n2\t\\e[2J\n\
+                 # lines {d}/notes.txt -n 0\nline\ttext\n1\ta\n2\t\\e[2J\n3\tc\n\
+                 # lines {d}/notes.txt 5: error: line 5 is past the end: it has 3 lines\n\
+                 # lines {d}/empty.md: the file is empty\nline\ttext\n\
+                 # outline {d}/empty.md: 0 lines\nline\tend\tkind\tname\n\
+                 # outline {d}/notes.txt: error: no outline for this kind of file: it reads {}\n\
+                 # lines {d}/logo.png: error: a binary file: it holds NUL bytes\n\
+                 # outline {d}/logo.png: error: a binary file: it holds NUL bytes\n\
+                 # lines {d}: error: a folder, not a file\n\
+                 # lines {d}/none: error: no such file\n",
+                outline::LANGUAGES
+            )
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

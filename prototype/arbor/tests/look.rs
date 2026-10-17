@@ -1,5 +1,5 @@
 //! `arbor look` end to end: reads answered as tables, several in one call, on a throwaway folder and git repository,
-//! and inside a world. Only the last test needs bwrap, and it skips like `common` says.
+//! and inside a world. Only the tests inside a world need bwrap, and they skip like `common` says.
 
 mod common;
 
@@ -161,6 +161,11 @@ fn a_usage_error_runs_no_query() {
         (&["files", "+", "sizes"], "there is no query 'sizes'"),
         (&["files", "+"], "a + with no query"),
         (&["log", "--output=x"], "log: invalid option '--output'"),
+        (&["files", "+", "outline"], "outline needs a FILE"),
+        (
+            &["lines", "a.rs", "20-10"],
+            "lines: 20-10 is not a range of lines",
+        ),
     ] {
         let out = look(&f.0, args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
@@ -172,6 +177,69 @@ fn a_usage_error_runs_no_query() {
     let out = look(&f.0, &[]);
     assert_eq!(out.status.code(), Some(0));
     assert!(text(&out.stdout).starts_with("arbor look: answers reads as short tables"));
+}
+
+#[test]
+fn an_outline_then_the_lines_of_one_definition() {
+    let f = Folder::new("outline");
+    fs::write(
+        f.0.join("lib.rs"),
+        "use std::io;\n\n/// Adds.\npub fn add(a: u32, b: u32) -> u32 {\n    a + b\n}\n\n\
+         pub struct Pair(u32, u32);\n",
+    )
+    .unwrap();
+    let out = look(&f.0, &["outline", "lib.rs", "-f", "all"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "# outline lib.rs -f all: 8 lines\nline\tend\tkind\tname\tparent\tsignature\n\
+         3\t6\tfn\tadd\t-\tpub fn add(a: u32, b: u32) -> u32\n\
+         8\t8\tstruct\tPair\t-\tpub struct Pair(u32, u32)\n"
+    );
+    // Then only the lines of `add`, as its row gave them.
+    let out = look(&f.0, &["lines", "lib.rs", "3-6"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "# lines lib.rs 3-6: lines 3-6 of 8\nline\ttext\n3\t/// Adds.\n\
+         4\tpub fn add(a: u32, b: u32) -> u32 {\n5\t    a + b\n6\t}\n"
+    );
+}
+
+#[test]
+fn a_file_it_cannot_read_fails_on_its_title_line() {
+    let f = Folder::new("parts");
+    fs::write(f.0.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+    fs::write(f.0.join("blob.bin"), b"ab\0cd").unwrap();
+    fs::write(f.0.join("run"), "#!/bin/sh\ngo() {\n  :\n}\n").unwrap();
+    let out = look(
+        &f.0,
+        &[
+            "outline", "main.c", "+", "lines", "blob.bin", "+", "outline", "run", "+", "lines",
+            "main.c", "-n", "1",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let shown = text(&out.stdout);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert!(
+        lines[0].starts_with(
+            "# outline main.c: error: no outline for this kind of file: it reads Rust (.rs)"
+        ),
+        "{shown}"
+    );
+    assert_eq!(
+        lines[1..],
+        [
+            "# lines blob.bin: error: a binary file: it holds NUL bytes",
+            "# outline run: 4 lines",
+            "line\tend\tkind\tname",
+            "2\t4\tfn\tgo",
+            "# lines main.c -n 1",
+            "line\ttext",
+            "1\tint main(void) { return 0; }",
+        ]
+    );
 }
 
 #[test]
@@ -227,4 +295,26 @@ fn inside_a_world_it_sees_the_world() {
     assert!(names.contains(&"sh") && names.len() < 5, "{shown}");
     // The real folder is as it was.
     assert!(!e.base.join("made").exists() && e.base.join("src/gone").exists());
+}
+
+#[test]
+fn an_outline_and_lines_inside_a_world() {
+    let Some(e) = Env::new("look-parts") else {
+        return;
+    };
+    new_world(&e);
+    let out = e.arbor(&[
+        "run",
+        "demo",
+        "--",
+        "sh",
+        "-c",
+        "printf 'def f():\\n    pass\\n' > made.py && arbor look outline made.py + lines src/a",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "# outline made.py: 2 lines\nline\tend\tkind\tname\n1\t2\tfn\tf\n# lines src/a\nline\ttext\n1\tone\n"
+    );
+    assert!(!e.base.join("made.py").exists());
 }

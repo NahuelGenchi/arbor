@@ -40,8 +40,8 @@ arbor: try changes on a copy of a folder, then keep them or throw them away.
   arbor refuse ID [--why TEXT]       say no to an effect
   arbor ledger [--last N] [--verify] the record of every step (--verify: check that none was changed)
   arbor watch [--since N]            print each new step as a JSON line (--since N: the steps after N first)
-  arbor look QUERY [+ QUERY]...      read a folder, git's status and log, processes: short tables, several
-                                     in one call (`arbor look` alone says how)
+  arbor look QUERY [+ QUERY]...      read a folder, git's status and log, processes, a file's outline or
+                                     lines: short tables, several in one call (`arbor look` alone says how)
 
 OPTIONS: --key KEY opens what the key opens. LIMITS stop a command that takes too much:
 --mem SIZE (512M, 2G), --cpu CPUS (0.5, 2), --pids N (processes at once), --time DURATION (90s, 10m, 2h).

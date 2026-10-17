@@ -38,6 +38,10 @@ INITRD="${INITRD:-/boot/initrd.img}"
 
 # 8. The prototype: empty builds prototype/ (release, offline) into the temp dir; a path measures that binary instead.
 ARBOR_BIN="${ARBOR_BIN:-}"
+# `arbor look outline` reads the OUTLINE_FILES largest code files of this repository at this commit, read with git, so
+# the input stays the same as the code changes.
+OUTLINE_REF="${OUTLINE_REF:-6bbbb22ee1321c5d5c18d0eb04d78aaa3cfef779}"
+OUTLINE_FILES="${OUTLINE_FILES:-10}"
 
 # 9. The screen: seconds of still screen (the brief's target is stated over 60 s), seconds of frames in each run, and
 # the load of the second run. Empty FRAMES_CELLS: one busy cell per CPU thread. Empty FRAMES_SPIKE_MIB: the spike takes

@@ -44,6 +44,13 @@ output at the same moment (in its ctx):
                             are; the three usual commands (git status, git log -20, ls -la), timed the same way,
                             are in its ctx
 git runs there with none of this computer's settings, and every command with the locale of the formats section.
+A large file read in parts, in o200k tokens, on the $OUTLINE_FILES largest code files that `arbor look outline` reads in
+this repository at commit $OUTLINE_REF, written to the temp dir from git, so the input stays the same as the code
+changes. Each row is the median over the files of a share of the whole file's tokens:
+  arbor.outline_pct         `arbor look outline FILE`: the file's definitions and the lines each spans
+  arbor.outline_read_pct    that outline, and the lines of two of its functions by `arbor look lines FILE A-B`: the
+                            two in the middle when the file's functions are put in order of length
+Each file's tokens, and the lines read, are in the ctx of arbor.outline_pct.
 Nothing is pinned to a CPU, as in the rest of the suite. On a CPU with P- and E-cores, rows timed on one arbor process
 at a time (new, keep, undo) move with the kind of core the scheduler puts it on.
 """
@@ -71,6 +78,10 @@ ROWS = ['arbor.binary_mib', 'arbor.new_ms', 'arbor.run_ms', 'arbor.run_cgroup_ms
 LOOK = ['arbor.look_files_tokens', 'arbor.look_log_tokens', 'arbor.look_procs_tokens', 'arbor.look_status_tokens',
         'arbor.git_status_tokens', 'arbor.look_about_tokens', 'arbor.look_ms']
 ROWS += LOOK
+OUTLINE = ['arbor.outline_pct', 'arbor.outline_read_pct']
+ROWS += OUTLINE
+# The files `arbor look outline` reads as code, by their names.
+CODE = ('.rs', '.py', '.pyi', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts', '.sh', '.bash')
 TUNNEL = ['arbor.tunnel_ms', 'arbor.tunnel_direct_ms']
 FILES = 1000
 CYCLES = 11
@@ -334,6 +345,10 @@ def main():
         look_rows(arbor)
     except Exception as e:
         fail(LOOK, e)
+    try:
+        outline_rows(arbor)
+    except Exception as e:
+        fail(OUTLINE, e)
 
 
 def timed(arbor, binary, cases, fs, started, missing):
@@ -522,6 +537,52 @@ def look_rows(arbor):
     usual = {k: round(statistics.median(meds[k]), 4) for k in ('git_status_ms', 'git_log_ms', 'ls_ms')}
     emit('arbor.look_ms', statistics.median(meds['arbor.look_ms']),
          dict(usual, usual_ms=round(sum(usual.values()), 4), blocks=[round(x, 4) for x in meds['arbor.look_ms']]))
+
+
+def outline_rows(arbor):
+    """A large file read in parts: its outline, then two of its functions, each as a share of the file's tokens."""
+    git = shutil.which('git')
+    if not git:
+        raise RuntimeError('git is needed')
+    repo, ref = os.path.dirname(os.path.abspath(BENCH_DIR)), env('OUTLINE_REF', 'HEAD')
+    r = run([git, '-C', repo, 'ls-tree', '-r', '-l', '-z', ref])
+    if r.returncode != 0:
+        raise RuntimeError(f'this repository has no commit {ref[:12]}: {last_line(r.stderr)}')
+    sizes = []
+    for entry in filter(None, r.stdout.split(b'\0')):
+        meta, path = entry.split(b'\t', 1)
+        path = path.decode(errors='replace')
+        if meta.split()[1] == b'blob' and path.endswith(CODE):
+            sizes.append((-int(meta.split()[3]), path))
+    files = [path for _, path in sorted(sizes)[:int(env('OUTLINE_FILES', '10'))]]
+    root = os.path.join(A, 'outline')
+    loc = dict(arbor.sealed, LC_ALL=env('FORMATS_LOCALE', 'en_US.UTF-8'))
+    look = lambda *args: printed(arbor.argv('look', *args), loc, root)  # noqa: E731
+    texts, read = {}, {}
+    for path in files:
+        blob = run([git, '-C', repo, 'show', f'{ref}:{path}'])
+        if blob.returncode != 0:
+            raise RuntimeError(f'git show {path}: {last_line(blob.stderr)}')
+        os.makedirs(os.path.dirname(os.path.join(root, path)), exist_ok=True)
+        with open(os.path.join(root, path), 'wb') as f:
+            f.write(blob.stdout)
+        texts[path] = blob.stdout.decode(errors='replace')
+        texts[path + ' outline'] = look('outline', path)
+        # The functions by length, then by line; the two in the middle.
+        rows = [line.split('\t') for line in look('outline', path, '-n', '0').splitlines()[2:]]
+        fns = sorted((int(end) - int(line), int(line), int(end)) for line, end, kind, *_ in rows if kind == 'fn')
+        if len(fns) < 2:
+            raise RuntimeError(f'{path} has {len(fns)} functions in its outline, not 2 or more')
+        read[path] = [f'{a}-{b}' for _, a, b in sorted(fns[len(fns) // 2 - 1:len(fns) // 2 + 1], key=lambda f: f[1])]
+        texts[path + ' lines'] = ''.join(look('lines', path, span) for span in read[path])
+    n = tokens(texts)
+    files_ctx = {p: {'tokens': n[p], 'outline': n[p + ' outline'], 'lines': n[p + ' lines'], 'read': read[p]}
+                 for p in files}
+    outline = [n[p + ' outline'] / n[p] * 100 for p in files]
+    with_lines = [(n[p + ' outline'] + n[p + ' lines']) / n[p] * 100 for p in files]
+    emit('arbor.outline_pct', round(statistics.median(outline), 2), {'ref': ref[:12], 'files': files_ctx})
+    emit('arbor.outline_read_pct', round(statistics.median(with_lines), 2),
+         {'ref': ref[:12], 'median_tokens': statistics.median(n[p] for p in files)})
 
 
 if __name__ == '__main__':

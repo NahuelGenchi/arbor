@@ -155,16 +155,18 @@ lib.rs
 pay/
 ```
 
-It answers four queries:
+It answers six queries:
 
 - `files [DIR]`: what a folder holds, by name; a folder's name ends in `/`.
 - `status`: what changed in the git repository, by path from its top folder.
 - `log [REV] [PATH]...`: commits, newest first, of a branch or a range, or those that changed a path.
 - `procs [TEXT]`: processes, the ones that use the most memory first; with TEXT, those whose command holds it.
+- `outline FILE`: the definitions in a source file, in order, and the lines each spans.
+- `lines FILE [A[-B]]`: a file's lines A to B, numbered.
 
 Each gives a few fields unless asked for others: `-f name,size,modified`, or `-f all`. `-n` asks for more or fewer rows, and `-n 0` for all of them. `arbor look` alone describes every query and field, so an agent needs no tool description in its prompt, only to know that `arbor look` is there. How the answers are written:
 
-- **A title line first.** Each answer starts with `# QUERY`, which says what was cut (`first 100 of 2345`) and, for `status`, the branch.
+- **A title line first.** Each answer starts with `# QUERY`, which says what was cut (`first 100 of 2345`, `lines 1-200 of 2193`) and, for `status`, the branch, and for `outline`, how many lines the file has.
 - **Failures.** A query that fails says why on its title line, and the others still answer; arbor then exits 1. A mistake in how a query is asked stops them all before any runs.
 - **Tabs between the columns**, which cost fewer tokens than aligned columns.
 - **One unit each:** sizes and memory are bytes, times `YYYY-MM-DDTHH:MM` in local time, modes octal.
@@ -175,6 +177,40 @@ It only reads:
 - **git writes nothing.** `status` and `log` run git so that it writes nothing, not even its index, and no word of a query reaches git as an option.
 - **No ledger step,** as for `arbor worlds`.
 - **Inside a world it sees what the world sees:** the world's folder, and the world's own processes.
+
+### A large file in parts
+
+An agent that reads a whole file to change one function pays for all of it, and again at every step after. `outline` gives the file's definitions, each with the lines it spans, from the comments, attributes and decorators above it to its end, so the agent reads only the ones it needs with `lines`:
+
+```console
+$ arbor look outline src/cart.rs
+# outline src/cart.rs: 37 lines
+line	end	kind	name
+5	11	struct	Item
+13	17	struct	Cart
+19	37	impl	Cart
+20	22	fn	new
+24	30	fn	add
+32	36	fn	total
+$ arbor look lines src/cart.rs 32-36
+# lines src/cart.rs 32-36: lines 32-36 of 37
+line	text
+32	    /// The total, rounded once at the end.
+33	    pub fn total(&self) -> Price {
+34	        let sum: f64 = self.items.iter().map(|i| i.price.0 * f64::from(i.count)).sum();
+35	        Price((sum * 100.0).round() / 100.0)
+36	    }
+```
+
+`-f all` adds each definition's `parent`, the `impl`, class, module or heading it sits in, and its `signature`, its head on one line. On this repository's ten largest code files, the outline is a median **4.2%** of a file's tokens, and the outline with two of its functions **8.5%** (**M**: the suite's `arbor.outline_pct` and `arbor.outline_read_pct`).
+
+`outline` reads Rust, Python, JavaScript, TypeScript and shell files, Markdown files' headings, and scripts whose `#!` line names python, node or a shell; another kind of file is an error on its title line, and so is a binary one, with a NUL byte in its first 8,000 bytes, as git tells them. Each language is read line by line, with no parser: comments and strings are blanked out, definitions are found by their keywords at the start of a line, and where each ends by its braces (Rust, JavaScript, TypeScript, shell), its indentation (Python) or the next heading of its level (Markdown). Reading that way misses or gets wrong:
+
+- definitions made by macros, written after other code on their line, or inside a function's body, an object or a call (a test suite's `describe`, a route's handler); in Rust, the functions of an `extern` block;
+- in JavaScript and TypeScript, a `/` that could start a regular expression or divide, and a quote in JSX text, which can end a definition early or late; and a function called where it is written, as compilers write classes (`var A = function () {…}()`), which is listed as a function;
+- in Python, an f-string that holds its own quotes;
+- in shell, a function whose body is in parentheses;
+- in Markdown, headings inside HTML, and all but the last line of a setext heading's text.
 
 ## The outbox
 
@@ -259,10 +295,11 @@ Ubuntu 24.04 and later stop ordinary programs from creating the Linux namespaces
 | `arbor/src/outbox.rs` | the outbox: effects on disk, the socket a cell asks through and the threads that answer it, release (once, with a receipt), refusal, and budgets |
 | `arbor/src/ledger.rs` | the ledger: appends under a lock, the hash chain, `--verify`, and following it for `watch` |
 | `arbor/src/table.rs` | the short tables arbor prints, and text from a world shown so that it cannot act on the terminal |
-| `arbor/src/look.rs` | `arbor look`: its queries and their fields, the tab-separated answers, git run as a reader, and processes read from `/proc` |
+| `arbor/src/look.rs` | `arbor look`: its queries and their fields, the tab-separated answers, git run as a reader, processes read from `/proc`, and a file read in parts |
+| `arbor/src/outline.rs` | the definitions in a source file and the lines each spans, for `arbor look outline`: a reader for each language, line by line, with no parser |
 | `arbor/src/net.rs` | the network a key opens: hosts and how they match, the port a cell's first process opens and hands out, and the proxy that answers it (`CONNECT` only), with the tally the ledger records |
 | `arbor/src/sys.rs` | the Linux calls the standard library lacks, such as `clone3` into a cgroup, inotify and `poll`, passing a descriptor over a socket, and threads that leave signals to the main one |
 | `arbor/src/main.rs` | the `arbor` command |
-| `arbor/tests/` | end-to-end tests through the binary and `bwrap`, each with its own throwaway home folder: `worlds.rs` (worlds, what a sealed cell sees, the kernel calls it refuses), `cells.rs` (limits, `ps`, `watch`), `keys.rs` (what a key opens, password files, a key's own home folder, `stop`, renewal, take-back), `outbox.rs` (asking, release once with a receipt, refusal, budgets, `--wait`, what a world's words can do to a terminal), `net.rs` (the hosts a key opens, reached through the proxy from a cell, and what it refuses), `look.rs` (reads answered as tables, on a throwaway folder and repository, and inside a world) |
+| `arbor/tests/` | end-to-end tests through the binary and `bwrap`, each with its own throwaway home folder: `worlds.rs` (worlds, what a sealed cell sees, the kernel calls it refuses), `cells.rs` (limits, `ps`, `watch`), `keys.rs` (what a key opens, password files, a key's own home folder, `stop`, renewal, take-back), `outbox.rs` (asking, release once with a receipt, refusal, budgets, `--wait`, what a world's words can do to a terminal), `net.rs` (the hosts a key opens, reached through the proxy from a cell, and what it refuses), `look.rs` (reads answered as tables, on a throwaway folder and repository, a file's outline and lines, and inside a world) |
 
 `./check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test` with the toolchain pinned in `rust-toolchain.toml`. Tests that need `bwrap` print `skipped` and pass where it cannot mount an overlay, and tests of `--mem`, `--cpu` and `--pids` do the same where there is no systemd user session, so a green run there proves less. CI builds bubblewrap 0.11.1 from a pinned commit (its Ubuntu 24.04 runner ships 0.9), starts a user session for the runner, and sets `ARBOR_REQUIRE_BWRAP=1` and `ARBOR_REQUIRE_CGROUPS=1`, which turn those skips into failures.
