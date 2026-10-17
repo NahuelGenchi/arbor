@@ -41,9 +41,9 @@ A key opens a little more than the world, for one job and until a set time, like
 
 - `--read PATH`: a folder or file of yours that the command may read. Writes to a folder vanish when the command ends, so tools that keep caches there still work. Repeat it to open more.
 - `--toolchains`: the language tools in your home folder, those that exist of `~/.cargo` and `~/.rustup`, `~/.nvm`, `~/.npm`, `~/.bun`, `~/.deno`, `~/.volta` and `~/.local/share/pnpm`, `~/.pyenv`, `~/.local/bin`, `~/.local/lib` and `~/.cache/pip`, `~/go`, `~/.rbenv` and `~/.gem`, and `~/.sdkman`, `~/.gradle` and `~/.m2`.
-- `--env VAR`: passes that variable in from the shell that runs the command, such as `--env CARGO_HOME`. Repeat it to pass more.
+- `--env VAR`: passes that variable in from the shell that runs the command, such as `CARGO_HOME`. Repeat it to pass more.
 - `--world W`: opens only that world; without it, any. Repeat it to open more.
-- `--mem`, `--cpu`, `--pids` and `--time`: [limits](#limits). A command run with the key gets the tighter of the key's limits and its own.
+- `--mem`, `--cpu`, `--pids`, `--time`: the [limits](#limits) below. A command run with the key gets the tighter of the key's limits and its own.
 - `--for 2h` or `--until 18:00`: when the key ends. Without either, it lasts 8 hours.
 
 `arbor run shop --key dev -- npm test` and `arbor shell shop --key dev` use it. A key that has ended, or that does not open the world, is refused, and a command still running when its key ends is stopped (`killed: key expired`). `arbor keys` lists the keys: what each opens, its limits, and when it ends, as a clock time.
