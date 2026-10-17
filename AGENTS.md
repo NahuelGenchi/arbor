@@ -2,7 +2,7 @@
 
 ## The project
 
-Arbor is a proposal for an operating system rebuilt for AI agents and the people who direct them: worlds (copy-on-write snapshots of everything an agent can see), cells (where work runs, started in a fraction of a millisecond), keys (narrow, expiring permissions), an outbox for effects that leave the machine, budgets, and a ledger of every step. Nothing of the operating system exists yet. What exists is the measurement: `OPTIMIZATION.md`, a report of where memory, disk, time, energy and agent tokens go on one Linux PC today, and `bench/`, a suite that re-measures the report's **M** numbers so a prototype can later be compared row by row. The first prototype is planned as a layer on top of Linux. `README.md` explains the project; the two articles behind it are at https://nahuelgenchi.com/software/arbor/ and https://nahuelgenchi.com/software/arbor-measured/.
+Arbor is a proposal for an operating system rebuilt for AI agents and the people who direct them: worlds (copy-on-write snapshots of everything an agent can see), cells (where work runs, started in a fraction of a millisecond), keys (narrow, expiring permissions), an outbox for effects that leave the machine, budgets, and a ledger of every step. The measurement came first: `OPTIMIZATION.md`, a report of where memory, disk, time, energy and agent tokens go on one Linux PC today, and `bench/`, a suite that re-measures the report's **M** numbers so the prototype can be compared row by row. The first prototype, a rootless layer on top of Linux, is being built in `prototype/`: worlds exist (M2); cells and keys, the outbox, ledger and budgets, and the interface do not yet. `README.md` explains the project; the two articles behind it are at https://nahuelgenchi.com/software/arbor/ and https://nahuelgenchi.com/software/arbor-measured/.
 
 Never describe something as working, built or measured unless a recorded check establishes it. A source check is not a benchmark run, and an estimate is not a measurement.
 
@@ -18,6 +18,7 @@ Never describe something as working, built or measured unless a recorded check e
 | `bench/lib/` | Shared helpers, the M reference values (`reference.py`), the report writer, the machine stamp, and an o200k token counter (`o200k.js`) |
 | `bench/src/` | The static C and Rust programs timed by `runtimes` |
 | `bench/results/` | Run reports, ignored by git |
+| `prototype/` | The first prototype in Rust: one binary, `arbor` (`arbor/src/`: `world`, `tree` for diff/keep/undo, `cell` for `bwrap`), end-to-end tests in `arbor/tests/`, and `check.sh`. The toolchain is pinned in `rust-toolchain.toml` |
 | `docs/` | Tracking guide and README images |
 | `.github/workflows/` | `checks.yml` runs `bench/check.sh` on every PR; `project-tracking.yml` keeps milestones and labels in order |
 
@@ -25,11 +26,13 @@ Never describe something as working, built or measured unless a recorded check e
 
 - `bench/check.sh` runs the source checks (`bash -n`, `python3 -m py_compile`, `node --check`, `gcc -fsyntax-only`). It needs Python 3.14+, Node.js and gcc, reads no personal data and keeps compiled Python files out of `bench/`.
 - `bench/run.sh` runs the whole suite, about 2½ minutes; `ONLY="boot search" bench/run.sh` or `SKIP="storage" bench/run.sh` for a subset. `bench/README.md` lists what it needs, reads and touches.
+- `prototype/check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. The end-to-end tests need `bwrap` 0.10+ and skip with a note where it cannot mount an overlay; CI builds 0.11.1 and sets `ARBOR_REQUIRE_BWRAP=1`, so there they must run. `cargo build --release` in `prototype/` builds `target/release/arbor`; `prototype/README.md` shows how to use it.
 
 ## Working well here
 
 - Start from the active issue, then read only the code involved.
 - The suite needs no root and must stay that way: namespaces are unprivileged, the overlay lives in a private mount namespace, temp files go in one `mktemp -d` folder removed on exit, and Docker runs with `--rm --pull never --network none`.
+- The prototype needs no root either. On Ubuntu 24.04+ AppArmor blocks plain `unshare` for ordinary programs but allows `bwrap`, so cells go through `bwrap`; check new sandbox code from an ordinary process (`systemd-run --user --pipe --wait …`), not only from an agent session, whose AppArmor profile may allow more. `arbor` writes only its state folder (`$ARBOR_HOME`, else `~/.local/share/arbor`) and, on keep or undo, the world's base folder; tests set `ARBOR_HOME` and use temp folders.
 - It reads `$HOME` (names only), the projects folder, the transcripts and `/boot`, and never writes outside its temp folder and `bench/results/`. Only aggregates leave the transcript pass. Keep all of that true.
 - A run on a busy machine reads slow: note the load average and the busiest processes, as the report header does, and compare runs only on the same PC under the same conditions (`bench/README.md`, *Reading the report*).
 - A new number in `OPTIMIZATION.md` or the README is marked **M**, links its source, or says **est.**. A new M number gets a row in the suite, with its reference value in `bench/lib/reference.py`.

@@ -1,0 +1,13 @@
+[package]
+name = "arbor"
+version = "0.1.0"
+description = "The first Arbor prototype: worlds, cells and keys as a rootless layer on Linux."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+lexopt = "0.3"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
