@@ -6,21 +6,22 @@
 //! cleared environment; no network, no new user namespaces and an empty session keyring; and a filter that refuses
 //! the kernel calls sandbox escapes start from (see `seccomp`). Its one way out is a socket to the outbox, where it
 //! asks for effects that a person may release (see `outbox`). A key (see `key`) opens more folders and files and
-//! passes variables in; password files and agents' records of your sessions stay hidden even then. A key can give the
-//! cell a home folder of its own, kept between runs, in place of the empty one. A key can also open the network to the
-//! hosts it names: the cell's first process is then arbor itself, which hands the arbor outside a port on the cell's
-//! loopback to answer as a proxy, and becomes the command (see `net`). Where the user's systemd manager allows it, each
-//! cell also runs in its own cgroup (see `cgroup`), with its limits, and its whole cost is read from there. A command
-//! the cell would not find is refused before it starts, in plain words: where it is hidden, and the key option that
-//! opens it (see `View::check`).
+//! passes variables in; password files and agents' records of your sessions stay hidden even then, and those missing
+//! when the cell starts stay missing (see `Layer`). A key can give the cell a home folder of its own, kept between
+//! runs, in place of the empty one. A key can also open the network to the hosts it names: the cell's first process is
+//! then arbor itself, which hands the arbor outside a port on the cell's loopback to answer as a proxy, and becomes
+//! the command (see `net`). Where the user's systemd manager allows it, each cell also runs in its own cgroup (see
+//! `cgroup`), with its limits, and its whole cost is read from there. A command the cell would not find is refused
+//! before it starts, in plain words: where it is hidden, and the key option that opens it (see `View::check`).
 
+use std::collections::HashSet;
 use std::env;
 use std::ffi::{CStr, CString, OsStr, OsString};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Component, Path, PathBuf};
@@ -169,9 +170,10 @@ enum Mount {
     Secrets,
     /// A password file or an agent's record, which reads empty.
     Secret,
-    /// A folder of the computer that holds one of those, read-only as `Root` shows it, but through an overlay of its
-    /// own. The kernel takes a mount off an entry of the computer's when a program renames a new file over it or
-    /// deletes it, which shows what replaced it, but leaves one on an overlay's entry, as in a world.
+    /// A folder of the computer that holds one of those, or where one is missing, read-only as `Root` shows it, but
+    /// through an overlay of its own. The kernel takes a mount off an entry of the computer's when a program renames a
+    /// new file over it or deletes it, which shows what replaced it, but leaves one on an overlay's entry, as in a
+    /// world; and only an overlay can take a layer that keeps a missing one missing (see `Layer`).
     Holder,
 }
 
@@ -182,6 +184,10 @@ pub struct View {
     home: Option<PathBuf>,
     /// The key's home folder, which the cell sees at `home` (`Mount::Home`).
     key_home: Option<PathBuf>,
+    /// Where a password file or record is missing, the first part of its way that is, where the world, a folder the
+    /// key opens or the computer itself would show what a program outside makes there while the cell runs. A layer
+    /// of whiteouts keeps each missing (see `Layer`).
+    gaps: Vec<PathBuf>,
 }
 
 fn add(a: &mut Vec<OsString>, items: &[&dyn AsRef<OsStr>]) {
@@ -270,9 +276,10 @@ impl View {
         // too, unless the world or the key is that file or folder itself. What the key opens inside one of them goes
         // on top.
         let shown_paths: Vec<PathBuf> = shown.iter().map(|(p, _)| p.clone()).collect();
-        let masks = home
+        let key::Hidden { masks, missing } = home
             .as_deref()
-            .map_or_else(Vec::new, |h| key::secrets_in(h, &hidden, &shown_paths));
+            .map(|h| key::secrets_in(h, &hidden, &shown_paths))
+            .unwrap_or_default();
         let masked = |p: &Path| masks.iter().any(|(s, _)| paths::contains(s, p));
         for (p, how) in &shown {
             // What lies inside the world is in it already.
@@ -297,23 +304,38 @@ impl View {
         {
             m.push((runtime, Mount::Empty));
         }
+        // One that is missing stays missing where the cell would see what a program outside makes there: in the world,
+        // in a folder the key opens, or on the computer itself.
+        let mut gaps: Vec<PathBuf> = missing
+            .into_iter()
+            .filter(|g| {
+                g.parent().is_some_and(|dir| {
+                    matches!(over(&m, dir), Mount::World | Mount::Folder | Mount::Root)
+                })
+            })
+            .collect();
         // A password file or record that the cell sees as the computer's own, one linked from the home folder to
-        // elsewhere, gets its folder through an overlay, so that its mask stays when its program replaces it. The
-        // overlay goes in before anything that may lie inside it, which lands on top as before.
-        let holders = holders(&m);
+        // elsewhere, gets its folder through an overlay, so that its mask stays when its program replaces it, and so
+        // that one missing there stays missing. The overlay goes in before anything that may lie inside it, which
+        // lands on top as before.
+        let holders = holders(&m, &gaps);
         m.splice(
             fresh..fresh,
             holders.into_iter().map(|p| (p, Mount::Holder)),
         );
+        // Right in `/`, there is no overlay to keep one missing.
+        gaps.retain(|g| g.parent().is_some_and(|dir| over(&m, dir) != Mount::Root));
         Ok(View {
             mounts: m,
             home,
             key_home,
+            gaps,
         })
     }
 
     /// The `bwrap` arguments for a cell with these mounts in `world` that runs `cmd` in `cwd` with `path` as its
-    /// `PATH`, with the seccomp filter read from the descriptor `filter` and its outbox socket at `socket`.
+    /// `PATH`, with the seccomp filter read from the descriptor `filter`, its outbox socket at `socket`, and `layer`
+    /// on the overlays that would show a gap.
     #[allow(clippy::too_many_arguments)]
     fn args(
         &self,
@@ -324,9 +346,18 @@ impl View {
         filter: RawFd,
         socket: &Path,
         port: Option<RawFd>,
+        layer: Option<&Layer>,
         opts: &Options,
     ) -> Result<Vec<OsString>> {
         let mut a: Vec<OsString> = Vec::new();
+        // What an overlay at `p` shows: the computer's folder, then, on top, the layer that keeps its gaps missing.
+        // bwrap stacks the sources in order, the last on top.
+        let sources = |a: &mut Vec<OsString>, p: &Path| {
+            add(a, &[&"--overlay-src", &p]);
+            if let Some(top) = layer.and_then(|l| l.on(p)) {
+                add(a, &[&"--overlay-src", &top]);
+            }
+        };
         for (p, how) in &self.mounts {
             match how {
                 Mount::Root | Mount::File => add(&mut a, &[&"--ro-bind", p, p]),
@@ -338,25 +369,24 @@ impl View {
                     Some(dir) => add(&mut a, &[&"--bind", dir, p]),
                     None => add(&mut a, &[&"--dir", p]),
                 },
-                Mount::World => add(
-                    &mut a,
-                    &[
-                        &"--overlay-src",
-                        &world.base,
-                        &"--overlay",
-                        &world.up(),
-                        &world.work(),
-                        &world.base,
-                    ],
-                ),
-                Mount::Folder => add(&mut a, &[&"--overlay-src", p, &"--tmp-overlay", p]),
+                Mount::World => {
+                    sources(&mut a, &world.base);
+                    add(
+                        &mut a,
+                        &[&"--overlay", &world.up(), &world.work(), &world.base],
+                    );
+                }
+                Mount::Folder => {
+                    sources(&mut a, p);
+                    add(&mut a, &[&"--tmp-overlay", p]);
+                }
                 // A plain bind would be `nodev`, and reading the null device there fails; this one reads empty.
                 Mount::Secret => add(&mut a, &[&"--dev-bind", &"/dev/null", p]),
                 // bwrap's read-only overlay needs two sources, so this is a throwaway one, made read-only.
-                Mount::Holder => add(
-                    &mut a,
-                    &[&"--overlay-src", p, &"--tmp-overlay", p, &"--remount-ro", p],
-                ),
+                Mount::Holder => {
+                    sources(&mut a, p);
+                    add(&mut a, &[&"--tmp-overlay", p, &"--remount-ro", p]);
+                }
             }
         }
         // The cell's one way out: its socket to the outbox, and the arbor command that asks through it.
@@ -632,14 +662,16 @@ fn over(mounts: &[(PathBuf, Mount)], p: &Path) -> Mount {
         .map_or(Mount::Root, |(_, how)| *how)
 }
 
-/// The folders that hold a mask in `mounts` where the cell sees the computer itself, outer ones first and none inside
-/// another: each goes through an overlay of its own (`Mount::Holder`), so its masks stay. Never `/`, whose overlay
-/// would stand in for the whole computer.
-fn holders(mounts: &[(PathBuf, Mount)]) -> Vec<PathBuf> {
+/// The folders that hold a mask in `mounts`, or one of `gaps`, where the cell sees the computer itself, outer ones
+/// first and none inside another: each goes through an overlay of its own (`Mount::Holder`), so its masks stay and
+/// its gaps stay missing. Never `/`, whose overlay would stand in for the whole computer.
+fn holders(mounts: &[(PathBuf, Mount)], gaps: &[PathBuf]) -> Vec<PathBuf> {
     let mut folders: Vec<&Path> = mounts
         .iter()
         .filter(|(_, how)| matches!(how, Mount::Secret | Mount::Secrets))
-        .filter_map(|(p, _)| p.parent())
+        .map(|(p, _)| p)
+        .chain(gaps)
+        .filter_map(|p| p.parent())
         .filter(|folder| *folder != Path::new("/") && over(mounts, folder) == Mount::Root)
         .collect();
     folders.sort_by_key(|folder| folder.components().count());
@@ -650,6 +682,112 @@ fn holders(mounts: &[(PathBuf, Mount)]) -> Vec<PathBuf> {
         }
     }
     held
+}
+
+/// The overlays among `mounts` with one of `gaps` inside: the world's, those of the folders a key opens, and the
+/// holders'. Each gets the layer of whiteouts on top of what it shows.
+fn layered(mounts: &[(PathBuf, Mount)], gaps: &[PathBuf]) -> Vec<PathBuf> {
+    mounts
+        .iter()
+        .filter(|(p, how)| {
+            matches!(how, Mount::World | Mount::Folder | Mount::Holder)
+                && gaps.iter().any(|g| g != p && paths::contains(p, g))
+        })
+        .map(|(p, _)| p.clone())
+        .collect()
+}
+
+/// A layer of overlayfs whiteouts, one at each of a cell's gaps, laid out like the computer's own folders. On top of
+/// an overlay's other layers, it keeps each gap there missing, whatever a program outside makes there while the cell
+/// runs, as the cell found it when it started. It is not a mount, so the cell writes there as anywhere else: in a
+/// world, what it writes is among the world's changes, and the layer never is. Removed when dropped, after the cell.
+struct Layer {
+    dir: PathBuf,
+    /// The overlays it goes on (see `layered`).
+    over: Vec<PathBuf>,
+}
+
+impl Layer {
+    /// The layer for `view`'s gaps, where an overlay would show one, in a new folder of the session's runtime folder
+    /// (`XDG_RUNTIME_DIR`), else of `/dev/shm` or the temp folder: a tmpfs, which no key may open and no cell sees.
+    /// overlayfs refuses a layer that lies inside another of the same overlay, so it is never inside one it goes on.
+    fn new(view: &View) -> Result<Option<Layer>> {
+        let over = layered(&view.mounts, &view.gaps);
+        if over.is_empty() {
+            return Ok(None);
+        }
+        let place = env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain([PathBuf::from("/dev/shm"), env::temp_dir()])
+            .filter_map(|d| fs::canonicalize(d).ok())
+            .find(|d| d.is_dir() && !over.iter().any(|o| paths::contains(o, d)))
+            .ok_or_else(|| {
+                Error::new(
+                    "cannot keep missing password files missing: XDG_RUNTIME_DIR, /dev/shm and the temp folder \
+                     are all missing or inside what the command sees",
+                )
+            })?;
+        let dir = sys::make_temp_dir(&place.join("arbor-layer-"))
+            .ctx(|| format!("cannot make a folder in {}", place.display()))?;
+        let layer = Layer { dir, over };
+        layer
+            .fill(&view.gaps)
+            .ctx(|| format!("cannot write {}", layer.dir.display()))?;
+        Ok(Some(layer))
+    }
+
+    /// Where the layer has `p`, an absolute path.
+    fn at(&self, p: &Path) -> PathBuf {
+        self.dir.join(p.strip_prefix("/").unwrap_or(p))
+    }
+
+    /// The layer's folder for the overlay at `p`, where it goes on that one.
+    fn on(&self, p: &Path) -> Option<PathBuf> {
+        self.over.iter().any(|o| o == p).then(|| self.at(p))
+    }
+
+    /// A whiteout at each of `gaps`, and the folders on the way, each with its mode and times as the computer has it:
+    /// a cell sees a folder that several layers have with those of the top one. Their times are set once they are
+    /// full, since what is made in a folder changes them. Their owner keeps every permission, so the layer can be
+    /// removed.
+    fn fill(&self, gaps: &[PathBuf]) -> io::Result<()> {
+        let (mut made, mut known): (Vec<&Path>, HashSet<&Path>) = Default::default();
+        for gap in gaps {
+            let mut way: Vec<&Path> = gap
+                .ancestors()
+                .skip(1)
+                .filter(|a| a.parent().is_some())
+                .collect();
+            way.reverse();
+            for folder in way {
+                if known.insert(folder) {
+                    fs::create_dir(self.at(folder))?;
+                    made.push(folder);
+                }
+            }
+            sys::make_whiteout(&self.at(gap))?;
+        }
+        for folder in made {
+            let Ok(meta) = fs::metadata(folder) else {
+                continue;
+            };
+            let copy = self.at(folder);
+            let mode = meta.mode() & 0o7777 | 0o700;
+            fs::set_permissions(&copy, fs::Permissions::from_mode(mode))?;
+            let times = FileTimes::new()
+                .set_accessed(meta.accessed()?)
+                .set_modified(meta.modified()?);
+            File::open(&copy)?.set_times(times)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Layer {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// `p` with `.` and `..` worked out from its text alone.
@@ -1261,6 +1399,8 @@ pub fn run(
     } else {
         Some(UnixStream::pair()?)
     };
+    // The layer that keeps missing password files and records missing, kept until the cell has ended.
+    let layer = Layer::new(&view)?;
     let args = view.args(
         world,
         cmd,
@@ -1269,6 +1409,7 @@ pub fn run(
         filter.as_raw_fd(),
         socket.path(),
         pair.as_ref().map(|(_, inside)| inside.as_raw_fd()),
+        layer.as_ref(),
         opts,
     )?;
     // Everything exec needs is made before the fork: the child may not allocate.
@@ -1464,6 +1605,7 @@ mod tests {
             ],
             home: Some(p("/home/u")),
             key_home: None,
+            gaps: Vec::new(),
         };
         for (path, seen) in [
             ("/usr/bin/env", Mount::Root),
@@ -1504,8 +1646,93 @@ mod tests {
             (p("/data/gnupg"), Mount::Secrets),
             (p("/netrc"), Mount::Secret),
         ];
-        assert_eq!(holders(&mounts), [p("/data"), p("/srv/dots")]);
-        assert!(holders(&mounts[..9]).is_empty());
+        assert_eq!(holders(&mounts, &[]), [p("/data"), p("/srv/dots")]);
+        assert!(holders(&mounts[..9], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_missing_one_stays_missing_in_each_overlay_that_would_show_it() {
+        let p = PathBuf::from;
+        let mut mounts = vec![
+            (p("/"), Mount::Root),
+            (p("/tmp"), Mount::Empty),
+            (p("/home"), Mount::Empty),
+            (p("/home/u"), Mount::Dir),
+            (p("/home/u/shop"), Mount::World),
+            (p("/home/u/.claude"), Mount::Folder),
+            (p("/home/u/.config"), Mount::Folder),
+        ];
+        // In the world, in a folder the key opens, inside another one there, and linked from the home folder to
+        // elsewhere on the computer, in a folder that gets an overlay of its own, or right in `/`, which cannot.
+        let gaps = [
+            p("/home/u/shop/.env"),
+            p("/home/u/.claude/history.jsonl"),
+            p("/home/u/.config/gh"),
+            p("/srv/dots/claude.json"),
+            p("/srv/dots/more/netrc"),
+            p("/netrc"),
+        ];
+        assert_eq!(holders(&mounts, &gaps), [p("/srv/dots")]);
+        mounts.insert(2, (p("/srv/dots"), Mount::Holder));
+        assert_eq!(
+            layered(&mounts, &gaps),
+            [
+                p("/srv/dots"),
+                p("/home/u/shop"),
+                p("/home/u/.claude"),
+                p("/home/u/.config")
+            ]
+        );
+        // An overlay with no gap inside gets no layer, nor does a folder the cell gets fresh.
+        assert_eq!(layered(&mounts, &gaps[1..2]), [p("/home/u/.claude")]);
+        assert!(layered(&mounts, &[p("/tmp/x"), p("/home/u/notes")]).is_empty());
+    }
+
+    #[test]
+    fn a_layer_has_a_whiteout_at_each_gap_in_folders_like_the_computer_s_own() {
+        use std::os::unix::fs::FileTypeExt;
+        let root = env::temp_dir().join(format!("arbor-unit-layer-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("home/.config")).unwrap();
+        let root = fs::canonicalize(&root).unwrap();
+        let (home, config) = (root.join("home"), root.join("home/.config"));
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o750)).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        File::open(&config)
+            .unwrap()
+            .set_times(FileTimes::new().set_accessed(old).set_modified(old))
+            .unwrap();
+        let gaps = [
+            home.join(".config/gh"),
+            home.join(".netrc"),
+            home.join(".ssh"),
+        ];
+        let dir = sys::make_temp_dir(&env::temp_dir().join("arbor-unit-layer-")).unwrap();
+        let layer = Layer {
+            dir: dir.clone(),
+            over: vec![home.clone()],
+        };
+        layer.fill(&gaps).unwrap();
+
+        for gap in &gaps {
+            let meta = fs::symlink_metadata(layer.at(gap)).unwrap();
+            assert!(
+                meta.file_type().is_char_device() && meta.rdev() == 0,
+                "{}",
+                gap.display()
+            );
+        }
+        // A cell sees the folder on the way as the computer has it, not as the layer made it.
+        let copy = fs::metadata(layer.at(&config)).unwrap();
+        assert_eq!(copy.mode() & 0o7777, 0o750);
+        assert_eq!(copy.modified().unwrap(), old);
+        assert_eq!(fs::read_dir(layer.at(&home)).unwrap().count(), 3);
+        // It goes only on the overlays it was made for, and its folder goes with it.
+        assert_eq!(layer.on(&home), Some(layer.at(&home)));
+        assert_eq!(layer.on(&config), None);
+        drop(layer);
+        assert!(!dir.exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1544,6 +1771,7 @@ mod tests {
             ],
             home: Some(home.clone()),
             key_home: Some(key_home.clone()),
+            gaps: Vec::new(),
         };
         for (path, seen) in [
             (home.join("notes"), Mount::Home),
