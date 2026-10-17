@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mission-history</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@400;500;600&display=block" rel="stylesheet">
+<link rel="stylesheet" href="base.css">
+<link rel="stylesheet" href="mission.css">
+<script src="theme.js"></script>
+<style>
+  .card { height: 624px; }
+  .filters { display: flex; align-items: center; gap: 8px; padding: 14px 24px 0; }
+  .dd { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px 6px 12px; border: 1px solid var(--rule); border-radius: 9px; background: var(--paper); font: 500 12.5px var(--sans); color: var(--ink); }
+  .dd::after { content: ""; width: 6px; height: 6px; border: solid var(--ink-3); border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(45deg); }
+  .check { display: inline-flex; align-items: center; gap: 8px; margin-left: 6px; font: 500 12.5px var(--sans); color: var(--ink-2); }
+  .check i { width: 14px; height: 14px; border-radius: 4px; box-shadow: inset 0 0 0 1.5px var(--ink-3); background: var(--paper); }
+  .filters .count { margin-left: auto; font: 400 12.5px var(--sans); color: var(--ink-3); }
+  .scrub { position: relative; margin: 14px 24px 0; height: 76px; }
+  .scrub svg { position: absolute; left: 0; top: 0; }
+  .tick { font: 400 11.5px var(--sans); fill: var(--ink-3); }
+  .hand { font: 600 11.5px var(--sans); fill: var(--ink); }
+  .hint { font: 400 11.5px var(--sans); fill: var(--ink-3); }
+  .list { margin: 8px 24px 0; }
+  .fresh { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px dashed var(--quiet); border-radius: 9px; font: 500 12.5px var(--sans); color: var(--ink-2); }
+  .fresh .up { font: 600 13px/1 var(--sans); color: var(--ink-3); }
+  .fresh b { color: var(--green-ink); font-weight: 600; margin-left: auto; }
+  .row { display: grid; grid-template-columns: 62px 128px 1fr 170px 44px; gap: 12px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--rule); }
+  .row:first-of-type { border-top: 0; }
+  .t { font: 500 12.5px var(--sans); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .who { font: 600 12.5px/1.35 var(--sans); color: var(--ink); }
+  .who small { display: block; font: 400 12px var(--sans); color: var(--ink-3); }
+  .what { font: 400 12.5px/1.4 var(--sans); color: var(--ink); }
+  .what small { display: block; font: 400 12px/1.4 var(--sans); color: var(--ink-3); }
+  .res { font: 500 12.5px/1.35 var(--sans); color: var(--ink-2); display: flex; align-items: baseline; gap: 7px; }
+  .res i { width: 8px; height: 8px; flex: none; border-radius: 50%; transform: translateY(-1px); }
+  .res.wait { color: var(--amber-ink); } .res.wait i { background: var(--amber); }
+  .res.ok i { background: var(--green); }
+  .res.cut { color: var(--ink-3); } .res.cut i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+  .cost { text-align: right; font: 500 12.5px var(--sans); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .rows { margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head">
+    <div>
+      <div class="eyebrow">mission control · history</div>
+      <div class="title">every step, and the list holds still</div>
+    </div>
+    <div class="note">A wireframe with made-up data.<br>No interface exists yet.</div>
+  </div>
+  <div class="win">
+    <div class="bar">
+      <span class="app"><img src="../logo.svg" alt="">Mission Control</span>
+      <span class="tab">Now</span><span class="tab on">History</span><span class="tab">Budgets</span>
+      <span class="find">Find a task, a file or an agent<span class="kbd">Ctrl K</span></span>
+    </div>
+    <div class="filters">
+      <span class="dd">All tasks</span><span class="dd">All agents</span>
+      <span class="check"><i></i>Only what left the machine</span>
+      <span class="count num">today · 48,120 steps</span>
+    </div>
+    <div class="scrub"><svg id="scrub" width="768" height="76" viewBox="0 0 768 76"></svg></div>
+    <div class="list">
+      <div class="fresh"><span class="up">↑</span>There are newer steps than these.<b>Show them</b></div>
+      <div class="rows">
+        <div class="row"><span class="t">14:05:58</span><span class="who">Payments<small>try b's agent</small></span><span class="what">asked to deploy to the test site<small>step 48,112 · key: payments, version 2</small></span><span class="res wait"><i></i>waiting for you</span><span class="cost">$0.00</span></div>
+        <div class="row"><span class="t">14:05:51</span><span class="who">Help pages<small>agent 41</small></span><span class="what">translated “Returns and refunds” into Spanish<small>step 48,109 · key: help pages</small></span><span class="res ok"><i></i>done</span><span class="cost">$0.02</span></div>
+        <div class="row"><span class="t">14:05:40</span><span class="who">Payments<small>try b's agent</small></span><span class="what">ran 214 tests on try b<small>step 48,101 · key: payments, version 2</small></span><span class="res ok"><i></i>all pass</span><span class="cost">$0.04</span></div>
+        <div class="row"><span class="t">14:05:31</span><span class="who">Website speed-up<small>try d's agent</small></span><span class="what">measured how fast the pages load<small>step 48,097 · key: website speed-up</small></span><span class="res cut"><i></i>12% slower, thrown away</span><span class="cost">$0.01</span></div>
+        <div class="row"><span class="t">14:05:12</span><span class="who">Bug reports<small>agent 7</small></span><span class="what">read report 412 and sorted it under “checkout”<small>step 48,090 · key: bug reports</small></span><span class="res ok"><i></i>done</span><span class="cost">$0.01</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  // A still histogram of steps per 15 minutes from 08:00 to now (made-up counts), and the scrub handle at 14:05.
+  const counts = [12,30,44,61,80,96,88,102,120,134,128,140,150,138,122,110,96,104,131,160,188,204,226,240,232];
+  const NS = 'http://www.w3.org/2000/svg', svg = document.getElementById('scrub');
+  const el = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text !== undefined) e.textContent = text; svg.appendChild(e); return e; };
+  const x0 = 0, x1 = 640, base = 52, y0 = 18, start = 8 * 60, end = 14 * 60 + 15;
+  const X = m => x0 + (m - start) / (end - start) * (x1 - x0);
+  const max = Math.max(...counts), w = (x1 - x0) / counts.length;
+  counts.forEach((c, i) => {
+    const h = (base - y0) * c / max;
+    el('rect', { x: x0 + i * w + 1, y: base - h, width: w - 2, height: h, rx: 2, fill: 'var(--quiet)' });
+  });
+  el('line', { x1: x0, x2: x1, y1: base + .5, y2: base + .5, stroke: 'var(--rule)', 'stroke-width': 1 });
+  [[8, '08:00'], [10, '10:00'], [12, '12:00'], [14, '14:00']].forEach(([h, t]) => el('text', { x: X(h * 60), y: base + 18, class: 'tick', 'text-anchor': h === 8 ? 'start' : 'middle' }, t));
+  const hx = X(14 * 60 + 5);
+  el('line', { x1: hx, x2: hx, y1: 2, y2: base, stroke: 'var(--ink)', 'stroke-width': 1.5 });
+  el('circle', { cx: hx, cy: base, r: 5.5, fill: 'var(--paper)', stroke: 'var(--ink)', 'stroke-width': 2 });
+  el('text', { x: hx - 8, y: 10, class: 'hand', 'text-anchor': 'end' }, '14:05');
+  el('text', { x: 768, y: 24, class: 'hint', 'text-anchor': 'end' }, 'drag the line,');
+  el('text', { x: 768, y: 40, class: 'hint', 'text-anchor': 'end' }, 'or use ← and →');
+</script>
+</body>
+</html>

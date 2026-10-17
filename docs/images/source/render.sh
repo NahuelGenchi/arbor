@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Renders the README images from the pages in this folder: each page in a light and a dark version, at twice its
-# size, as lossless WebP (the social preview as PNG, light only). Needs Google Chrome, Python 3 with Pillow, and a
-# network connection for the Newsreader and Inter fonts.
+# Renders the images of the README and of docs/INTERFACE.md from the pages in this folder: each page in a light and
+# a dark version, at twice its size, as lossless WebP (the social preview as PNG, light only). Needs Google Chrome,
+# Python 3 with Pillow, and a network connection for the Newsreader and Inter fonts.
 #   ./render.sh            every image
 #   ./render.sh hero       only hero-light.webp and hero-dark.webp
 set -euo pipefail
@@ -17,6 +17,10 @@ PAGES=(
   "decision 880 404"
   "bill 880 264"
   "measured 880 468"
+  "mission-now 880 760"
+  "mission-decision 880 616"
+  "mission-task 880 646"
+  "mission-history 880 624"
   "social 1280 640"
 )
 
