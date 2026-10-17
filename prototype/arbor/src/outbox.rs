@@ -1093,6 +1093,7 @@ mod tests {
             read: Vec::new(),
             env: Vec::new(),
             net: Vec::new(),
+            home: None,
             limits: Limits::default(),
             spend,
             made_ns,

@@ -33,7 +33,7 @@ arbor: `cargo` is in ~/.cargo/bin, which the world hides. A key opens it: `arbor
 ## What a command inside a world can do
 
 - **Change the folder, but only in the world.** The world is a copy-on-write layer mounted over the folder's own path, so tools see their usual paths. Every change lands in the world, and the real folder stays as it was until `arbor keep`.
-- **See little else of yours.** Inside a world your home folder is empty, so are `/media` and `/mnt`, and the other folders in `/home` are gone. Anything written there vanishes when the command ends. The rest of the computer, such as its programs in `/usr`, can be read but not changed. Only a few plain variables of the shell that started arbor pass in: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `COLORTERM`, `NO_COLOR`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `EDITOR`, `VISUAL` and `PAGER`. The computer's name reads `arbor`.
+- **See little else of yours.** Inside a world your home folder is empty, so are `/media` and `/mnt`, and the other folders in `/home` are gone. Anything written there vanishes when the command ends, unless a key gives the command a [home folder of its own](#a-keys-own-home-folder). The rest of the computer, such as its programs in `/usr`, can be read but not changed. Only a few plain variables of the shell that started arbor pass in: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `COLORTERM`, `NO_COLOR`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `EDITOR`, `VISUAL` and `PAGER`. The computer's name reads `arbor`.
 - **Open more only with a key**, for a while: see [Keys](#keys). Password files stay hidden even then.
 - **No network, unless a key opens hosts.** A world has a network of its own with nothing in it. A key made with `--net` opens the hosts it names, over HTTPS only: see [The network](#the-network). What needs more can wait for you in [the outbox](#the-outbox).
 - **No way out through the computer's services.** `/run`, where Docker, D-Bus, systemd and your session keep their sockets, holds only `/run/arbor` inside a world: the socket that asks the outbox, and the `arbor` command that asks through it. Arbor's own folder, with the other worlds, the keys, the outbox and the ledger, is empty.
@@ -52,6 +52,7 @@ A key opens a little more than the world, for one job and until a set time, like
 - `--toolchains`: the language tools in your home folder, those that exist of `~/.cargo` and `~/.rustup`, `~/.nvm`, `~/.npm`, `~/.npm-global` (where npm puts the tools it installs without root), `~/.bun`, `~/.deno`, `~/.volta` and `~/.local/share/pnpm`, `~/.pyenv`, `~/.local/bin`, `~/.local/lib` and `~/.cache/pip`, `~/go`, `~/.rbenv` and `~/.gem`, and `~/.sdkman`, `~/.gradle` and `~/.m2`.
 - `--env VAR`: passes that variable in from the shell that runs the command, such as `CARGO_HOME`. Repeat it to pass more.
 - `--net HOST`: a host the command may reach over HTTPS, such as `api.example.com`: see [The network](#the-network). Repeat it to open more.
+- `--home`: a home folder of the key's own, in place of the empty one, kept from one run to the next: see [A key's own home folder](#a-keys-own-home-folder).
 - `--world W`: opens only that world; without it, any. Repeat it to open more.
 - `--mem`, `--cpu`, `--pids`, `--time`: the [limits](#limits) below. A command run with the key gets the tighter of the key's limits and its own.
 - `--spend 5`: what the effects released under the key may cost in all, here $5.00 (cents as `2.50`): see [The outbox](#the-outbox).
@@ -59,7 +60,7 @@ A key opens a little more than the world, for one job and until a set time, like
 
 `arbor run shop --key dev -- npm test` and `arbor shell shop --key dev` use it. A key that has ended, or that does not open the world, is refused, and a command still running when its key ends is stopped (`killed: key expired`). `arbor keys` lists the keys: what each opens, its limits, and when it ends, as a clock time.
 
-`arbor key new tests --within dev --read ~/.cargo` makes a narrower key from another, for a smaller job. It may open only what `dev` opens, with limits and a spend no larger and an end no later, and whatever it leaves out it takes from `dev`. `arbor key take-back dev` ends `dev` and every key made within it, stops the commands running under them (`stopped: key taken back`), and refuses the effects asked for under them that still wait.
+`arbor key new tests --within dev --read ~/.cargo` makes a narrower key from another, for a smaller job. It may open only what `dev` opens, with limits and a spend no larger and an end no later, and whatever it leaves out it takes from `dev`, its home folder included. `arbor key take-back dev` ends `dev` and every key made within it, stops the commands running under them (`stopped: key taken back`), and refuses the effects asked for under them that still wait.
 
 A key cannot open the whole computer, the folders a cell gets fresh copies of (`/proc`, `/dev`, `/sys` and `/run`), arbor's own folder, or this computer's own services on `localhost`. Each key is a small file in arbor's folder that only you can read, and it holds names and paths, never a password or a token.
 
@@ -69,6 +70,25 @@ A key cannot open the whole computer, the folders a cell gets fresh copies of (`
 - cloud and service logins: `.aws`, `.azure`, `.config/gcloud`, `.kube`, `.docker/config.json`, `.config/gh`, `.git-credentials`, `.netrc`, `.vault-token` and `.terraform.d/credentials.tfrc.json`;
 - package registry tokens: `.npmrc`, `.pypirc`, `.gem/credentials`, `.cargo/credentials`, `.cargo/credentials.toml`, `.gradle/gradle.properties`, `.m2/settings.xml` and `.m2/settings-security.xml`;
 - browser and mail profiles, with saved passwords and signed-in sessions: `.mozilla`, `snap/firefox`, `.thunderbird`, `.config/google-chrome`, `.config/chromium`, `.config/BraveSoftware` and `.config/microsoft-edge`.
+
+### A key's own home folder
+
+A command in a world starts with an empty home folder, and what it writes there vanishes when it ends. A program that keeps its settings there, as an agent's program does, starts as if for the first time on every run. A key made with `--home` gives the command a home folder of the key's own instead, kept from one run to the next:
+
+```sh
+arbor key new notes --home
+arbor run shop --key notes -- sh -c 'echo dark > ~/.theme'
+arbor run shop --key notes -- cat ~/.theme   # dark
+```
+
+- **Only commands under the key see it**, at your home folder's usual path. Under another key, or none, the home folder is empty as before, and your real home folder is never touched.
+- **The world, and what the key opens, lie on top of it** as they lie on top of the empty one: a change in the world stays in the world, and writes to what the key opens still vanish.
+- **It lives in arbor's folder**, in `~/.local/share/arbor/homes/NAME`, which only you can read, and outside every world, so `arbor diff` and `arbor keep` leave it out. `arbor keys` shows what it takes on disk. Nothing caps its size, as nothing caps a world's changes.
+- **Password files.** What a command writes there, such as a login of its own, stays visible to the next command under the key: the folder is for that. Yours stay hidden as before, since the key's home takes your home folder's place.
+- **It lives as long as the key.** `arbor key take-back` removes it, once the key's commands have stopped. A key that has ended keeps it until it is taken back, but opens nothing. A key made later under the same name starts with an empty one; if a folder of that name is left over, as when a key's file was deleted by hand, arbor refuses to make the key until the folder is moved away or removed. If the folder itself is deleted, the next command under the key gets a new, empty one.
+- **A key made `--within` one with a home folder shares it**, unless it says `--home`, which gives it an empty one of its own. `--home` within a key that has no home folder is refused.
+- **Every world the key opens shares it.** What a command leaves there, such as its settings or a script the program runs when it starts, reaches the next command under the key in any of them. Make the key with `--world W` to keep its home folder to one world.
+- **A key with a home folder cannot also open yours**, or a folder that holds it, and its commands cannot run in a world of your home folder: in both, its home folder would take that place.
 
 ## The network
 
@@ -95,14 +115,14 @@ A key made `--within` another opens only hosts the other opens; one that names n
 
 ### An agent in a world
 
-An agent's program runs in a world like any other command. Its key opens three things: the folder its program is installed in, its API key, passed in by name from your shell, and its API's host. For an agent installed in your home folder, such as Claude Code:
+An agent's program runs in a world like any other command. Its key opens the folder its program is installed in, passes its API key in by name from your shell, opens its API's host, and gives it a home folder of its own for its settings. For an agent installed in your home folder, such as Claude Code:
 
 ```sh
-arbor key new agent --toolchains --read ~/.local/share/claude --env ANTHROPIC_API_KEY --net api.anthropic.com
+arbor key new agent --toolchains --read ~/.local/share/claude --env ANTHROPIC_API_KEY --net api.anthropic.com --home
 arbor shell shop --key agent
 ```
 
-Inside, the agent changes only the world, reaches only its API, and asks for anything else through [the outbox](#the-outbox); `arbor diff shop` shows what it changed. An agent may try other hosts too, such as its maker's telemetry: arbor names each one it refused, so you can decide whether to open it. The world's home folder starts empty every time, so the agent's settings and login are not kept between runs yet.
+Inside, the agent changes only the world, reaches only its API, and asks for anything else through [the outbox](#the-outbox); `arbor diff shop` shows what it changed. An agent may try other hosts too, such as its maker's telemetry: arbor names each one it refused, so you can decide whether to open it. What it keeps in its home folder, such as Claude Code's `~/.claude` and `~/.claude.json`, is still there the next time it runs under the key, in [the key's own home folder](#a-keys-own-home-folder), and goes when the key is taken back. Every world the key opens shares that folder, so a key for each project, made with `--world`, keeps them apart.
 
 ## The outbox
 
@@ -164,7 +184,7 @@ Each line carries a SHA-256 hash over the line before it and itself, so `arbor l
 
 ## Where it keeps things
 
-Worlds, keys, the outbox and the ledger live in `~/.local/share/arbor/` (`$XDG_DATA_HOME/arbor`, or `$ARBOR_HOME` if set). Each world holds only what it changed, plus, after a keep, the originals it replaced. The outbox keeps each effect with its input and the start of what it printed. Running commands' cgroups live under `arbor.slice` in your user session, and go when the command ends. To remove arbor:
+Worlds, keys and their home folders, the outbox and the ledger live in `~/.local/share/arbor/` (`$XDG_DATA_HOME/arbor`, or `$ARBOR_HOME` if set). Each world holds only what it changed, plus, after a keep, the originals it replaced. A key made with `--home` has its home folder in `homes`. The outbox keeps each effect with its input and the start of what it printed. Running commands' cgroups live under `arbor.slice` in your user session, and go when the command ends. To remove arbor:
 
 1. Discard your worlds.
 2. Run `systemctl --user stop arbor` and `cargo uninstall arbor`.
@@ -182,7 +202,7 @@ Ubuntu 24.04 and later stop ordinary programs from creating the Linux namespaces
 | `arbor/src/tree.rs` | reading a world's changes (whiteouts, opaque folders), keep with its undo journal, and undo |
 | `arbor/src/cell.rs` | running a command in a world through `bwrap`: what a sealed cell sees, its environment, its cgroup, deadlines and `stop`, how it ended and what it cost, and the list `arbor ps` reads |
 | `arbor/src/seccomp.rs` | the seccomp filter every cell runs under: the kernel calls it refuses, as a classic BPF program that bwrap loads |
-| `arbor/src/key.rs` | keys: what they open, narrowing one within another, their end, take-back, and the password files a cell never sees |
+| `arbor/src/key.rs` | keys: what they open, narrowing one within another, their end, take-back, their own home folders, and the password files a cell never sees |
 | `arbor/src/cgroup.rs` | cells' cgroups: `arbor serve`, limits, what a cell used |
 | `arbor/src/outbox.rs` | the outbox: effects on disk, the socket a cell asks through and the threads that answer it, release (once, with a receipt), refusal, and budgets |
 | `arbor/src/ledger.rs` | the ledger: appends under a lock, the hash chain, `--verify`, and following it for `watch` |
@@ -190,6 +210,6 @@ Ubuntu 24.04 and later stop ordinary programs from creating the Linux namespaces
 | `arbor/src/net.rs` | the network a key opens: hosts and how they match, the port a cell's first process opens and hands out, and the proxy that answers it (`CONNECT` only), with the tally the ledger records |
 | `arbor/src/sys.rs` | the Linux calls the standard library lacks, such as `clone3` into a cgroup, inotify and `poll`, passing a descriptor over a socket, and threads that leave signals to the main one |
 | `arbor/src/main.rs` | the `arbor` command |
-| `arbor/tests/` | end-to-end tests through the binary and `bwrap`, each with its own throwaway home folder: `worlds.rs` (worlds, what a sealed cell sees, the kernel calls it refuses), `cells.rs` (limits, `ps`, `watch`), `keys.rs` (what a key opens, password files, `stop`, take-back), `outbox.rs` (asking, release once with a receipt, refusal, budgets, `--wait`, what a world's words can do to a terminal), `net.rs` (the hosts a key opens, reached through the proxy from a cell, and what it refuses) |
+| `arbor/tests/` | end-to-end tests through the binary and `bwrap`, each with its own throwaway home folder: `worlds.rs` (worlds, what a sealed cell sees, the kernel calls it refuses), `cells.rs` (limits, `ps`, `watch`), `keys.rs` (what a key opens, password files, a key's own home folder, `stop`, take-back), `outbox.rs` (asking, release once with a receipt, refusal, budgets, `--wait`, what a world's words can do to a terminal), `net.rs` (the hosts a key opens, reached through the proxy from a cell, and what it refuses) |
 
 `./check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test` with the toolchain pinned in `rust-toolchain.toml`. Tests that need `bwrap` print `skipped` and pass where it cannot mount an overlay, and tests of `--mem`, `--cpu` and `--pids` do the same where there is no systemd user session, so a green run there proves less. CI builds bubblewrap 0.11.1 from a pinned commit (its Ubuntu 24.04 runner ships 0.9), starts a user session for the runner, and sets `ARBOR_REQUIRE_BWRAP=1` and `ARBOR_REQUIRE_CGROUPS=1`, which turn those skips into failures.

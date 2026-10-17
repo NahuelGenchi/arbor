@@ -1,9 +1,12 @@
-//! Keys end to end: a cell sees only its world until a key opens more, for a while and within limits, and a key
-//! taken back or ended stops what runs under it. They skip like `common` says.
+//! Keys end to end: a cell sees only its world until a key opens more, for a while and within limits, a key's own
+//! home folder keeps what its commands write there from one run to the next, and a key taken back or ended stops
+//! what runs under it. They skip like `common` says.
 
 mod common;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -17,6 +20,27 @@ fn inside(e: &Env, key: Option<&str>, script: &str) -> String {
     }
     args.extend(["--", "sh", "-c", script]);
     e.ok(&args)
+}
+
+/// Writes a script at `path` that may run.
+fn script(path: &Path, body: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, body).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A `PATH` of `dirs`, then `/usr/bin` and `/bin`, and the folder bubblewrap is in, since arbor finds it on this
+/// `PATH` too (CI builds it into /usr/local/bin).
+fn path_of(dirs: &[PathBuf]) -> std::ffi::OsString {
+    let bwrap = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .find(|d| d.join("bwrap").is_file())
+        .expect("Env::new ran bwrap from PATH");
+    let mut all = dirs.to_vec();
+    all.extend(["/usr/bin", "/bin"].map(PathBuf::from));
+    if !all.contains(&bwrap) {
+        all.push(bwrap);
+    }
+    std::env::join_paths(all).unwrap()
 }
 
 #[test]
@@ -62,30 +86,13 @@ fn a_command_the_world_hides_is_named_with_the_key_that_opens_it() {
     let Some(e) = Env::new("tools") else { return };
     new_world(&e);
     let home = &e.user_home;
-    let script = |path: &std::path::Path, body: &str| {
-        use std::os::unix::fs::PermissionsExt;
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, body).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    };
     script(&home.join(".cargo/bin/hello"), "#!/bin/sh\necho hello\n");
     // As rustup links cargo to itself.
     std::os::unix::fs::symlink("hello", home.join(".cargo/bin/linked")).unwrap();
     script(&home.join("bin/own"), "#!/bin/sh\necho own\n");
     // A script in the world whose interpreter the world hides.
     script(&e.base.join("greet"), "#!/usr/bin/env hello\n");
-    // arbor itself finds bubblewrap on this PATH too, and CI builds it into /usr/local/bin.
-    let bwrap = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .find(|d| d.join("bwrap").is_file())
-        .expect("Env::new ran bwrap from PATH");
-    let mut dirs = [".cargo/bin", ".npm-global/bin", "bin"]
-        .map(|d| home.join(d))
-        .to_vec();
-    dirs.extend(["/usr/bin", "/bin"].map(std::path::PathBuf::from));
-    if !dirs.contains(&bwrap) {
-        dirs.push(bwrap);
-    }
-    let path = std::env::join_paths(dirs).unwrap();
+    let path = path_of(&[".cargo/bin", ".npm-global/bin", "bin"].map(|d| home.join(d)));
     let run = |args: &[&str]| {
         let out = e.command(args).env("PATH", &path).output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -428,4 +435,274 @@ fn stop_ends_a_running_command() {
     );
     // The world is free for the next command.
     e.ok(&["run", "demo", "--", "true"]);
+}
+
+#[test]
+fn a_key_s_home_keeps_what_its_commands_write_there_and_nothing_else_sees_it() {
+    let Some(e) = Env::new("home") else { return };
+    new_world(&e);
+    let dir = e.home.join("homes/agent");
+    let made = e.ok(&["key", "new", "agent", "--home"]);
+    assert!(
+        made.contains(&format!("; home {};", dir.display())),
+        "{made}"
+    );
+    e.ok(&["key", "new", "other"]);
+    // What a command writes in the key's home is there for the next command under the key.
+    inside(
+        &e,
+        Some("agent"),
+        "echo kept > ~/.agentrc; mkdir -p ~/.config/tool && echo dark > ~/.config/tool/theme",
+    );
+    let read = "cat ~/.agentrc ~/.config/tool/theme 2>/dev/null || echo none";
+    assert_eq!(inside(&e, Some("agent"), read), "kept\ndark\n");
+    // Under another key, or none, the home folder is empty, and the real one is untouched.
+    assert_eq!(inside(&e, Some("other"), read), "none\n");
+    assert_eq!(inside(&e, None, read), "none\n");
+    assert_eq!(fs::read_dir(&e.user_home).unwrap().count(), 0);
+    // It is in arbor's folder, where only the user may enter, and never among the world's changes.
+    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!((mode(&e.home.join("homes")), mode(&dir)), (0o700, 0o700));
+    assert_eq!(fs::read_to_string(dir.join(".agentrc")).unwrap(), "kept\n");
+    assert_eq!(e.ok(&["diff", "demo"]), "no changes\n");
+    // `arbor keys` shows what it takes on disk, and the ledger names it.
+    let keys = e.ok(&["keys"]);
+    let row = |name: &str| {
+        keys.lines()
+            .find(|l| l.starts_with(&format!("{name} ")))
+            .unwrap()
+            .to_string()
+    };
+    assert!(
+        row("agent").contains("KiB") && !row("other").contains("KiB"),
+        "{keys}"
+    );
+    assert!(
+        e.ledger_rows()
+            .iter()
+            .any(|r| r.contains(" key ") && r.contains("homes/agent")),
+        "{:#?}",
+        e.ledger_rows()
+    );
+    // Where the key's home would stand in for the world, or for what the key opens, it is refused.
+    e.ok(&["new", "whole", "--from", e.user_home.to_str().unwrap()]);
+    let out = e.arbor(&["run", "whole", "--key", "agent", "--", "true"]);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is your home folder"));
+    for holds in [&e.user_home, &e.root] {
+        let args = [
+            "key",
+            "new",
+            "wide",
+            "--home",
+            "--read",
+            holds.to_str().unwrap(),
+        ];
+        assert_eq!(e.arbor(&args).status.code(), Some(3), "{holds:?}");
+    }
+}
+
+#[test]
+fn a_key_s_home_lives_as_long_as_the_key_and_keys_within_it_share_it_or_have_their_own() {
+    let Some(e) = Env::new("homes") else { return };
+    new_world(&e);
+    e.ok(&["key", "new", "agent", "--home"]);
+    e.ok(&["key", "new", "short", "--within", "agent", "--for", "1m"]);
+    e.ok(&["key", "new", "fresh", "--within", "agent", "--home"]);
+    // A home of its own within a key that has none would open more.
+    e.ok(&["key", "new", "plain"]);
+    let args = ["key", "new", "more", "--within", "plain", "--home"];
+    assert_eq!(e.arbor(&args).status.code(), Some(3));
+    // A key made within another shares its home, unless it has its own.
+    inside(&e, Some("agent"), "echo a > ~/a");
+    inside(&e, Some("short"), "echo b > ~/b");
+    inside(&e, Some("fresh"), "echo c > ~/c");
+    let seen = |key| inside(&e, Some(key), "ls ~");
+    assert_eq!(
+        (seen("agent"), seen("short"), seen("fresh")),
+        ("a\nb\n".into(), "a\nb\n".into(), "c\n".into())
+    );
+    let keys = e.ok(&["keys"]);
+    assert!(
+        keys.lines()
+            .any(|l| l.starts_with("short ") && l.contains(" of agent ")),
+        "{keys}"
+    );
+    // A home that is gone starts again, empty.
+    fs::remove_dir_all(e.home.join("homes/fresh")).unwrap();
+    assert_eq!(seen("fresh"), "");
+    // Taking a key back removes its home, and those of the keys made within it.
+    assert_eq!(
+        e.ok(&["key", "take-back", "agent"]),
+        "took back key agent, and keys fresh, short made within it; stopped 0 commands; removed 2 home folders\n"
+    );
+    assert_eq!(fs::read_dir(e.home.join("homes")).unwrap().count(), 0);
+    assert!(
+        e.ledger_rows()
+            .iter()
+            .any(|r| r.contains(" take-back ") && r.contains("; removed 2 home folders"))
+    );
+    // A new key under the same name starts with an empty one.
+    e.ok(&["key", "new", "agent", "--home"]);
+    assert_eq!(seen("agent"), "");
+    // A home left without its key, as when the key's file is deleted by hand, is neither handed on nor deleted.
+    fs::remove_file(e.home.join("keys/agent.json")).unwrap();
+    let out = e.arbor(&["key", "new", "agent", "--home"]);
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("is left from an earlier key named 'agent'"),
+        "{err}"
+    );
+    assert!(e.home.join("homes/agent").is_dir() && !e.home.join("keys/agent.json").exists());
+}
+
+#[test]
+fn an_ended_key_keeps_its_home_until_it_is_taken_back() {
+    let Some(e) = Env::new("homeend") else { return };
+    new_world(&e);
+    e.ok(&["key", "new", "brief", "--home", "--for", "2s"]);
+    inside(&e, Some("brief"), "echo x > ~/x");
+    std::thread::sleep(Duration::from_millis(2100));
+    let out = e.arbor(&["run", "demo", "--key", "brief", "--", "true"]);
+    assert_eq!(out.status.code(), Some(3));
+    let home = e.home.join("homes/brief");
+    assert!(home.join("x").exists());
+    assert!(
+        e.ok(&["key", "take-back", "brief"])
+            .ends_with("; removed 1 home folder\n")
+    );
+    assert!(!home.exists());
+}
+
+#[test]
+fn the_agent_s_own_logins_stay_in_its_home_while_yours_stay_hidden() {
+    let Some(e) = Env::new("homesecrets") else {
+        return;
+    };
+    new_world(&e);
+    let home = &e.user_home;
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "secret").unwrap();
+    fs::write(home.join(".netrc"), "yours").unwrap();
+    let cargo = home.join(".cargo");
+    fs::create_dir_all(&cargo).unwrap();
+    fs::write(cargo.join("config.toml"), "[build]").unwrap();
+    fs::write(cargo.join("credentials.toml"), "token").unwrap();
+    e.ok(&[
+        "key",
+        "new",
+        "agent",
+        "--home",
+        "--read",
+        cargo.to_str().unwrap(),
+    ]);
+    // The logins an agent keeps in its home are its own to read next time...
+    inside(
+        &e,
+        Some("agent"),
+        "echo mine > ~/.netrc; mkdir ~/.ssh && echo mine > ~/.ssh/config; echo x > ~/.cargo/new",
+    );
+    let cat = |path: &str| {
+        inside(
+            &e,
+            Some("agent"),
+            &format!("cat {path} 2>/dev/null || echo hidden"),
+        )
+    };
+    assert_eq!(cat("~/.netrc"), "mine\n");
+    assert_eq!(cat("~/.ssh/config"), "mine\n");
+    // ...while yours stay hidden, also inside what the key opens on top of its home, where writes still vanish.
+    assert_eq!(cat("~/.ssh/id_ed25519"), "hidden\n");
+    assert_eq!(cat("~/.cargo/config.toml"), "[build]");
+    assert_eq!(cat("~/.cargo/credentials.toml"), "");
+    assert_eq!(cat("~/.cargo/new"), "hidden\n");
+    assert!(!cargo.join("new").exists());
+    assert_eq!(fs::read_to_string(home.join(".netrc")).unwrap(), "yours");
+}
+
+#[test]
+fn a_world_in_the_home_folder_lies_over_the_key_s_home_and_arbor_s_folder_stays_hidden() {
+    let Some(e) = Env::new("homeworld") else {
+        return;
+    };
+    // Arbor's folder in the home folder, where it is by default, and a world there too.
+    let state = e.user_home.join(".local/share/arbor");
+    let shop = e.user_home.join("work/shop");
+    fs::create_dir_all(&shop).unwrap();
+    fs::write(shop.join("a"), "one").unwrap();
+    let arbor = |args: &[&str]| {
+        let out = e.command(args).env("ARBOR_HOME", &state).output().unwrap();
+        assert!(
+            out.status.success(),
+            "arbor {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let inside =
+        |key: &str, script: &str| arbor(&["run", "shop", "--key", key, "--", "sh", "-c", script]);
+    arbor(&["new", "shop", "--from", shop.to_str().unwrap()]);
+    arbor(&["key", "new", "agent", "--home"]);
+    arbor(&["key", "new", "other", "--home"]);
+    inside("other", "echo theirs > ~/note");
+    // The world shows on top of the key's home; arbor's folder, with the other key's home, does not show at all.
+    let looks = "cat a; echo; ls -A ~/.local/share/arbor | wc -l; \
+                 cat ~/.local/share/arbor/homes/other/note 2>/dev/null || echo hidden";
+    assert_eq!(
+        inside(
+            "agent",
+            &format!("echo two > b; echo kept > ~/note; {looks}")
+        ),
+        "one\n0\nhidden\n"
+    );
+    // The world's change is in the world, the home's in the home, and neither reached a real folder.
+    assert_eq!(arbor(&["diff", "shop"]), "A b\n");
+    let home = state.join("homes/agent");
+    assert_eq!(fs::read_to_string(home.join("note")).unwrap(), "kept\n");
+    assert!(!home.join("work/shop/b").exists() && !shop.join("b").exists());
+    assert!(!e.user_home.join("note").exists());
+    assert_eq!(
+        inside("agent", &format!("cat ~/note; {looks}")),
+        "kept\none\n0\nhidden\n"
+    );
+}
+
+#[test]
+fn a_command_in_the_key_s_home_runs_and_one_only_in_yours_is_named_with_the_key_that_opens_it() {
+    let Some(e) = Env::new("hometools") else {
+        return;
+    };
+    new_world(&e);
+    let home = &e.user_home;
+    let path = path_of(&[home.join("bin")]);
+    let run = |args: &[&str]| {
+        let out = e.command(args).env("PATH", &path).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        (
+            out.status.code(),
+            String::from_utf8(out.stdout).unwrap(),
+            err,
+        )
+    };
+    e.ok(&["key", "new", "agent", "--home"]);
+    // A tool the agent installs in its home is found the next time.
+    let install =
+        "mkdir ~/bin && printf '#!/bin/sh\\necho mine\\n' > ~/bin/mine && chmod +x ~/bin/mine";
+    let (code, _, err) = run(&["run", "demo", "--key", "agent", "--", "sh", "-c", install]);
+    assert_eq!(code, Some(0), "{err}");
+    let (code, out, err) = run(&["run", "demo", "--key", "agent", "--", "mine"]);
+    assert_eq!((code, out.as_str()), (Some(0), "mine\n"), "{err}");
+    // Without the key it is nowhere, and a tool only in your home folder is named with the key option that opens it.
+    let (code, _, err) = run(&["run", "demo", "--", "mine"]);
+    assert_eq!(code, Some(127), "{err}");
+    assert!(err.contains("world demo has no command `mine`"), "{err}");
+    script(&home.join("bin/yours"), "#!/bin/sh\necho yours\n");
+    let (code, _, err) = run(&["run", "demo", "--key", "agent", "--", "yours"]);
+    assert_eq!(code, Some(127), "{err}");
+    assert!(
+        err.contains("`yours` is in ~/bin, which the world hides and key 'agent' does not open")
+            && err.contains("--read ~/bin"),
+        "{err}"
+    );
 }
