@@ -1,0 +1,5 @@
+# Each run's report names the machine and the programs running on it; keep runs local.
+bench/results/
+__pycache__/
+*.pyc
+.claude/
