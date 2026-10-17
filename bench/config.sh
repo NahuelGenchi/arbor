@@ -54,7 +54,8 @@ FRAMES_SPIKE_MIB="${FRAMES_SPIKE_MIB:-}"
 # 10. The toolkits of issue #8, measured only with ONLY=toolkits: which ones, in this order; a folder that
 # toolkits/build.sh built them in before (empty: build them into the temp dir); the launches timed for the first frame;
 # the seconds of still screen; the seconds the machine is left to settle after the builds and after each toolkit's
-# loaded run. Their animation runs last FRAMES_S seconds, under the load of FRAMES_CELLS and FRAMES_SPIKE_MIB.
+# loaded run, before the section waits for a 1-minute load average under 1. Their animation runs last FRAMES_S
+# seconds, under the load of FRAMES_CELLS and FRAMES_SPIKE_MIB.
 TOOLKITS="${TOOLKITS:-gtk4 qtquick slint iced}"
 TOOLKITS_PREBUILT="${TOOLKITS_PREBUILT:-}"
 TOOLKITS_LAUNCHES="${TOOLKITS_LAUNCHES:-5}"

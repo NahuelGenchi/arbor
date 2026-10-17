@@ -85,7 +85,7 @@ section storage     900 "${PY[@]}" "$S/storage.py"
 section arbor       900 "${PY[@]}" "$S/arbor.py"
 section screen      300 "${PY[@]}" "$S/screen.py"
 if [[ " ${ONLY:-} " == *" toolkits "* ]]; then
-  section toolkits 3600 "${PY[@]}" "$S/toolkits.py"
+  section toolkits 5400 "${PY[@]}" "$S/toolkits.py"
 else
   SKIPPED="$SKIPPED toolkits"
 fi

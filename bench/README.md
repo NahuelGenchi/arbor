@@ -52,7 +52,7 @@ sits.
 | `SCREEN_STILL_S`, `FRAMES_S` | `60`, `20` (seconds) | still screen; each frame-pacing run |
 | `FRAMES_CELLS`, `FRAMES_SPIKE_MIB` | empty: one busy cell per CPU thread, and a spike of all the available memory but 1 GiB | the loaded frame-pacing run |
 | `TOOLKITS`, `TOOLKITS_PREBUILT` | `gtk4 qtquick slint iced`, in that order; empty: build them into the temp dir | toolkits |
-| `TOOLKITS_LAUNCHES`, `TOOLKITS_STILL_S`, `TOOLKITS_SETTLE_S` | `5` launches timed for the first frame; `60` s of still screen; `90` s to settle after the builds and after each loaded run | toolkits |
+| `TOOLKITS_LAUNCHES`, `TOOLKITS_STILL_S`, `TOOLKITS_SETTLE_S` | `5` launches timed for the first frame; `60` s of still screen; `90` s to settle after the builds and after each loaded run, and then until the 1-minute load average is under 1, at most 10 min more | toolkits |
 | `BENCH_TMP`, `RESULTS_DIR` | `$TMPDIR` or `/tmp`, `bench/results` | temp files, reports |
 
 Inputs that keep growing are pinned by content where M used a fixed one: `git log` starts at the commit M saw, and the

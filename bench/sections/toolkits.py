@@ -34,7 +34,9 @@ Each program takes one argument: `still` shows the window with its 300 rows, cha
                           started, with accessibility turned on there, its settings in memory and a runtime folder of
                           its own (the accessibility bus puts its socket in $XDG_RUNTIME_DIR/at-spi, where the
                           desktop's own is), so the desktop's accessibility bus and setting are never touched
-TOOLKITS_SETTLE_S seconds (90) pass after the builds and after each toolkit's loaded run. The programs keep their caches
+TOOLKITS_SETTLE_S seconds (90) pass after the builds and after each toolkit's loaded run, and then the section waits
+until the 1-minute load average is under 1, at most 10 minutes more, so that each toolkit is measured on a machine as
+quiet as the one before; each row's context gives the load average it was measured at. The programs keep their caches
 (Mesa's shaders, the toolkits' pipelines) in the temp dir (XDG_CACHE_HOME), which the launch left out of the first
 frame fills. Every window is the section's own, and every program, cell and spike ends with the section, also on a
 timeout or Ctrl-C. As in the screen section, it reads process and thread names and timings, never a window title or
@@ -557,6 +559,14 @@ def build(names):
     return programs, errors
 
 
+def settle_down(seconds, limit_s=600):
+    """Waits the seconds, and then until the 1-minute load average is under 1, at most limit_s more."""
+    time.sleep(seconds)
+    limit = time.monotonic() + limit_s
+    while os.getloadavg()[0] >= 1 and time.monotonic() < limit:
+        time.sleep(5)
+
+
 def main():
     # run.sh ends a section with SIGTERM, on a timeout or Ctrl-C: leave through the finally blocks, so that the
     # programs, the cells and the spike are killed at once (they would die with the section anyway).
@@ -573,7 +583,7 @@ def main():
         return fail([k for t in names for k in rows(t)], e)
     settle = float(env('TOOLKITS_SETTLE_S', '90'))
     if not env('TOOLKITS_PREBUILT'):
-        time.sleep(settle)  # after the builds
+        settle_down(settle)  # after the builds
     launches, still_s = int(env('TOOLKITS_LAUNCHES', '5')), float(env('TOOLKITS_STILL_S', '60'))
     seconds = float(env('FRAMES_S', '20'))
     for i, t in enumerate(names):
@@ -592,7 +602,7 @@ def main():
             except Exception as e:
                 fail(rows(t, metrics), e)
         if i < len(names) - 1:
-            time.sleep(settle)  # the loaded run's cells and spike: let the machine come back
+            settle_down(settle)  # the loaded run's cells and spike: let the machine come back
 
 
 if __name__ == '__main__':
