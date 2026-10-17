@@ -46,12 +46,14 @@ Ctrl-C during a keep or an undo stops it between two changes, never halfway thro
 
 `arbor run` and `arbor shell` take limits before the command:
 
-| Limit | Example | When it is reached |
-| :--- | :--- | :--- |
-| `--mem SIZE` | `--mem 512M`, `--mem 2G` | the whole command is stopped at once. Files it writes in `/tmp` count, and there is no swap to spill into |
-| `--cpu CPUS` | `--cpu 0.5`, `--cpu 2` | it runs slower, never on more than that many CPUs' worth of time |
-| `--pids N` | `--pids 64` | new processes are refused, so a runaway loop of them stops growing |
-| `--time DURATION` | `--time 90s`, `--time 10m` | the whole command is stopped |
+| Limit | When the command reaches it |
+| :--- | :--- |
+| `--mem 2G` | the whole command is stopped at once. Files it writes in `/tmp` count, and there is no swap to spill into |
+| `--cpu 0.5` | it runs slower: never more than half of one CPU's time, or two CPUs' with `--cpu 2` |
+| `--pids 64` | new processes are refused, so a runaway loop of them stops growing |
+| `--time 10m` | the whole command is stopped |
+
+Sizes take K, M, G or T (powers of 1024), and durations ms, s, m or h.
 
 Each command in a world runs in a cgroup of its own, the Linux feature that counts and limits what a group of processes uses. Your systemd user session hands arbor that power without root, as it does on a current Ubuntu desktop. The first command starts `arbor serve`, a small user service that holds those cgroups and does nothing else; it stays until you log out, or until `systemctl --user stop arbor`, which also stops anything still running in a world. arbor makes each cell's cgroup itself, and the command starts inside it, so nothing sits between a command and its cell.
 
