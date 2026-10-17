@@ -1,11 +1,13 @@
 //! Keys end to end: a cell sees only its world until a key opens more, for a while and within limits, password files
-//! and agents' records of your sessions stay hidden even then, a key's own home folder keeps what its commands write
+//! and agents' records of your sessions stay hidden even then, also when their programs replace them while a command
+//! runs, a key's own home folder keeps what its commands write
 //! there from one run to the next, a key taken back or ended stops what runs under it, and a renewed one lasts
 //! longer, home folder and running commands included. They skip like `common` says.
 
 mod common;
 
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -442,6 +444,174 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
         reads(&e, "demo", Some("within"), &files),
         ["other", "record", "-", "record", ""]
     );
+}
+
+/// A folder of the computer that a cell sees as the computer's own: outside the home folder and the other folders a
+/// cell hides, and outside /tmp, which a cell gets fresh. Removed when dropped.
+struct Outside(PathBuf);
+
+impl Outside {
+    fn new(tag: &str) -> Outside {
+        let dir = Path::new("/var/tmp").join(format!("arbor-it-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        Outside(dir)
+    }
+}
+
+impl Drop for Outside {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// What a command in `world`, under `key` if given, reads in each of `files`, as `reads` does, then again after
+/// `change` has run outside the cell while the command waits.
+fn reads_across(
+    e: &Env,
+    world: &str,
+    key: Option<&str>,
+    files: &[String],
+    change: impl FnOnce(),
+) -> (Vec<String>, Vec<String>) {
+    let show = files
+        .iter()
+        .map(|f| format!("cat {f} 2>/dev/null || printf -; echo"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let script = format!("{show}; read go; {show}");
+    let mut args = vec!["run", world];
+    if let Some(k) = key {
+        args.extend(["--key", k]);
+    }
+    args.extend(["--", "sh", "-c", &script]);
+    let mut cell = e
+        .command(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = BufReader::new(cell.stdout.take().unwrap());
+    let mut lines = |n: usize| -> Vec<String> {
+        (0..n)
+            .map(|_| {
+                let mut line = String::new();
+                out.read_line(&mut line).unwrap();
+                line.trim_end_matches('\n').to_string()
+            })
+            .collect()
+    };
+    let before = lines(files.len());
+    change();
+    // A command that ended early has closed its end; its error is shown below.
+    let _ = writeln!(cell.stdin.take().unwrap(), "go");
+    let after = lines(files.len());
+    let done = cell.wait_with_output().unwrap();
+    assert!(
+        done.status.success(),
+        "arbor {args:?} failed: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    (before, after)
+}
+
+#[test]
+fn a_hidden_file_stays_hidden_when_its_program_replaces_it_while_a_command_runs() {
+    let Some(e) = Env::new("replaced") else {
+        return;
+    };
+    new_world(&e);
+    let home = &e.user_home;
+    let h = home.to_str().unwrap();
+    // A login and a record in folders a key may open, and a login and a folder of keys linked from the home folder to
+    // a folder a cell sees as the computer's, as a dotfiles manager may leave them, next to a file that holds neither.
+    let outside = Outside::new("replaced");
+    let out = &outside.0;
+    put(
+        home,
+        &[".claude/.credentials.json", ".claude/history.jsonl"],
+        "login",
+    );
+    put(
+        out,
+        &["claude.json", "gnupg/private-keys-v1.d/key"],
+        "login",
+    );
+    put(out, &["notes"], "other");
+    std::os::unix::fs::symlink(out.join("claude.json"), home.join(".claude.json")).unwrap();
+    std::os::unix::fs::symlink(out.join("gnupg"), home.join(".gnupg")).unwrap();
+    let files: Vec<String> = [
+        "~/.claude/.credentials.json",
+        "~/.claude/history.jsonl",
+        "~/.claude.json",
+        "~/.gnupg/private-keys-v1.d/key",
+    ]
+    .map(String::from)
+    .into_iter()
+    .chain(
+        ["claude.json", "gnupg/private-keys-v1.d/key", "notes"]
+            .map(|f| out.join(f).display().to_string()),
+    )
+    .collect();
+    // Programs replace a file by renaming a new one over it, or by deleting it and writing it again, and a folder by
+    // renaming it away and making a new one.
+    let rename_over = |path: &Path| {
+        let new = path.with_extension("new");
+        fs::write(&new, "new login").unwrap();
+        fs::rename(&new, path).unwrap();
+    };
+    let change = || {
+        rename_over(&home.join(".claude/.credentials.json"));
+        fs::remove_file(home.join(".claude/history.jsonl")).unwrap();
+        fs::write(home.join(".claude/history.jsonl"), "new record").unwrap();
+        rename_over(&out.join("claude.json"));
+        let _ = fs::remove_dir_all(out.join("gnupg.old"));
+        fs::rename(out.join("gnupg"), out.join("gnupg.old")).unwrap();
+        put(out, &["gnupg/private-keys-v1.d/key"], "new login");
+    };
+    e.ok(&["key", "new", "claude", "--read", &format!("{h}/.claude")]);
+    e.ok(&["key", "new", "all", "--read", h]);
+    e.ok(&["new", "home", "--from", h]);
+
+    // In a folder a key opens, under a key that opens the whole home folder, and in a world of the home folder, they
+    // stay hidden after their programs replace them while the command runs, at their real places too.
+    for (world, key, through_home) in [
+        ("demo", Some("claude"), ["", "", "-", "-"]),
+        ("demo", Some("all"), ["", "", "", "-"]),
+        ("home", None, ["", "", "", "-"]),
+    ] {
+        let mut hidden = through_home.to_vec();
+        hidden.extend(["", "-", "other"]);
+        let (before, after) = reads_across(&e, world, key, &files, change);
+        assert_eq!(before, hidden, "{world} {key:?}, before");
+        assert_eq!(after, hidden, "{world} {key:?}, after");
+    }
+    // The folder around a linked one stays read-only, as the rest of the computer is.
+    let wrote = e.arbor(&[
+        "run",
+        "demo",
+        "--",
+        "sh",
+        "-c",
+        &format!("echo x > {}/new", out.display()),
+    ]);
+    assert!(!wrote.status.success());
+    assert!(!out.join("new").exists());
+    // A world inside that folder still lies over it, and keeps its changes.
+    put(out, &["shop/a"], "one");
+    e.ok(&[
+        "new",
+        "near",
+        "--from",
+        &out.join("shop").display().to_string(),
+    ]);
+    assert_eq!(
+        e.ok(&["run", "near", "--", "sh", "-c", "echo two > a; cat a"]),
+        "two\n"
+    );
+    assert_eq!(e.ok(&["run", "near", "--", "cat", "a"]), "two\n");
+    assert_eq!(fs::read_to_string(out.join("shop/a")).unwrap(), "one");
 }
 
 #[test]

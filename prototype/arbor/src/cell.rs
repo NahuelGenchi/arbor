@@ -169,6 +169,10 @@ enum Mount {
     Secrets,
     /// A password file or an agent's record, which reads empty.
     Secret,
+    /// A folder of the computer that holds one of those, read-only as `Root` shows it, but through an overlay of its
+    /// own. The kernel takes a mount off an entry of the computer's when a program renames a new file over it or
+    /// deletes it, which shows what replaced it, but leaves one on an overlay's entry, as in a world.
+    Holder,
 }
 
 /// What a cell is made of, apart from its way out to the outbox: its mounts in the order bwrap makes them.
@@ -196,6 +200,7 @@ impl View {
             // the session bus, Wayland and agents. Each is a way out of the cell.
             ("/run".into(), Mount::Empty),
         ];
+        let fresh = m.len();
         // The home folders and mounted drives are empty, and writes there vanish: only the world and what its key
         // opens show through. A key may give the cell a home folder of its own instead of the empty one, which stays.
         let home = paths::resolved_home();
@@ -292,6 +297,14 @@ impl View {
         {
             m.push((runtime, Mount::Empty));
         }
+        // A password file or record that the cell sees as the computer's own, one linked from the home folder to
+        // elsewhere, gets its folder through an overlay, so that its mask stays when its program replaces it. The
+        // overlay goes in before anything that may lie inside it, which lands on top as before.
+        let holders = holders(&m);
+        m.splice(
+            fresh..fresh,
+            holders.into_iter().map(|p| (p, Mount::Holder)),
+        );
         Ok(View {
             mounts: m,
             home,
@@ -339,6 +352,11 @@ impl View {
                 Mount::Folder => add(&mut a, &[&"--overlay-src", p, &"--tmp-overlay", p]),
                 // A plain bind would be `nodev`, and reading the null device there fails; this one reads empty.
                 Mount::Secret => add(&mut a, &[&"--dev-bind", &"/dev/null", p]),
+                // bwrap's read-only overlay needs two sources, so this is a throwaway one, made read-only.
+                Mount::Holder => add(
+                    &mut a,
+                    &[&"--overlay-src", p, &"--tmp-overlay", p, &"--remount-ro", p],
+                ),
             }
         }
         // The cell's one way out: its socket to the outbox, and the arbor command that asks through it.
@@ -408,11 +426,7 @@ impl View {
 
     /// The last mount over `p`, absolute and without `.` or `..`: it decides what the cell sees there.
     fn over(&self, p: &Path) -> Mount {
-        self.mounts
-            .iter()
-            .rev()
-            .find(|(m, _)| paths::contains(m, p))
-            .map_or(Mount::Root, |(_, how)| *how)
+        over(&self.mounts, p)
     }
 
     /// What the cell finds at `p`, an absolute path, following links as it would.
@@ -425,7 +439,7 @@ impl View {
             return At::Runs(p);
         }
         let file = match self.over(&p) {
-            Mount::Root | Mount::Folder | Mount::File => p.clone(),
+            Mount::Root | Mount::Holder | Mount::Folder | Mount::File => p.clone(),
             Mount::World => match world_file(world, &p) {
                 Some(Some(file)) => file,
                 Some(None) => return At::Absent,
@@ -607,6 +621,35 @@ enum At {
     Absent,
     /// arbor cannot tell for sure, so the command runs and bwrap says what went wrong, if anything.
     Unsure,
+}
+
+/// The last of `mounts` over `p`, absolute and without `.` or `..`.
+fn over(mounts: &[(PathBuf, Mount)], p: &Path) -> Mount {
+    mounts
+        .iter()
+        .rev()
+        .find(|(m, _)| paths::contains(m, p))
+        .map_or(Mount::Root, |(_, how)| *how)
+}
+
+/// The folders that hold a mask in `mounts` where the cell sees the computer itself, outer ones first and none inside
+/// another: each goes through an overlay of its own (`Mount::Holder`), so its masks stay. Never `/`, whose overlay
+/// would stand in for the whole computer.
+fn holders(mounts: &[(PathBuf, Mount)]) -> Vec<PathBuf> {
+    let mut folders: Vec<&Path> = mounts
+        .iter()
+        .filter(|(_, how)| matches!(how, Mount::Secret | Mount::Secrets))
+        .filter_map(|(p, _)| p.parent())
+        .filter(|folder| *folder != Path::new("/") && over(mounts, folder) == Mount::Root)
+        .collect();
+    folders.sort_by_key(|folder| folder.components().count());
+    let mut held: Vec<PathBuf> = Vec::new();
+    for folder in folders {
+        if !held.iter().any(|h| paths::contains(h, folder)) {
+            held.push(folder.to_path_buf());
+        }
+    }
+    held
 }
 
 /// `p` with `.` and `..` worked out from its text alone.
@@ -1436,6 +1479,33 @@ mod tests {
         ] {
             assert_eq!(view.over(Path::new(path)), seen, "{path}");
         }
+    }
+
+    #[test]
+    fn a_mask_where_the_cell_sees_the_computer_gets_its_folder_through_an_overlay() {
+        let p = PathBuf::from;
+        let mounts = vec![
+            (p("/"), Mount::Root),
+            (p("/tmp"), Mount::Empty),
+            (p("/home"), Mount::Empty),
+            (p("/home/u"), Mount::Dir),
+            (p("/home/u/shop"), Mount::World),
+            (p("/home/u/.claude"), Mount::Folder),
+            // In what a world or a key shows, a mask sits on an overlay already, and in a folder a cell gets fresh
+            // there is nothing of the computer's to replace.
+            (p("/home/u/shop/.git-credentials"), Mount::Secret),
+            (p("/home/u/.claude/.credentials.json"), Mount::Secret),
+            (p("/tmp/dots/aws"), Mount::Secrets),
+            // Linked from the home folder to elsewhere on the computer: two in one folder, one in a folder inside it,
+            // a folder of them, and one right in `/`.
+            (p("/srv/dots/claude.json"), Mount::Secret),
+            (p("/srv/dots/netrc"), Mount::Secret),
+            (p("/srv/dots/more/npmrc"), Mount::Secret),
+            (p("/data/gnupg"), Mount::Secrets),
+            (p("/netrc"), Mount::Secret),
+        ];
+        assert_eq!(holders(&mounts), [p("/data"), p("/srv/dots")]);
+        assert!(holders(&mounts[..9]).is_empty());
     }
 
     #[test]

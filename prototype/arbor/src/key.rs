@@ -107,10 +107,10 @@ pub const SECRETS: [&str; 66] = [
     ".codex/.credentials.json",
     // Codex's logins, encrypted, where it keeps their key in the keyring
     ".codex/secrets",
-    // Whole folders, of the agents that replace a login by renaming a new file over it, which takes a hidden file's
-    // mask away in a running cell, or that keep logins in a database or in files that change between versions: Gemini
-    // CLI, Qwen Code, Copilot in editors, Amp, Goose, Crush, Factory's Droid, Cline, Kilo, OpenHands and Amazon Q,
-    // and Cursor's editor, whose database holds the login with all the rest of its state.
+    // Whole folders, of the agents that replace a login by renaming a new file over it, a file they first write under
+    // another name that no list names, or that keep logins in a database or in files that change between versions:
+    // Gemini CLI, Qwen Code, Copilot in editors, Amp, Goose, Crush, Factory's Droid, Cline, Kilo, OpenHands and Amazon
+    // Q, and Cursor's editor, whose database holds the login with all the rest of its state.
     ".gemini",
     ".qwen",
     ".config/github-copilot",
