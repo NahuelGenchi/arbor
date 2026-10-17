@@ -1,8 +1,8 @@
 //! Keys: what a command in a world may open beyond the world, until when, within which limits, and what the effects
-//! it asks for may cost. A cell starts sealed (see `cell`): the home folders are empty and the environment is
-//! cleared. A key opens folders and files there, passes variables in by name and caps the cell's limits, until a set
-//! time, like a valet key. A key can be narrowed into another, never widened, and taking one back takes back every
-//! key made within it.
+//! it asks for may cost. A cell starts sealed (see `cell`): the home folders are empty, the environment is cleared
+//! and there is no network. A key opens folders and files there, passes variables in by name, opens the network to
+//! the hosts it names (see `net`) and caps the cell's limits, until a set time, like a valet key. A key can be
+//! narrowed into another, never widened, and taking one back takes back every key made within it.
 //!
 //! A key holds names and paths, never a secret's value. Each is a file in the state folder's `keys`.
 
@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cgroup::Limits;
 use crate::error::{Context, Error, Result};
+use crate::net::Host;
 use crate::outbox::{self, Cents};
 use crate::{paths, sys, world};
 
@@ -105,6 +106,9 @@ pub struct Key {
     /// The variables it passes in, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
+    /// The hosts a cell under it may reach, over HTTPS; none means no network.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub net: Vec<Host>,
     #[serde(default)]
     pub limits: Limits,
     /// What the effects released under it, and under the keys made within it, may cost in total.
@@ -137,6 +141,8 @@ pub struct Spec {
     pub read: Vec<PathBuf>,
     pub toolchains: bool,
     pub env: Vec<String>,
+    /// The hosts, as `--net` takes them.
+    pub net: Vec<String>,
     pub limits: Limits,
     pub spend: Option<Cents>,
     /// When it ends. Unset is 8 hours from now, or, within another key, that key's end.
@@ -359,6 +365,13 @@ impl Key {
         if spec.toolchains {
             read.extend(toolchains());
         }
+        let mut net = spec
+            .net
+            .iter()
+            .map(|h| Host::parse(h))
+            .collect::<Result<Vec<_>>>()?;
+        net.sort_by_key(Host::to_string);
+        net.dedup();
         let sorted = |mut v: Vec<String>| {
             v.sort();
             v.dedup();
@@ -372,6 +385,7 @@ impl Key {
             worlds: sorted(spec.worlds),
             read,
             env: sorted(spec.env),
+            net,
             limits: spec.limits,
             spend: spec.spend,
             made_ns: now,
@@ -426,6 +440,15 @@ impl Key {
             self.env = outer.env.clone();
         } else if let Some(v) = self.env.iter().find(|v| !outer.env.contains(v)) {
             return Err(refuse(format!("does not pass {v}")));
+        }
+        if self.net.is_empty() {
+            self.net = outer.net.clone();
+        } else if let Some(h) = self
+            .net
+            .iter()
+            .find(|h| !outer.net.iter().any(|o| o.covers(h)))
+        {
+            return Err(refuse(format!("does not open {h}")));
         }
         self.limits = self
             .limits
@@ -555,8 +578,17 @@ impl Key {
             .join(", ")
     }
 
-    /// `opens shop; reads ~/.cargo; env CARGO_HOME; mem 4GiB; spend $5.00; within dev; until 18:00`, for the
-    /// ledger.
+    /// `api.example.com, *.example.org`.
+    pub fn hosts(&self) -> String {
+        self.net
+            .iter()
+            .map(Host::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// `opens shop; reads ~/.cargo; env CARGO_HOME; net api.example.com; mem 4GiB; spend $5.00; within dev; until
+    /// 18:00`, for the ledger.
     pub fn describe(&self) -> String {
         let mut parts = vec![format!("opens {}", self.opened())];
         if !self.read.is_empty() {
@@ -564,6 +596,9 @@ impl Key {
         }
         if !self.env.is_empty() {
             parts.push(format!("env {}", self.env.join(", ")));
+        }
+        if !self.net.is_empty() {
+            parts.push(format!("net {}", self.hosts()));
         }
         let limits = self.limits.describe();
         if !limits.is_empty() {
@@ -620,6 +655,7 @@ mod tests {
             worlds: Vec::new(),
             read: Vec::new(),
             env: Vec::new(),
+            net: Vec::new(),
             limits: Limits::default(),
             spend: None,
             made_ns: 0,

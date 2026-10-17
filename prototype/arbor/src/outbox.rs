@@ -1092,6 +1092,7 @@ mod tests {
             worlds: Vec::new(),
             read: Vec::new(),
             env: Vec::new(),
+            net: Vec::new(),
             limits: Limits::default(),
             spend,
             made_ns,

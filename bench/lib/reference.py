@@ -56,11 +56,23 @@ def rss_why(r, key):
 # The arbor rows' reference: the last of five `ONLY=arbor` runs in a row from an ordinary context (a systemd --user
 # unit), the one closest to their medians, with arbor's state on tmpfs and `arbor serve` started by the section.
 ARBOR_REF = {'ref_date': '17 Oct 2026', 'ref_load': 1.18}
+# The rows of the network a key opens came later, from five more runs made the same way: the one closest to their
+# medians. Their load averages at the start were 0.51, 0.62, 1.37, 1.74 (ref_load) and 1.89; in all five, arbor.run_ms
+# read within 3% of its reference and arbor.run_cgroup_ms within 6%.
+ARBOR_NET_REF = {'ref_date': '17 Oct 2026', 'ref_load': 1.74}
 
 
 def cycles(r, key):
     runs = r.ctx(key, 'runs_ms')
     return f'its {len(runs)} cycles took {min(runs):.1f}–{max(runs):.1f} ms' if runs else ''
+
+
+def hops(r):
+    """A connection passes through a few processes, each of them run where the scheduler puts it."""
+    why = 'a connection lasts a fraction of a millisecond, in the client, the server and, through the proxy, arbor'
+    if 'E cores' in str(r.meta.get('cores', '')):
+        why += '; this CPU mixes P- and E-cores, and each of them runs slower on an E-core'
+    return why
 
 
 def placement(r, *parts):
@@ -349,6 +361,8 @@ ENTRIES = [
       'suite', **ARBOR_REF),
     E('arbor.run_cgroup_ms', 'Prototype', 'start a sealed command in a cgroup of its own', 5.13, 'ms', 'perf', 'suite',
       **ARBOR_REF),
+    E('arbor.run_net_ms', 'Prototype', 'the same under a key that opens a host (`--net`)', 5.72, 'ms', 'perf', 'suite',
+      **ARBOR_NET_REF),
     E('arbor.ask_ms', 'Prototype', "ask for an effect from inside: its share of the command's time", 0.61, 'ms',
       'perf', 'suite', dp=2, blocks_label='block differences', **ARBOR_REF,
       why=lambda r: f"the difference of two close medians: {r.ctx('arbor.ask_ms', 'with_ask_ms'):.2f} ms with the "
@@ -356,6 +370,10 @@ ENTRIES = [
                     "outbox (0 to 128 here), so later blocks read more"),
     E('arbor.release_ms', 'Prototype', 'release an effect (`true`), with its receipt', 1.47, 'ms', 'perf', 'suite',
       **ARBOR_REF),
+    E('arbor.tunnel_ms', 'Prototype', 'a connection from inside a world, through its proxy', 0.149, 'ms', 'perf',
+      'suite', dp=3, **ARBOR_NET_REF, why=hops),
+    E('arbor.tunnel_direct_ms', 'Prototype', 'the same connection made directly, outside any world', 0.0268, 'ms',
+      'perf', 'suite', dp=3, **ARBOR_NET_REF, why=hops),
     E('arbor.keep_ms', 'Prototype', 'keep a world that added 1,000 files', 6.22, 'ms', 'perf', 'suite', **ARBOR_REF,
       why=lambda r: placement(r, cycles(r, 'arbor.keep_ms'))),
     E('arbor.undo_ms', 'Prototype', 'undo that keep', 4.09, 'ms', 'perf', 'suite', **ARBOR_REF,

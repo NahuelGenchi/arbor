@@ -13,35 +13,54 @@ interleaved across the cases, output to /dev/null and errors to a file:
   arbor.run_cgroup_ms  the same in a cgroup of its own, under `arbor serve`. If the service is not running, a first
                        run starts it, and the section stops it again once its rows are read, unless a cell that is
                        not the section's runs in it by then
+  arbor.run_net_ms     `arbor run W --key net -- true` in a cgroup of its own, as arbor.run_cgroup_ms, where key net
+                       opens one host (`--net`): the cell's first process is then arbor, which opens the port of the
+                       cell's proxy, hands it to the arbor outside and becomes `true`; the proxy runs in that outer
+                       arbor until the cell ends
   arbor.ask_ms         asking for an effect from inside the cell: `arbor run W -- arbor effect -- true` against
                        `arbor run W -- true`, the difference of the block medians. Each block asks in a world of its
                        own, since a world may have 64 effects waiting
   arbor.release_ms     `arbor release` of one of those effects (`true`), each run another one
+Connections, timed by lib/connect.py under the python3 a cell sees, 200 after 10 warm-ups in each of 3 interleaved
+blocks: each opens, sends one request to a server on this computer's network address, and reads its answer to the end.
+  arbor.tunnel_ms         from inside a cell, through the proxy its key opens: the port on the cell's loopback, the
+                          CONNECT, and the connection arbor makes from outside
+  arbor.tunnel_direct_ms  the same connection made directly, outside any cell
+The server is a thread of this section. It listens on the network address because a key never opens this computer's
+loopback, answers only connections from this computer, and closes once the connections are timed. Where this computer
+has no network address, the two rows fail and key net names a host that no command here reaches.
 Other rows: `arbor new` (20 runs after 3 warm-ups), keep and undo of a world that added 1,000 files (median of 11
 cycles), the idle RSS and PSS of `arbor serve` when it runs the binary measured, the size of the binary, and the o200k
 tokens of `arbor diff` when 100 files changed.
 Nothing is pinned to a CPU, as in the rest of the suite. On a CPU with P- and E-cores, rows timed on one arbor process
 at a time (new, keep, undo) move with the kind of core the scheduler puts it on.
 """
+import json
 import os
 import shutil
 import signal
+import socket
 import statistics
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib'))
-from common import BENCH_DIR, WORK, emit, env, fail, median, run, same_program, smaps_rollup  # noqa: E402
+from common import (BENCH_DIR, WORK, emit, emit_blocks, env, fail, median, run, same_program,  # noqa: E402
+                    smaps_rollup)
 
 A = os.path.join(WORK, 'arbor')
 ERR = os.path.join(A, 'stderr')
 NULL = os.open(os.devnull, os.O_RDWR)
-ROWS = ['arbor.binary_mib', 'arbor.new_ms', 'arbor.run_ms', 'arbor.run_cgroup_ms', 'arbor.ask_ms',
-        'arbor.release_ms', 'arbor.serve_rss_mib', 'arbor.serve_pss_mib', 'arbor.keep_ms', 'arbor.undo_ms',
-        'arbor.diff100_tokens']
+ROWS = ['arbor.binary_mib', 'arbor.new_ms', 'arbor.run_ms', 'arbor.run_cgroup_ms', 'arbor.run_net_ms', 'arbor.ask_ms',
+        'arbor.release_ms', 'arbor.tunnel_ms', 'arbor.tunnel_direct_ms', 'arbor.serve_rss_mib', 'arbor.serve_pss_mib',
+        'arbor.keep_ms', 'arbor.undo_ms', 'arbor.diff100_tokens']
+TUNNEL = ['arbor.tunnel_ms', 'arbor.tunnel_direct_ms']
 FILES = 1000
 CYCLES = 11
+CONNS, CONNS_WARM = 200, 10
+PONG = b'HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\npong\n'
 
 
 def last_line(b):
@@ -142,6 +161,56 @@ def unit(prop):
     return run(['systemctl', '--user', 'show', '-p', prop, '--value', 'arbor'], timeout=30).stdout.decode().strip()
 
 
+def own_address():
+    """This computer's IPv4 address on its network, which a key may open, unlike loopback; None where it has none."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            # TEST-NET-1. Connecting a UDP socket sends nothing: it only picks the address a packet would leave from.
+            s.connect(('192.0.2.1', 9))
+            ip = s.getsockname()[0]
+    except OSError:
+        return None
+    return None if ip.startswith('127.') or ip == '0.0.0.0' else ip
+
+
+def pong(listener, ip):
+    """Answers each connection from this computer (ip) with `pong`, one at a time, until the listener shuts down."""
+    while True:
+        try:
+            conn, peer = listener.accept()
+        except OSError:
+            return
+        with conn:
+            data = b''
+            while peer[0] == ip and b'\r\n\r\n' not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            if peer[0] == ip and b'\r\n\r\n' in data:
+                conn.sendall(PONG)
+
+
+def connections(arbor, target):
+    """Connections to the server at target: through the proxy from inside a cell, and directly, in blocks."""
+    py = shutil.which('python3', path='/usr/local/bin:/usr/bin:/bin')
+    if not py:
+        raise RuntimeError('no python3 in /usr/local/bin, /usr/bin or /bin, where a cell sees it')
+    with open(os.path.join(BENCH_DIR, 'lib', 'connect.py')) as f:
+        script = os.path.join(folder('net', {'connect.py': f.read()}), 'connect.py')
+    arbor('new', 'net', '--from', os.path.dirname(script))
+    args = [target, str(CONNS), str(CONNS_WARM)]
+    meds = {key: [] for key in TUNNEL}
+    for _ in range(3):
+        out = arbor('run', 'net', '--key', 'net', '--', py, '-I', script, 'proxy', *args)
+        meds['arbor.tunnel_ms'].append(statistics.median(json.loads(out)))
+        r = run([py, '-I', script, 'direct', *args])
+        if r.returncode != 0:
+            raise RuntimeError('the direct connections failed: ' + last_line(r.stderr))
+        meds['arbor.tunnel_direct_ms'].append(statistics.median(json.loads(r.stdout)))
+    emit_blocks(meds, {}, {key: {'connections': CONNS, 'python': py} for key in TUNNEL})
+
+
 def main():
     # run.sh ends a section with SIGTERM, on a timeout or Ctrl-C: leave through the finally blocks, so that a service
     # the section started is stopped again.
@@ -169,9 +238,21 @@ def main():
 
     cases = [('arbor.run_ms', lambda b: arbor.argv('run', 'cell', '--', 'true'), arbor.sealed),
              ('ask', lambda b: arbor.argv('run', f'ask{b}', '--', 'arbor', 'effect', '--', 'true'), arbor.sealed)]
+    missing = {}  # why a row's case is not timed
+    # The key that opens the network, to the server the connections reach where this computer has a network address.
+    listener = target = net_err = None
+    try:
+        ip = own_address()
+        if ip:
+            listener = socket.create_server((ip, 0))
+            threading.Thread(target=pong, args=(listener, ip), daemon=True).start()
+            target = f'{ip}:{listener.getsockname()[1]}'
+        arbor('key', 'new', 'net', '--net', target or 'example.com')
+    except Exception as e:
+        net_err = e
     # A cell in a cgroup of its own needs `arbor serve`. A limit is refused without a cgroup, so a run with one shows
     # that the cell got one; that run starts the service if it was not running.
-    before = cgroup_err = None
+    before = None
     try:
         try:
             before = service()
@@ -180,9 +261,15 @@ def main():
             arbor('run', 'cell', '--pids', '4096', '--', 'true', environ=arbor.env)
             cases.append(('arbor.run_cgroup_ms', lambda b: arbor.argv('run', 'cell', '--', 'true'), arbor.env))
         except Exception as e:
-            cgroup_err = e
+            missing['arbor.run_cgroup_ms'] = e
+        # Last in each block, so the cases before it run as they did before it existed.
+        if net_err or 'arbor.run_cgroup_ms' in missing:
+            missing['arbor.run_net_ms'] = net_err or missing['arbor.run_cgroup_ms']
+        else:
+            cases.append(('arbor.run_net_ms', lambda b: arbor.argv('run', 'cell', '--key', 'net', '--', 'true'),
+                          arbor.env))
         started = before not in (None, 'active') and service() == 'active'
-        errs = timed(arbor, binary, cases, fs, started, cgroup_err)
+        errs = timed(arbor, binary, cases, fs, started, missing)
     finally:
         if before not in (None, 'active') and service() == 'active':
             # The section started it: stopped again, unless a cell that is not the section's runs in it by now.
@@ -205,6 +292,22 @@ def main():
         fail('arbor.release_ms', e)
 
     try:
+        if net_err:
+            raise net_err
+        if not target:
+            raise RuntimeError('this computer has no network address for a key to open')
+        connections(arbor, target)
+    except Exception as e:
+        fail(TUNNEL, e)
+    finally:
+        if listener:
+            try:
+                listener.shutdown(socket.SHUT_RDWR)  # wakes the server from accept, and it ends
+            except OSError:
+                pass
+            listener.close()
+
+    try:
         keep_and_undo(arbor, fs)
     except Exception as e:
         fail(['arbor.keep_ms', 'arbor.undo_ms'], e)
@@ -214,21 +317,24 @@ def main():
         fail('arbor.diff100_tokens', e)
 
 
-def timed(arbor, binary, cases, fs, started, cgroup_err):
-    """The cell rows, asking, and the service's memory. Returns the errors of the cases that failed."""
+def timed(arbor, binary, cases, fs, started, missing):
+    """The cell rows, asking, and the service's memory. missing says why a row's case is not among the cases.
+    Returns the errors of the cases that failed."""
     meds, errs = blocks(cases)
     # A cell with no limit runs without a cgroup when it cannot have one, so the service must still run at the end.
-    if meds.get('arbor.run_cgroup_ms') and 'arbor.run_cgroup_ms' not in errs and service() != 'active':
-        errs['arbor.run_cgroup_ms'] = RuntimeError('arbor serve was not running when the section finished timing '
-                                                   'cells, so some may have run without a cgroup')
+    in_cgroups = [key for key in ('arbor.run_cgroup_ms', 'arbor.run_net_ms') if meds.get(key)]
+    if in_cgroups and service() != 'active':
+        for key in in_cgroups:
+            errs.setdefault(key, RuntimeError('arbor serve was not running when the section finished timing cells, '
+                                              'so some may have run without a cgroup'))
     ctx = {'state_fs': fs}
-    for key in ('arbor.run_ms', 'arbor.run_cgroup_ms'):
+    for key in ('arbor.run_ms', 'arbor.run_cgroup_ms', 'arbor.run_net_ms'):
         if key in errs:
             fail(key, errs[key])
         elif meds.get(key):
             emit(key, statistics.median(meds[key]), dict(ctx, blocks=[round(x, 4) for x in meds[key]]))
         else:
-            fail(key, cgroup_err)
+            fail(key, missing.get(key))
     if 'ask' in errs or 'arbor.run_ms' in errs:
         fail('arbor.ask_ms', errs.get('ask') or errs['arbor.run_ms'])
     else:
@@ -238,8 +344,8 @@ def timed(arbor, binary, cases, fs, started, cgroup_err):
                   with_ask_ms=round(statistics.median(meds['ask']), 4)))
 
     try:
-        if cgroup_err is not None:
-            raise cgroup_err
+        if 'arbor.run_cgroup_ms' in missing:
+            raise missing['arbor.run_cgroup_ms']
         pid = int(unit('MainPID'))
         # The service only holds the cells' cgroups, so a cell starts the same under any arbor serve; its memory is
         # that of the binary it runs.
