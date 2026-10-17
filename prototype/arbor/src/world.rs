@@ -74,6 +74,11 @@ pub fn stamp_now() -> u64 {
 }
 
 pub fn check_name(name: &str) -> Result<()> {
+    check_name_as(name, "world")
+}
+
+/// Names of worlds and keys: they become file names, so only a safe few characters.
+pub fn check_name_as(name: &str, what: &str) -> Result<()> {
     let ok = !name.is_empty()
         && name.len() <= 64
         && name
@@ -87,7 +92,7 @@ pub fn check_name(name: &str) -> Result<()> {
         Ok(())
     } else {
         Err(Error::usage(format!(
-            "'{name}' is not a usable world name: use lowercase letters, digits, '-', '_' or '.', \
+            "'{name}' is not a usable {what} name: use lowercase letters, digits, '-', '_' or '.', \
              starting with a letter or digit, at most 64 characters"
         )))
     }

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use arbor::cell::{self, Options};
 use arbor::cgroup::{self, Limits};
 use arbor::error::{self, Error, Result};
+use arbor::key::{self, Key};
 use arbor::ledger::{self, Cost, Ledger};
 use arbor::world::{self, State, World};
 use arbor::{paths, table, tree};
@@ -20,23 +21,34 @@ arbor: try changes on a copy of a folder, then keep them or throw them away.
 
   arbor new [NAME] [--from DIR]      make a world: an instant copy of DIR (default: here)
   arbor worlds                       list the worlds
-  arbor shell NAME [LIMITS]          open a shell inside a world
-  arbor run NAME [LIMITS] -- CMD...  run one command inside a world
+  arbor shell NAME [OPTIONS]         open a shell inside a world
+  arbor run NAME [OPTIONS] -- CMD... run one command inside a world
   arbor diff NAME [--patch]          list what the world changed (--patch: show the lines)
   arbor keep NAME [--force]          apply the world's changes to the real folder
   arbor undo NAME [--force]          take kept changes back out of the real folder
   arbor discard NAME                 throw a world away
   arbor ps                           list the commands running in worlds and what they use now
+  arbor stop CELL                    stop a command running in a world
+  arbor key new NAME [GRANTS]        make a key that opens more than the world, until a set time
+  arbor keys                         list the keys
+  arbor key take-back NAME           end a key and every key made within it, and stop their commands
   arbor ledger [--last N] [--verify] the record of every step (--verify: check that none was changed)
   arbor watch [--since N]            print each new step as a JSON line (--since N: the steps after N first)
 
-LIMITS stop a command that takes too much: --mem SIZE (512M, 2G), --cpu CPUS (0.5, 2),
---pids N (processes at once), --time DURATION (90s, 10m, 2h).
+OPTIONS: --key KEY opens what the key opens. LIMITS stop a command that takes too much:
+--mem SIZE (512M, 2G), --cpu CPUS (0.5, 2), --pids N (processes at once), --time DURATION (90s, 10m, 2h).
+
+GRANTS: --read PATH (a folder or file), --toolchains (~/.cargo, ~/.npm, ~/.pyenv and the like),
+--env VAR (passes a variable in), --world W (only that world), LIMITS, --for DURATION or --until HH:MM
+(8h if neither), --within KEY (a narrower key, made from another).
 
 The real folder does not change until `arbor keep`. Inside a world the rest of the computer is read-only,
-changes elsewhere in your home folder vanish when the command ends, and there is no network.
+your home folder is empty but for what a key opens, password files stay hidden, and there is no network.
 Read the diff before keeping: kept files such as .git/hooks run later on your computer.
 ";
+
+/// How long `arbor stop` waits for the arbor running a command to end it before ending it directly.
+const STOP_GRACE: Duration = Duration::from_secs(3);
 
 fn main() -> ExitCode {
     // Like other Unix tools, stop quietly when the reader goes away (`arbor diff demo --patch | head`).
@@ -71,6 +83,9 @@ fn run() -> Result<i32> {
         "undo" => undo(&mut p),
         "discard" => discard(&mut p),
         "ps" => ps(&mut p),
+        "stop" => stop(&mut p),
+        "key" => key_cmd(&mut p),
+        "keys" => keys(&mut p),
         "ledger" => ledger_cmd(&mut p),
         "watch" => watch(&mut p),
         "serve" => serve(&mut p),
@@ -111,6 +126,7 @@ fn name_and_flags(p: &mut lexopt::Parser, flags: &[&str]) -> Result<(String, Vec
 #[derive(Default)]
 struct Note {
     world: String,
+    key: Option<String>,
     cell: Option<String>,
     what: String,
     limits: String,
@@ -150,6 +166,7 @@ fn recorded(act: &str, world: &str, step: impl FnOnce(&mut Note) -> Result<i32>)
     }
     append(ledger::New {
         act,
+        key: note.key.as_deref(),
         world: &note.world,
         cell: note.cell.as_deref(),
         what: &note.what,
@@ -222,17 +239,62 @@ fn worlds(p: &mut lexopt::Parser) -> Result<i32> {
     Ok(0)
 }
 
+/// How `arbor run` and `arbor shell` were asked to run a command.
+struct Asked {
+    world: String,
+    key: Option<String>,
+    limits: Limits,
+    interactive: bool,
+}
+
+/// Reads the world's name, `--key` and the limit flags. `more` takes each value after the name.
+fn read_asked(
+    p: &mut lexopt::Parser,
+    mut more: impl FnMut(&mut lexopt::Parser, OsString) -> Result<()>,
+) -> Result<(Option<String>, Option<String>, Limits)> {
+    let (mut name, mut key, mut limits) = (None, None, Limits::default());
+    while let Some(arg) = p.next()? {
+        match arg {
+            Long("key") => key = Some(p.value()?.string()?),
+            Long(flag) if cgroup::FLAGS.contains(&flag) => {
+                let flag = flag.to_string();
+                limits.set(&flag, &p.value()?.string()?)?;
+            }
+            Value(v) if name.is_none() => name = Some(v.string()?),
+            Value(v) => more(p, v)?,
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    Ok((name, key, limits))
+}
+
+impl Asked {
+    /// The limits the command will run under: its key's and its own, the tighter of each. Read before anything
+    /// is recorded, to know whether it needs a cgroup; a key that cannot be read is reported when it is used.
+    fn need_cgroup(&self) -> bool {
+        let key = self.key.as_deref().and_then(|k| Key::load(k).ok());
+        key.map_or(self.limits, |k| k.limits.tighter(self.limits))
+            .need_cgroup()
+    }
+}
+
 /// Runs `cmd` in a world and notes how it ended and what it cost. The cell's start is a step of its own, so
 /// watchers see it while it runs.
-fn run_noted(
-    note: &mut Note,
-    name: &str,
-    cmd: &[OsString],
-    opts: &Options,
-    shell: bool,
-) -> Result<i32> {
-    let (world, lock) = World::load_locked(name)?;
+fn run_noted(note: &mut Note, asked: Asked, cmd: &[OsString], shell: bool) -> Result<i32> {
+    let key = asked.key.as_deref().map(Key::load).transpose()?;
+    note.key = asked.key.clone();
+    let (world, lock) = World::load_locked(&asked.world)?;
     note.what = cell::shown(cmd);
+    if let Some(k) = &key {
+        k.check(&world.name)?;
+    }
+    let opts = Options {
+        interactive: asked.interactive,
+        limits: key
+            .as_ref()
+            .map_or(asked.limits, |k| k.limits.tighter(asked.limits)),
+        key,
+    };
     note.limits = opts.limits.describe();
     if shell {
         eprintln!(
@@ -242,9 +304,10 @@ fn run_noted(
         );
     }
     let begun = Instant::now();
-    let ran = cell::run(&world, &lock, cmd, opts, &mut |id| {
+    let ran = cell::run(&world, &lock, cmd, &opts, &mut |id| {
         append(ledger::New {
             act: "start",
+            key: note.key.as_deref(),
             world: &world.name,
             cell: Some(id),
             what: &note.what,
@@ -272,65 +335,46 @@ fn run_noted(
 }
 
 fn shell(p: &mut lexopt::Parser) -> Result<i32> {
-    let (mut name, mut limits) = (None, Limits::default());
-    while let Some(arg) = p.next()? {
-        match arg {
-            Long(flag) if cgroup::FLAGS.contains(&flag) => {
-                let flag = flag.to_string();
-                limits.set(&flag, &p.value()?.string()?)?;
-            }
-            Value(v) if name.is_none() => name = Some(v.string()?),
-            arg => return Err(arg.unexpected().into()),
-        }
-    }
+    let (name, key, limits) = read_asked(p, |_, v| Err(Value(v).unexpected().into()))?;
     let name = name.ok_or_else(|| Error::usage("which world? (see `arbor worlds`)"))?;
     let sh = env::var_os("SHELL")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| OsString::from("/bin/sh"));
-    let opts = Options {
-        interactive: true,
+    let asked = Asked {
+        world: name.clone(),
+        key,
         limits,
+        interactive: true,
     };
-    if opts.limits.need_cgroup() {
+    if asked.need_cgroup() {
         cgroup::enter_user_manager();
     }
-    recorded("shell", &name, |note| {
-        run_noted(note, &name, &[sh], &opts, true)
-    })
+    recorded("shell", &name, |note| run_noted(note, asked, &[sh], true))
 }
 
 fn run_cmd(p: &mut lexopt::Parser) -> Result<i32> {
-    let (mut name, mut cmd, mut limits) = (None, Vec::new(), Limits::default());
-    while let Some(arg) = p.next()? {
-        match arg {
-            Long(flag) if cgroup::FLAGS.contains(&flag) => {
-                let flag = flag.to_string();
-                limits.set(&flag, &p.value()?.string()?)?;
-            }
-            Value(v) if name.is_none() => name = Some(v.string()?),
-            Value(v) => {
-                cmd.push(v);
-                cmd.extend(p.raw_args()?);
-            }
-            arg => return Err(arg.unexpected().into()),
-        }
-    }
+    let mut cmd = Vec::new();
+    let (name, key, limits) = read_asked(p, |p, v| {
+        cmd.push(v);
+        cmd.extend(p.raw_args()?);
+        Ok(())
+    })?;
     let name = name.ok_or_else(|| Error::usage("which world? usage: arbor run NAME -- CMD..."))?;
     if cmd.is_empty() {
         return Err(Error::usage(
             "which command? usage: arbor run NAME -- CMD...",
         ));
     }
-    let opts = Options {
-        interactive: io::stdin().is_terminal(),
+    let asked = Asked {
+        world: name.clone(),
+        key,
         limits,
+        interactive: io::stdin().is_terminal(),
     };
-    if opts.limits.need_cgroup() {
+    if asked.need_cgroup() {
         cgroup::enter_user_manager();
     }
-    recorded("run", &name, |note| {
-        run_noted(note, &name, &cmd, &opts, false)
-    })
+    recorded("run", &name, |note| run_noted(note, asked, &cmd, false))
 }
 
 fn diff(p: &mut lexopt::Parser) -> Result<i32> {
@@ -482,6 +526,7 @@ fn ps(p: &mut lexopt::Parser) -> Result<i32> {
             vec![
                 c.id.clone(),
                 c.world.clone(),
+                c.key.clone().unwrap_or_else(|| "-".into()),
                 cgroup::duration(Duration::from_nanos(now.saturating_sub(c.started_ns))),
                 cpu,
                 mem,
@@ -495,7 +540,171 @@ fn ps(p: &mut lexopt::Parser) -> Result<i32> {
         })
         .collect();
     table::print(
-        &["cell", "world", "running", "cpu", "mem", "limits", "what"],
+        &[
+            "cell", "world", "key", "running", "cpu", "mem", "limits", "what",
+        ],
+        &rows,
+    )?;
+    Ok(0)
+}
+
+fn stop(p: &mut lexopt::Parser) -> Result<i32> {
+    let mut id = None;
+    while let Some(arg) = p.next()? {
+        match arg {
+            Value(v) if id.is_none() => id = Some(v.string()?),
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    let id = id.ok_or_else(|| Error::usage("which cell? (see `arbor ps`)"))?;
+    let Some(c) = cell::running()?.into_iter().find(|c| c.id == id) else {
+        return Err(Error::usage(format!(
+            "no cell '{id}' is running (see `arbor ps`)"
+        )));
+    };
+    recorded("stop", &c.world, |note| {
+        (note.key, note.cell, note.what) = (c.key.clone(), Some(c.id.clone()), c.what.clone());
+        if cell::stop(&c, STOP_GRACE)? {
+            println!("stopped cell {} in world {}: {}", c.id, c.world, c.what);
+        } else {
+            note.out = Some("already ended".into());
+            println!("cell {} had already ended", c.id);
+        }
+        Ok(0)
+    })
+}
+
+fn key_cmd(p: &mut lexopt::Parser) -> Result<i32> {
+    let usage =
+        "usage: arbor key new NAME [GRANTS], or arbor key take-back NAME (see `arbor help`)";
+    match p.next()? {
+        Some(Value(v)) => match v.string()?.as_str() {
+            "new" => key_new(p),
+            "take-back" => take_back(p),
+            other => Err(Error::usage(format!(
+                "there is no `arbor key {other}`; {usage}"
+            ))),
+        },
+        None => Err(Error::usage(usage)),
+        Some(arg) => Err(arg.unexpected().into()),
+    }
+}
+
+fn key_new(p: &mut lexopt::Parser) -> Result<i32> {
+    let now = world::now_ns();
+    let (mut name, mut spec) = (None, key::Spec::default());
+    let end = |spec: &mut key::Spec, at: u64| {
+        if spec.until_ns.replace(at).is_some() {
+            return Err(Error::usage("give --for or --until, not both"));
+        }
+        Ok(())
+    };
+    while let Some(arg) = p.next()? {
+        match arg {
+            Long("world") => spec.worlds.push(p.value()?.string()?),
+            Long("read") => spec.read.push(PathBuf::from(p.value()?)),
+            Long("toolchains") => spec.toolchains = true,
+            Long("env") => spec.env.push(p.value()?.string()?),
+            Long("within") => spec.within = Some(p.value()?.string()?),
+            Long("for") => {
+                let life = cgroup::parse_duration(&p.value()?.string()?)?;
+                end(&mut spec, now.saturating_add(life.as_nanos() as u64))?;
+            }
+            Long("until") => {
+                let at = key::parse_until(&p.value()?.string()?, now)?;
+                end(&mut spec, at)?;
+            }
+            Long(flag) if cgroup::FLAGS.contains(&flag) => {
+                let flag = flag.to_string();
+                spec.limits.set(&flag, &p.value()?.string()?)?;
+            }
+            Value(v) if name.is_none() => name = Some(v.string()?),
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    spec.name = name.ok_or_else(|| {
+        Error::usage("what is the key called? usage: arbor key new NAME --read PATH")
+    })?;
+    recorded("key", "-", |note| {
+        note.key = Some(spec.name.clone());
+        let k = Key::create(spec)?;
+        note.what = k.describe();
+        println!("made key {}: {}", k.name, note.what);
+        hint(&format!(
+            "Use it with `arbor run WORLD --key {} -- CMD`. `arbor key take-back {}` ends it early.",
+            k.name, k.name
+        ));
+        Ok(0)
+    })
+}
+
+fn take_back(p: &mut lexopt::Parser) -> Result<i32> {
+    let mut name = None;
+    while let Some(arg) = p.next()? {
+        match arg {
+            Value(v) if name.is_none() => name = Some(v.string()?),
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    let name = name.ok_or_else(|| Error::usage("which key? (see `arbor keys`)"))?;
+    recorded("take-back", "-", |note| {
+        note.key = Some(name.clone());
+        let gone = key::take_back(&name)?;
+        // A cell that started under one of them before it went is stopped; one starting now sees it gone.
+        let mut stopped = 0;
+        for c in cell::running()? {
+            if c.key.as_ref().is_some_and(|k| gone.contains(k)) && cell::stop(&c, STOP_GRACE)? {
+                stopped += 1;
+            }
+        }
+        let mut what = format!("key {}", gone[0]);
+        match &gone[1..] {
+            [] => {}
+            [one] => what += &format!(", and key {one} made within it"),
+            more => what += &format!(", and keys {} made within it", more.join(", ")),
+        }
+        what += &format!(
+            "; stopped {stopped} command{}",
+            if stopped == 1 { "" } else { "s" }
+        );
+        println!("took back {what}");
+        note.what = what;
+        Ok(0)
+    })
+}
+
+fn keys(p: &mut lexopt::Parser) -> Result<i32> {
+    if let Some(arg) = p.next()? {
+        return Err(arg.unexpected().into());
+    }
+    let all = Key::list()?;
+    if all.is_empty() {
+        hint("No keys yet. Make one with `arbor key new NAME --read PATH`.");
+        return Ok(0);
+    }
+    let now = world::now_ns();
+    let or_dash = |s: String| if s.is_empty() { "-".into() } else { s };
+    let rows: Vec<Vec<String>> = all
+        .iter()
+        .map(|k| {
+            let until = key::clock(k.until_ns, now);
+            vec![
+                k.name.clone(),
+                if k.ended(now) {
+                    format!("ended {until}")
+                } else {
+                    until
+                },
+                k.within.clone().unwrap_or_else(|| "-".into()),
+                k.opened(),
+                or_dash(k.limits.describe()),
+                or_dash(k.env.join(", ")),
+                or_dash(k.reads()),
+            ]
+        })
+        .collect();
+    table::print(
+        &["name", "until", "within", "opens", "limits", "env", "reads"],
         &rows,
     )?;
     Ok(0)
@@ -543,7 +752,7 @@ fn ledger_cmd(p: &mut lexopt::Parser) -> Result<i32> {
     }
     let steps = ledger.last(last)?;
     if steps.is_empty() {
-        hint("Nothing recorded yet: every new, run, shell, keep, undo and discard will be.");
+        hint("Nothing recorded yet: every step that changes something or runs a command will be.");
         return Ok(0);
     }
     let rows: Vec<Vec<String>> = steps
@@ -554,6 +763,7 @@ fn ledger_cmd(p: &mut lexopt::Parser) -> Result<i32> {
                 ledger::when(s.ts),
                 s.act.clone(),
                 s.world.clone(),
+                s.key.clone().unwrap_or_else(|| "-".into()),
                 s.out.clone(),
                 cost(&s.cost),
                 match &s.limits {
@@ -564,7 +774,9 @@ fn ledger_cmd(p: &mut lexopt::Parser) -> Result<i32> {
         })
         .collect();
     table::print(
-        &["step", "time", "act", "world", "result", "cost", "what"],
+        &[
+            "step", "time", "act", "world", "key", "result", "cost", "what",
+        ],
         &rows,
     )?;
     Ok(0)

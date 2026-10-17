@@ -4,7 +4,6 @@ mod common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use common::Env;
@@ -92,24 +91,25 @@ fn a_cell_is_sealed() {
     let Some(e) = Env::new("seal") else { return };
     fs::set_permissions(&e.base, fs::Permissions::from_mode(0o750)).unwrap();
     e.ok(&["new", "demo", "--from", e.base.to_str().unwrap()]);
-    let leak = format!(".arbor-it-leak-{}", std::process::id());
-    // In order: network interfaces (/proc/net/dev lists only loopback), what is left of /run (the computer's
-    // sockets) and of Arbor's state, whether a user namespace can be made, the mode of the world's root, a
-    // write to the home folder, and the world's name.
+    fs::write(e.user_home.join("notes"), "private").unwrap();
+    // In order: network interfaces (/proc/net/dev lists only loopback); what is left of /run (the computer's
+    // sockets), of Arbor's state, of the home folder, of /home and of the mounted drives; whether a user namespace
+    // can be made; the mode of the world's root; a write to the home folder; the computer's name; the world's name.
     let script = format!(
-        "grep -c : /proc/net/dev; ls -A /run | wc -l; ls -A \"$ARBOR_HOME\" | wc -l; \
-         unshare -U true 2>/dev/null && echo userns || echo no-userns; stat -c %a .; \
-         echo x > \"$HOME/{leak}\" && echo wrote; echo $ARBOR_WORLD"
+        "grep -c : /proc/net/dev; ls -A /run | wc -l; ls -A '{}' | wc -l; ls -A ~ | wc -l; ls -A /home | wc -l; \
+         ls -A /media /mnt 2>/dev/null | grep -c '^[^/]'; unshare -U true 2>/dev/null && echo userns || echo no-userns; \
+         stat -c %a .; echo x > ~/leak && echo wrote; hostname; echo $ARBOR_WORLD",
+        e.home.display()
     );
     let out = e.ok(&["run", "demo", "--", "sh", "-c", &script]);
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap());
-    let leaked = home.join(&leak).exists();
-    let _ = fs::remove_file(home.join(&leak));
     assert_eq!(
-        out, "1\n0\n0\nno-userns\n750\nwrote\ndemo\n",
+        out, "1\n0\n0\n0\n0\n0\nno-userns\n750\nwrote\narbor\ndemo\n",
         "unexpected cell output"
     );
-    assert!(!leaked, "a write to the home folder escaped the cell");
+    assert!(
+        !e.user_home.join("leak").exists(),
+        "a write to the home folder escaped the cell"
+    );
 }
 
 #[test]

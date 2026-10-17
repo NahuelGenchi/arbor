@@ -1,36 +1,68 @@
 //! Running a command inside a world, through bubblewrap, without root.
 //!
 //! Ubuntu 24.04 and later block plain user namespaces for ordinary programs, but allow `bwrap`. So a cell is a
-//! `bwrap` process: the computer read-only, the world's overlay mounted over its base folder's own path so tools
-//! see the usual paths, a throwaway layer over the rest of the home folder (writes there vanish at exit), `/run`
-//! and Arbor's own state hidden, no network, no new user namespaces and an empty session keyring. Where the
-//! user's systemd manager allows it, each cell also runs in its own cgroup (see `cgroup`), with its limits, and
-//! its whole cost is read from there. Sealing the home folder and keys come next in M3; network through a filter
-//! after that.
+//! `bwrap` process, sealed: the computer read-only; the home folders, `/media` and `/mnt` empty; the world's overlay
+//! mounted over its base folder's own path, so tools see the usual paths; `/run` and Arbor's own state hidden; a
+//! cleared environment; no network, no new user namespaces and an empty session keyring. A key (see `key`) opens
+//! more folders and files and passes variables in; password files stay hidden even then. Where the
+//! user's systemd manager allows it, each cell also runs in its own cgroup (see `cgroup`), with its limits, and its
+//! whole cost is read from there. Network through a filter comes later.
 
 use std::env;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use crate::cgroup::{self, Group, Limits, Usage};
 use crate::error::{Context, Error, Result};
+use crate::key::{self, Key};
 use crate::world::{self, Lock, State, World};
 use crate::{paths, sys};
 
 pub struct Options {
     /// The command will talk to the person at the terminal.
     pub interactive: bool,
+    /// The limits it runs under: its key's and the command line's, the tighter of each.
     pub limits: Limits,
+    /// The key that opens more than the world, checked by the caller.
+    pub key: Option<Key>,
+}
+
+/// The variables a cell keeps from the environment of the arbor that starts it, besides `LC_*`. A key passes
+/// more in by name.
+const KEPT: [&str; 14] = [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "COLORTERM",
+    "NO_COLOR",
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+];
+
+fn kept(name: &OsStr, key: Option<&Key>) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    KEPT.contains(&name)
+        || name.starts_with("LC_")
+        || key.is_some_and(|k| k.env.iter().any(|v| v == name))
 }
 
 /// Finds `name` on `PATH`.
@@ -87,7 +119,23 @@ fn tiocsti_possible() -> bool {
         .unwrap_or(true)
 }
 
-/// The `bwrap` arguments for a cell in `world` that runs `cmd` in `cwd`.
+/// How a path shows through into a sealed cell.
+#[derive(Clone, Copy)]
+enum Shown {
+    /// The world, over its base folder's path.
+    World,
+    /// A folder a key opens. Writes to it are thrown away, so tools that keep caches there still work.
+    Folder,
+    /// A file a key opens, read-only.
+    File,
+}
+
+fn add(a: &mut Vec<OsString>, items: &[&dyn AsRef<OsStr>]) {
+    a.extend(items.iter().map(|s| s.as_ref().to_os_string()));
+}
+
+/// The `bwrap` arguments for a cell in `world` that runs `cmd` in `cwd`. Mounts land in order, each on top of the
+/// ones before it.
 pub fn bwrap_args(
     world: &World,
     cmd: &[OsString],
@@ -95,66 +143,137 @@ pub fn bwrap_args(
     opts: &Options,
 ) -> Result<Vec<OsString>> {
     let mut a: Vec<OsString> = Vec::new();
-    let mut push = |items: &[&dyn AsRef<std::ffi::OsStr>]| {
-        a.extend(items.iter().map(|s| s.as_ref().to_os_string()));
-    };
-    push(&[
-        &"--ro-bind",
-        &"/",
-        &"/",
-        &"--dev",
-        &"/dev",
-        &"--proc",
-        &"/proc",
-        &"--tmpfs",
-        &"/tmp",
-        // /run holds the computer's and the session's sockets: Docker (which is root), D-Bus, systemd, snapd, the
-        // session bus, Wayland and agents. Each is a way out of the cell.
-        &"--tmpfs",
-        &"/run",
-    ]);
-    // Writes anywhere else in the home folder land in a layer that is thrown away when the cell ends.
-    if let Some(home) = paths::home().and_then(|h| fs::canonicalize(h).ok())
-        && home.is_dir()
-        && !paths::contains(&world.base, &home)
-    {
-        push(&[&"--overlay-src", &home, &"--tmp-overlay", &home]);
+    add(
+        &mut a,
+        &[
+            &"--ro-bind",
+            &"/",
+            &"/",
+            &"--dev",
+            &"/dev",
+            &"--proc",
+            &"/proc",
+            &"--tmpfs",
+            &"/tmp",
+            // /run holds the computer's and the session's sockets: Docker (which is root), D-Bus, systemd, snapd,
+            // the session bus, Wayland and agents. Each is a way out of the cell.
+            &"--tmpfs",
+            &"/run",
+        ],
+    );
+    // The home folders and mounted drives are empty, and writes there vanish: only the world and what its key
+    // opens show through.
+    let home = paths::home()
+        .and_then(|h| fs::canonicalize(h).ok())
+        .filter(|h| h.is_dir() && h != Path::new("/"));
+    let mut hidden: Vec<PathBuf> = ["/home", "/media", "/mnt"]
+        .into_iter()
+        .filter_map(|p| fs::canonicalize(p).ok())
+        .chain(home.clone())
+        .filter(|p| p.is_dir() && p != Path::new("/") && !paths::contains(&world.base, p))
+        .collect();
+    hidden.sort_by_key(|p| p.components().count());
+    for (i, dir) in hidden.iter().enumerate() {
+        if !hidden[..i].iter().any(|h| paths::contains(h, dir)) {
+            add(&mut a, &[&"--tmpfs", dir]);
+        }
     }
-    push(&[
-        &"--overlay-src",
-        &world.base,
-        &"--overlay",
-        &world.up(),
-        &world.work(),
-        &world.base,
-    ]);
+    if let Some(home) = &home
+        && hidden.iter().any(|h| paths::contains(h, home))
+    {
+        add(&mut a, &[&"--dir", home]);
+    }
+    // What shows through, outer paths first so inner ones land on top.
+    let mut shown = vec![(world.base.clone(), Shown::World)];
+    for p in opts.key.iter().flat_map(|k| &k.read) {
+        if let Ok(meta) = fs::metadata(p) {
+            let how = if meta.is_dir() {
+                Shown::Folder
+            } else {
+                Shown::File
+            };
+            shown.push((p.clone(), how));
+        }
+    }
+    shown.sort_by_key(|(p, _)| p.components().count());
+    // Password files stay hidden wherever the cell would see them, inside what shows through too, unless the world or
+    // the key is that file or folder itself. What the key opens inside one of them goes on top.
+    let shown_paths: Vec<PathBuf> = shown.iter().map(|(p, _)| p.clone()).collect();
+    let masks = home
+        .as_deref()
+        .map_or_else(Vec::new, |h| key::secrets_in(h, &hidden, &shown_paths));
+    let masked = |p: &Path| masks.iter().any(|(m, _)| paths::contains(m, p));
+    let mount = |a: &mut Vec<OsString>, p: &Path, how: Shown| match how {
+        Shown::World => add(
+            a,
+            &[
+                &"--overlay-src",
+                &world.base,
+                &"--overlay",
+                &world.up(),
+                &world.work(),
+                &world.base,
+            ],
+        ),
+        Shown::Folder => add(a, &[&"--overlay-src", &p, &"--tmp-overlay", &p]),
+        Shown::File => add(a, &[&"--ro-bind", &p, &p]),
+    };
+    for (p, how) in &shown {
+        // What lies inside the world is in it already.
+        let in_world = !matches!(how, Shown::World) && paths::contains(&world.base, p);
+        if !masked(p) && !in_world {
+            mount(&mut a, p, *how);
+        }
+    }
+    for (m, dir) in &masks {
+        if *dir {
+            add(&mut a, &[&"--tmpfs", m]);
+        } else {
+            // A plain bind would be `nodev`, and reading the null device there fails; this one reads empty.
+            add(&mut a, &[&"--dev-bind", &"/dev/null", m]);
+        }
+    }
+    for (p, how) in &shown {
+        if masked(p) {
+            mount(&mut a, p, *how);
+        }
+    }
     // What the cell must not see: every world's changes, and the session's sockets if they live outside /run.
     let state = fs::canonicalize(paths::state_dir()?)?;
-    push(&[&"--tmpfs", &state]);
+    add(&mut a, &[&"--tmpfs", &state]);
     if let Some(runtime) = env::var_os("XDG_RUNTIME_DIR")
         .and_then(|r| fs::canonicalize(r).ok())
         .filter(|r| r.is_dir() && !r.starts_with("/run"))
     {
-        push(&[&"--tmpfs", &runtime]);
+        add(&mut a, &[&"--tmpfs", &runtime]);
     }
-    // No network, and no user namespaces of its own: those would reopen what bwrap closed.
-    push(&[
-        &"--unshare-all",
-        &"--unshare-user",
-        &"--disable-userns",
-        &"--die-with-parent",
-    ]);
+    // No network, and no user namespaces of its own: those would reopen what bwrap closed. The computer's name is
+    // the cell's own.
+    add(
+        &mut a,
+        &[
+            &"--unshare-all",
+            &"--unshare-user",
+            &"--disable-userns",
+            &"--die-with-parent",
+            &"--hostname",
+            &"arbor",
+        ],
+    );
     if !opts.interactive || tiocsti_possible() {
-        push(&[&"--new-session"]);
+        add(&mut a, &[&"--new-session"]);
     }
-    push(&[
-        &"--chdir",
-        &cwd,
-        &"--setenv",
-        &"ARBOR_WORLD",
-        &world.name.as_str(),
-        &"--",
-    ]);
+    add(
+        &mut a,
+        &[
+            &"--chdir",
+            &cwd,
+            &"--setenv",
+            &"ARBOR_WORLD",
+            &world.name.as_str(),
+            &"--",
+        ],
+    );
     a.extend(cmd.iter().cloned());
     Ok(a)
 }
@@ -195,6 +314,10 @@ pub struct Running {
     pub what: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub limits: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The arbor that runs it, which `stop` asks to end it.
+    pub pid: libc::pid_t,
     /// When it started, in nanoseconds since 1970.
     pub started_ns: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,15 +401,52 @@ pub fn running() -> Result<Vec<Running>> {
     Ok(cells)
 }
 
+/// Stops a running cell: asks the arbor that runs it to end it, so that arbor records how it ended, and waits up to
+/// `grace` for that arbor to finish. Where it has not by then, the cell is killed directly: its cgroup, or else that
+/// arbor, which takes the cell with it. Returns false when the cell had already ended.
+pub fn stop(cell: &Running, grace: Duration) -> Result<bool> {
+    let path = running_dir()?.join(format!("{}.json", cell.id));
+    let Ok(file) = File::open(&path) else {
+        return Ok(false);
+    };
+    let Ok(arbor) = sys::pidfd_open(cell.pid) else {
+        return Ok(false);
+    };
+    // The file stays locked while its arbor runs the cell, so the process the descriptor names is that arbor.
+    match sys::flock(&file, false, false) {
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+        Ok(()) => return Ok(false),
+        Err(e) => return Err(e.into()),
+    }
+    drop(file);
+    match sys::pidfd_send_signal(&arbor, libc::SIGTERM) {
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => return Ok(false),
+        other => other?,
+    }
+    if !sys::readable_within(arbor.as_fd(), grace)? {
+        match cell
+            .cgroup
+            .as_ref()
+            .filter(|g| g.starts_with(cgroup::cells_dir()))
+        {
+            Some(group) => cgroup::kill_dir(group),
+            None => {
+                let _ = sys::pidfd_send_signal(&arbor, libc::SIGKILL);
+            }
+        }
+    }
+    Ok(true)
+}
+
 /// How a command in a cell ended.
 pub struct Ran {
     /// The cell's name, as `arbor ps` and the ledger show it.
     pub id: String,
     /// Its exit code, or 128 + the signal that killed it.
     pub code: i32,
-    /// How it ended, for the ledger: `exit N`, `killed: time limit` or `killed: memory limit`.
+    /// How it ended, for the ledger: `exit N`, or what stopped it, such as `killed: time limit`.
     pub out: String,
-    /// A line for the person when a limit stopped it.
+    /// A line for the person when a limit, a key or a request stopped it.
     pub warning: Option<String>,
     /// CPU time of all its processes.
     pub cpu_ms: u64,
@@ -399,42 +559,46 @@ fn spawn(
     }
 }
 
-/// Waits for the cell's first process. At the deadline it kills the whole cell and says so.
+/// Why arbor ended a cell itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Ended {
+    TimeLimit,
+    KeyExpired,
+    /// Someone asked: `arbor stop`, a closed terminal or a signal to arbor.
+    Stopped,
+    KeyTakenBack,
+}
+
+/// Waits for the cell's first process. At the deadline, or when arbor is asked to stop (SIGTERM, SIGHUP), it kills
+/// the whole cell and says why.
 fn wait(
     pid: libc::pid_t,
     exited: &OwnedFd,
-    deadline: Option<Instant>,
+    deadline: Option<(Instant, Ended)>,
     group: Option<&Group>,
-) -> io::Result<(ExitStatus, bool)> {
-    let mut timed_out = false;
-    while let Some(deadline) = deadline {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            // Not reaped yet, so its process ID still names it.
-            match group {
-                Some(g) => g.kill(),
-                None => unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                },
-            }
-            timed_out = true;
-            break;
+    stops: &sys::Interrupts,
+) -> io::Result<(ExitStatus, Option<Ended>)> {
+    let ended = loop {
+        if stops.interrupted() {
+            break Some(Ended::Stopped);
         }
-        let mut pfd = libc::pollfd {
-            fd: exited.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
-        match unsafe { libc::poll(&mut pfd, 1, ms) } {
-            n if n > 0 => break,
-            0 => {}
-            _ => {
-                let e = io::Error::last_os_error();
-                if e.kind() != io::ErrorKind::Interrupted {
-                    return Err(e);
-                }
-            }
+        let left = deadline.map(|(at, why)| (at.saturating_duration_since(Instant::now()), why));
+        if let Some((left, why)) = left
+            && left.is_zero()
+        {
+            break Some(why);
+        }
+        if stops.poll(exited.as_fd(), left.map(|(left, _)| left))? {
+            break None;
+        }
+    };
+    if ended.is_some() {
+        match group {
+            Some(g) => g.kill(),
+            // Not reaped yet, so its process ID still names it.
+            None => unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            },
         }
     }
     let mut status = 0;
@@ -444,33 +608,53 @@ fn wait(
             return Err(e);
         }
     }
-    Ok((ExitStatus::from_raw(status), timed_out))
+    Ok((ExitStatus::from_raw(status), ended))
 }
 
-/// What the ledger says about how a cell ended, and a line for the person when a limit stopped it.
+/// What the ledger says about how a cell ended, and a line for the person when something stopped it.
 fn outcome(
     code: i32,
-    timed_out: bool,
+    ended: Option<Ended>,
     usage: Option<&Usage>,
     limits: &Limits,
+    key: Option<&Key>,
 ) -> (String, Option<String>) {
-    let oom = usage.is_some_and(|u| u.oom_kills > 0);
-    if timed_out {
-        let limit = limits.time.map(cgroup::duration).unwrap_or_default();
-        return (
-            "killed: time limit".into(),
-            Some(format!(
-                "the command reached its time limit ({limit}) and was stopped"
-            )),
-        );
+    let key_name = key.map(|k| k.name.as_str()).unwrap_or_default();
+    let said = |out: &str, line: String| (out.to_string(), Some(line));
+    match ended {
+        Some(Ended::TimeLimit) => {
+            let limit = limits.time.map(cgroup::duration).unwrap_or_default();
+            return said(
+                "killed: time limit",
+                format!("the command reached its time limit ({limit}) and was stopped"),
+            );
+        }
+        Some(Ended::KeyExpired) => {
+            let at = key
+                .map(|k| key::clock(k.until_ns, world::now_ns()))
+                .unwrap_or_default();
+            return said(
+                "killed: key expired",
+                format!("key '{key_name}' ended at {at}, and the command was stopped"),
+            );
+        }
+        Some(Ended::Stopped) => return said("stopped", "the command was stopped".into()),
+        Some(Ended::KeyTakenBack) => {
+            return said(
+                "stopped: key taken back",
+                format!("key '{key_name}' was taken back, and the command was stopped"),
+            );
+        }
+        None => {}
     }
+    let oom = usage.is_some_and(|u| u.oom_kills > 0);
     if oom && let Some(mem) = limits.mem {
-        return (
-            "killed: memory limit".into(),
-            Some(format!(
+        return said(
+            "killed: memory limit",
+            format!(
                 "the command reached its memory limit ({}) and was stopped",
                 cgroup::size(mem)
-            )),
+            ),
         );
     }
     let mut out = format!("exit {code}");
@@ -489,8 +673,8 @@ fn outcome(
     (out, warning)
 }
 
-/// Runs `cmd` in the world. The caller holds the world's lock and loaded the world after taking it; `started` is
-/// told the cell's name once it runs.
+/// Runs `cmd` in the world. The caller holds the world's lock and loaded the world after taking it, and checked the
+/// key; `started` is told the cell's name once it runs.
 pub fn run(
     world: &World,
     _lock: &Lock,
@@ -513,18 +697,29 @@ pub fn run(
     let bwrap = bwrap()?;
     let args = bwrap_args(world, cmd, &start_dir(world), opts)?;
     let limits = &opts.limits;
+    let key = opts.key.as_ref();
     let group = cell_group(limits)?;
     let id = group
         .as_ref()
         .map_or_else(cgroup::new_id, |g| g.id().to_string());
+    // From before `arbor stop` can find the cell, asking arbor to stop only raises a flag that the wait reads.
+    let stops = sys::defer(&[libc::SIGTERM, libc::SIGHUP]);
     let _entry = register(&Running {
         id: id.clone(),
         world: world.name.clone(),
         what: shown(cmd),
         limits: limits.describe(),
+        key: key.map(|k| k.name.clone()),
+        pid: unsafe { libc::getpid() },
         started_ns: world::now_ns(),
         cgroup: group.as_ref().map(|g| g.dir().to_path_buf()),
     })?;
+    // A key taken back after the caller checked it, but before the cell was listed, is caught here.
+    if let Some(k) = key
+        && !key::exists(&k.name)
+    {
+        return Err(Error::refused(format!("key '{}' was taken back", k.name)));
+    }
     // Everything exec needs is made before the fork: the child may not allocate.
     let program = c_string(bwrap.as_os_str())?;
     let argv = std::iter::once(OsStr::new("bwrap"))
@@ -532,11 +727,11 @@ pub fn run(
         .map(c_string)
         .collect::<Result<Vec<_>>>()?;
     let envp = env::vars_os()
-        .filter(|(key, _)| key != cgroup::SCOPE_MARK)
-        .map(|(mut key, value)| {
-            key.push("=");
-            key.push(value);
-            c_string(&key)
+        .filter(|(name, _)| kept(name, key))
+        .map(|(mut name, value)| {
+            name.push("=");
+            name.push(value);
+            c_string(&name)
         })
         .collect::<Result<Vec<_>>>()?;
     // bwrap's outer process exits as soon as the command does, without waiting for the cell's init, and the
@@ -544,7 +739,18 @@ pub fn run(
     // so they count.
     unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) };
     let (cpu_before, _) = children_usage();
-    let deadline = limits.time.map(|t| Instant::now() + t);
+    // The cell stops at its time limit or when its key ends, whichever comes first.
+    let now = Instant::now();
+    let deadline = [
+        limits.time.map(|t| (now + t, Ended::TimeLimit)),
+        key.map(|k| {
+            let left = k.until_ns.saturating_sub(world::now_ns());
+            (now + Duration::from_nanos(left), Ended::KeyExpired)
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by_key(|(at, _)| *at);
     let (pid, exited) = spawn(&program, &pointers(&argv), &pointers(&envp), group.as_ref())
         .ctx(|| "cannot start the cell".to_string())?;
     started(&id);
@@ -555,7 +761,7 @@ pub fn run(
             libc::signal(libc::SIGQUIT, libc::SIG_IGN),
         )
     };
-    let waited = wait(pid, &exited, deadline, group.as_ref());
+    let waited = wait(pid, &exited, deadline, group.as_ref(), &stops);
     // The adopted init dies with bwrap (--die-with-parent) and takes the cell's last processes with it.
     while unsafe { libc::waitpid(-1, std::ptr::null_mut(), 0) } > 0
         || io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
@@ -564,14 +770,21 @@ pub fn run(
         libc::signal(libc::SIGINT, old_int);
         libc::signal(libc::SIGQUIT, old_quit);
     }
-    let (status, timed_out) = waited?;
+    drop(stops);
+    let (status, ended) = waited?;
     let code = status
         .code()
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
-    let timed_out = timed_out && status.signal() == Some(libc::SIGKILL);
+    // Only arbor's own kill counts: a command that ended on its own a moment before stays as it ended.
+    let ended = match ended.filter(|_| status.signal() == Some(libc::SIGKILL)) {
+        Some(Ended::Stopped) if key.is_some_and(|k| !key::exists(&k.name)) => {
+            Some(Ended::KeyTakenBack)
+        }
+        e => e,
+    };
     let (cpu, max_rss) = children_usage();
     let usage = group.as_ref().map(Group::usage);
-    let (out, warning) = outcome(code, timed_out, usage.as_ref(), limits);
+    let (out, warning) = outcome(code, ended, usage.as_ref(), limits, key);
     Ok(Ran {
         id,
         code,
@@ -614,23 +827,53 @@ mod tests {
             ..Usage::default()
         };
         assert_eq!(
-            outcome(0, false, Some(&used(0, 0)), &limits),
+            outcome(0, None, Some(&used(0, 0)), &limits, None),
             ("exit 0".into(), None)
         );
-        let (out, warning) = outcome(137, true, None, &limits);
+        let (out, warning) = outcome(137, Some(Ended::TimeLimit), None, &limits, None);
         assert_eq!(out, "killed: time limit");
         assert!(warning.unwrap().contains("(2s)"));
         assert_eq!(
-            outcome(137, false, Some(&used(1, 0)), &limits).0,
+            outcome(137, None, Some(&used(1, 0)), &limits, None).0,
             "killed: memory limit"
         );
         assert_eq!(
-            outcome(2, false, Some(&used(0, 3)), &limits).0,
+            outcome(2, None, Some(&used(0, 3)), &limits, None).0,
             "exit 2, process limit hit"
         );
         assert_eq!(
-            outcome(137, false, Some(&used(1, 0)), &Limits::default()).0,
+            outcome(137, None, Some(&used(1, 0)), &Limits::default(), None).0,
             "exit 137, out of memory"
         );
+        for (ended, out) in [
+            (Ended::KeyExpired, "killed: key expired"),
+            (Ended::Stopped, "stopped"),
+            (Ended::KeyTakenBack, "stopped: key taken back"),
+        ] {
+            assert_eq!(outcome(137, Some(ended), None, &limits, None).0, out);
+        }
+    }
+
+    #[test]
+    fn keeps_only_plain_variables_and_those_a_key_passes() {
+        let mut key = Key {
+            name: "k".into(),
+            within: None,
+            worlds: Vec::new(),
+            read: Vec::new(),
+            env: vec!["CARGO_HOME".into()],
+            limits: Limits::default(),
+            made_ns: 0,
+            until_ns: 1,
+        };
+        for name in ["PATH", "HOME", "LC_ALL", "TERM"] {
+            assert!(kept(OsStr::new(name), None), "{name}");
+        }
+        for name in ["CARGO_HOME", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "ARBOR_SCOPE"] {
+            assert!(!kept(OsStr::new(name), None), "{name}");
+        }
+        assert!(kept(OsStr::new("CARGO_HOME"), Some(&key)));
+        key.env.clear();
+        assert!(!kept(OsStr::new("CARGO_HOME"), Some(&key)));
     }
 }

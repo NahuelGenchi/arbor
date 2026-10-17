@@ -1,62 +1,14 @@
-//! Cells end to end: limits, `arbor ps` and `arbor watch`. Memory, CPU and process limits need a cgroup from the
-//! systemd user manager. Where there is none, the tests that need one print why and pass without checking it,
-//! unless `ARBOR_REQUIRE_CGROUPS` is set, as in CI, where that is a failure. All of them skip like `common`'s.
+//! Cells end to end: limits, `arbor ps` and `arbor watch`. They skip like `common` says.
 
 mod common;
 
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use common::Env;
-
-/// The user manager's cgroup; cells' cgroups live in its `arbor.slice/arbor.service/cells`.
-fn user_manager() -> PathBuf {
-    let uid = unsafe { libc::getuid() };
-    PathBuf::from(format!(
-        "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service"
-    ))
-}
-
-/// Whether cells can have cgroups of their own here. Says why not, or fails where they must.
-fn cgroups() -> bool {
-    let why = match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(dir) if Path::new(&dir).join("systemd/private").exists() => {
-            let handed = fs::read_to_string(user_manager().join("cgroup.subtree_control"))
-                .unwrap_or_default();
-            ["cpu", "memory", "pids"]
-                .into_iter()
-                .find(|c| !handed.split_whitespace().any(|h| h == *c))
-                .map(|c| format!("the systemd user manager does not hand on the {c} controller"))
-        }
-        _ => Some("there is no systemd user manager to reach".to_string()),
-    };
-    match why {
-        None => true,
-        Some(why) if std::env::var_os("ARBOR_REQUIRE_CGROUPS").is_some() => {
-            panic!("cells cannot have cgroups here, and ARBOR_REQUIRE_CGROUPS is set: {why}")
-        }
-        Some(why) => {
-            eprintln!("skipped: cells cannot have cgroups here: {why}");
-            false
-        }
-    }
-}
-
-fn new_world(e: &Env) {
-    e.ok(&["new", "demo", "--from", e.base.to_str().unwrap()]);
-}
-
-fn wait_for(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !path.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(path.exists(), "the command never started");
-}
+use common::{Env, cgroups, new_world, user_manager, wait_for};
 
 #[test]
 fn a_memory_hog_is_stopped_at_its_limit() {
