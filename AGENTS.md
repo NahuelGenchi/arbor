@@ -18,7 +18,8 @@ Never describe something as working, built or measured unless a recorded check e
 | `bench/lib/` | Shared helpers, the M reference values (`reference.py`), the report writer, the machine stamp, and an o200k token counter (`o200k.js`) |
 | `bench/src/` | The static C and Rust programs timed by `runtimes` |
 | `bench/results/` | Run reports, ignored by git |
-| `docs/` | Tracking guide, the Mission Control design brief (`INTERFACE.md`), and the images of the README and the brief |
+| `docs/` | Tracking guide and README images |
+| `docs/INTERFACE.md` | The Mission Control design brief: views, scale, motion, accessibility, targets and open questions. Its wireframes and their sources are in `docs/images/`. No interface exists yet |
 | `.github/workflows/` | `checks.yml` runs `bench/check.sh` on every PR; `project-tracking.yml` keeps milestones and labels in order |
 
 ## Commands
