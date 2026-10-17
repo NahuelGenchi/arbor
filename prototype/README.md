@@ -164,7 +164,7 @@ Checked on 17 October 2026 with OpenCode 2.0.29, on its free model only:
 - In a world, OpenCode read a file and changed it, with `--auto`, which lets it make changes without asking: they land in the world. `arbor diff shop` showed that change and nothing else, and the real folder kept its old version until `arbor keep`.
 - A later run under the key went on with the same session (`opencode run -c`), also once the key had ended and `arbor key renew` had brought it back.
 - With an `AGENTS.md` in the world saying so, OpenCode read the file it was asked about with `arbor look outline` and `arbor look lines`.
-- The copy of a login was checked with a made-up one. No call was made on the plan's models, which would have used its quota.
+- The plan's own login, copied by its owner with the pipe above, was in the world: `opencode auth list` there named OpenCode Go as stored. OpenCode then answered on its free model, with every other provider turned off by the settings above. No call was made on the plan's models, which would have used its quota, and taking the key back deleted the copy.
 
 ## Reads for an agent
 
