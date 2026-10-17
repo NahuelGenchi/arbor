@@ -195,8 +195,9 @@ after it, and for every step it takes. `sessions/ab.py` measures what that comes
 OpenCode, unchanged, doing small tasks on this repository in worlds of the prototype.
 
 ```bash
-python3 sessions/ab.py                 # 5 sessions per task and arm, 60 in all
+python3 sessions/ab.py                 # arms A and B, 5 sessions per task and arm, 60 in all
 python3 sessions/ab.py --reps 8 --tasks find,fix-clock
+AB_GAP=20 python3 sessions/ab.py --arms A,C,D --reps 10   # three arms, 180 sessions, 20 s apart
 python3 sessions/ab.py --resume results/sessions_<date>_<host>.jsonl   # go on with a stopped run
 python3 sessions/summary.py results/sessions_<date>_<host>.jsonl       # the report again
 ```
@@ -209,11 +210,16 @@ of 10 rounds took about 48 minutes (**M**).
   a large file (`list`), work out what a function does with four inputs (`explain`), and find a bug from its symptom
   and fix it, twice in Rust (`fix-clock`, `fix-plural`) and once in Python (`fix-python`). Each task's check, written
   before the runs, decides success from the agent's last answer or from the files it left in the world.
-- **The arms** differ only in the world's `AGENTS.md`: **A** describes the repository; **B** adds a paragraph that says
-  to read with `arbor look`, a large file by its outline and lines, several reads in one call.
+- **The arms** differ only in the world's `AGENTS.md` and, for D, one tool: **A** describes the repository; **B** adds
+  a paragraph that says to read with `arbor look`, a large file by its outline and lines, several reads in one call.
+  **C** and **D** (#74) aim at the steps B added: find with grep first, rather than by listing folders, then make every
+  read the task needs in one call, with the queries described in full. C runs `arbor look` in the shell. D calls it as
+  a tool of its own, `arbor_look`, which takes a list of queries: `sessions/look_mcp.py`, a local MCP server that
+  OpenCode starts in the cell from the key's settings, called directly rather than through Code Mode, with the
+  queries in its description.
 - **Each session starts afresh**: a copy of the arm's repository at the same path, a new world over it, and a new key
-  with a home folder of its own that opens OpenCode's program, its two hosts and that world. The arms alternate (AB,
-  then BA).
+  with a home folder of its own that opens OpenCode's program, its two hosts and that world. The arms take turns (AB,
+  then BA; ACD, CDA, then DAC).
 - **What it counts**, from OpenCode's own database in the key's home, read-only and from the session tables only: each
   model call (a step) with its input, cache-read, cache-write, output and reasoning tokens, the tools called and what
   they returned, and the last answer. `sessions/summary.py` reports the medians and spread per task and arm, the
@@ -223,6 +229,9 @@ of 10 rounds took about 48 minutes (**M**).
   of time (`AB_TIMEOUT`, 900 s) counts as failed. A session that the provider ends, as the free model's rate limit does
   after heavy use, runs again, twice at most; a slot whose every attempt the provider ended is left out of the report,
   named, and runs again on `--resume`.
+
+`AB_GAP` waits that many seconds after each session: the free model's rate limit ends sessions after about 120 in an
+hour, and lasts more than 20 minutes.
 
 **It spends nothing.** Every call goes to OpenCode's free model, `opencode/deepseek-v4.1-flash-free` (`AB_MODEL`, which
 must be one whose name ends in `-free`). No login goes into the key's home: the free model needs none, and the

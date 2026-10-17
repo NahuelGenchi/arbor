@@ -1,5 +1,5 @@
 """The report of a whole-session A/B (ab.py): per task and arm, the medians and spread of what the sessions spent, and
-what arm B changed against arm A, with its uncertainty.
+what each arm changed against arm A, and each later arm against an earlier one, with its uncertainty.
 
 usage: python3 bench/sessions/summary.py RESULTS.jsonl   (prints Markdown)
 
@@ -9,12 +9,12 @@ or not, since a failed session was paid for too; one that the provider ended is 
 cost is the suite's (bench/sections/transcripts.js): input 1, cache write 1.25, cache read 0.1, output 5, where output
 is what OpenCode records as output plus reasoning, which it keeps apart and the provider bills as output.
 
-B/A is the ratio of the arms' medians for one task. Its 95% interval is a bootstrap: 4,000 times, each arm's sessions
+B/A is the ratio of two arms' medians for one task. Its 95% interval is a bootstrap: 4,000 times, each arm's sessions
 of the task are drawn again with replacement, and the 2.5th and 97.5th percentiles of the ratio are kept. All tasks is
 the geometric mean of the tasks' ratios, bootstrapped the same way, task by task. P(B<A) is the share of pairs of one
 A and one B session of the task in which B spent less (ties count half). Tool text is the characters the tools
-returned to the agent in a session. The reference row is the run that SESSIONS_REF in lib/reference.py records, for
-comparing a new run with it.
+returned to the agent in a session. The reference row, for comparing a new run with an earlier one, is the arm's
+ratios against A in the run that SESSIONS_REF in lib/reference.py records for it.
 """
 import json
 import math
@@ -141,8 +141,10 @@ def report(path):
             reads = spread([(r.get('tools') or {}).get('read', 0) for r in rs])
             ok = f"{sum(bool(r.get('success')) for r in rs)}/{len(rs)}"
             out.append(f'| {t} | {arm} | {ok} | ' + ' | '.join(cells) + f' | {look} | {reads} |')
-    if len(arms) == 2:
-        a_arm, b_arm = arms if arms[0] == 'A' else arms[::-1]
+    base = 'A' if 'A' in arms else arms[0]
+    others = [x for x in arms if x != base]
+    pairs = [(base, x) for x in others] + [(x, y) for i, x in enumerate(others) for y in others[i + 1:]]
+    for a_arm, b_arm in pairs:
         out += ['', f'{b_arm} against {a_arm}: the ratio of medians, its 95% bootstrap interval, and '
                 f'P({b_arm}<{a_arm}).', '', '| task | ' + ' | '.join(RATIOS) + f' | ok {a_arm} | ok {b_arm} |',
                 '| :--- |' + ' ---: |' * (len(RATIOS) + 2)]
@@ -165,7 +167,7 @@ def report(path):
         out.append('| all tasks | ' + ' | '.join(cells) + ' | ' + ' | '.join(
             f"{sum(bool(r.get('success')) for r in recs if r['arm'] == x)}/{sum(r['arm'] == x for r in recs)}"
             for x in (a_arm, b_arm)) + ' |')
-        ref = getattr(reference, 'SESSIONS_REF', None)
+        ref = getattr(reference, 'SESSIONS_REF', {}).get(b_arm) if a_arm == 'A' else None
         if ref:
             out.append(f"| *reference, {ref['ref_date']}* | " + ' | '.join(
                 '{:.2f} ({:.2f}–{:.2f})'.format(*ref[m]) for m in RATIOS) + f" | {ref['ok'][0]} | {ref['ok'][1]} |")

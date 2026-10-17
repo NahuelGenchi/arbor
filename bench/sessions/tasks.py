@@ -1,4 +1,4 @@
-"""The tasks of the whole-session A/B (ab.py), the two arms' AGENTS.md, and each task's check.
+"""The tasks of the whole-session A/B (ab.py), the arms' AGENTS.md and tool, and each task's check.
 
 Every session works on this repository at COMMIT, exported with `git archive` into a new git repository of one commit,
 in which the bugs in PLANTS are already in place, `CLAUDE.md` is left out and `AGENTS.md` is the arm's. With one commit,
@@ -39,7 +39,62 @@ Read with `arbor look`, in the shell, instead of reading whole files:
 - `arbor look` alone describes every query and its options.
 """
 
-ARMS = {'A': COMMON, 'B': COMMON + LOOK}
+# Arms C and D (#74), written before their runs: B's agent took more steps, walking folders where A's used grep,
+# reading an outline and its lines in two calls, asking `arbor look` what it answers. C and D say to find with grep
+# first and then make every read in one call, and describe the queries in full. C runs `arbor look` in the shell; D
+# calls it as a tool of its own (TOOL), not through the shell or Code Mode, and finds the queries in the tool's
+# description.
+QUERIES = """\
+- `outline FILE`: the definitions in a Rust, Python, JavaScript, TypeScript or shell file, or a Markdown file's
+  headings, each with the lines it spans, its comments and attributes included. `lines FILE LINE-END` then reads one
+  whole.
+- `lines FILE [A[-B]]`: lines A to B of a file, from 1 and to its end when left out.
+- `files [DIR]`: what a folder holds.
+- `status`, and `log [REV] [PATH]...`: what changed in the git repository, and its commits.
+
+After a query, `-n ROWS` says how many rows it gives (0 for all). Each answer starts with a line `# QUERY`, which says
+what was cut or why the query failed.
+"""
+
+C_LOOK = """
+## Reading the code
+
+Read with `arbor look`, in the shell, in as few steps as you can:
+
+- Find where things are with grep first, rather than by listing folders.
+- Then make every read the task needs in one call, joined by `+`:
+  `arbor look outline src/a.rs + lines src/a.rs 120-160 + lines src/b.py 40-80`. Read a large file by its outline
+  and the lines you need, not whole.
+
+Its queries:
+
+""" + QUERIES
+
+D_LOOK = """
+## Reading the code
+
+Read with the `arbor_look` tool, in as few steps as you can:
+
+- Find where things are with grep first, rather than by listing folders.
+- Then make every read the task needs in one `arbor_look` call, one query per item:
+  `["outline src/a.rs", "lines src/a.rs 120-160", "lines src/b.py 40-80"]`. Read a large file by its outline and
+  the lines you need, not whole.
+
+Its queries are in the tool's description.
+"""
+
+ARMS = {'A': COMMON, 'B': COMMON + LOOK, 'C': COMMON + C_LOOK, 'D': COMMON + D_LOOK}
+
+# The tool look_mcp.py offers in arm D, as the MCP server `arbor`, so that OpenCode names it `arbor_look`.
+TOOL = {
+    'name': 'look',
+    'description': 'Reads the repository as short tables, several reads in one call: give every read the task needs '
+                   'as one list. Each item is one query:\n\n' + QUERIES,
+    'inputSchema': {'type': 'object', 'required': ['queries'], 'properties': {'queries': {
+        'type': 'array', 'items': {'type': 'string'}, 'description': 'The queries, one per item, e.g. '
+        '["outline src/a.rs", "lines src/a.rs 120-160", "files src"]'}}},
+}
+TOOL_ARMS = {'D'}  # the arms whose key's home also holds TOOL
 
 # The bugs the fix tasks start from: (path, original text, planted text). Each original text appears once in its file.
 PLANTS = [

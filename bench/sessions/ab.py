@@ -3,26 +3,30 @@ finish, rather than in one answer.
 
 usage: python3 bench/sessions/ab.py [--reps N] [--tasks find,explain,...] [--arms A,B]
 
-Runs OpenCode, unchanged, on each task of tasks.py, in a world of its own, under two arms that differ only in the
-world's AGENTS.md: A says nothing about `arbor look`, B says to read with it. Each task runs --reps times per arm (5
-when unset), in alternating order (AB, then BA). Every session starts afresh:
+Runs OpenCode, unchanged, on each task of tasks.py, in a world of its own, under arms that differ only in the world's
+AGENTS.md and, for the tool arm, one tool: A says nothing about `arbor look`; B says to read with it, in the shell; C
+says to find with grep first and then to make every read in one `arbor look` call; D says the same of `arbor look`
+offered as a tool of its own, by look_mcp.py. Each task runs --reps times per arm (5 when unset), the arms in turns
+(AB, then BA; ACD, CDA, then DAC). Every session starts afresh:
 
 - a copy of the arm's repository (tasks.py) at the same path, and a new world over it;
 - a new key with a home folder of its own (`--home`), which opens OpenCode's program, OpenCode's two hosts (its
   models' API and its list of models) and that world only. Its settings, there alone, allow only OpenCode's own
   provider, name the free model for every call, the background ones included, and turn off updates, language servers
-  and formatters. No login goes in: the free model needs none, so no plan's quota can be reached;
+  and formatters. In the tool arm they also start look_mcp.py, copied into that home, as a local MCP server whose
+  tool is called directly, not through Code Mode. No login goes in: the free model needs none, so no plan's quota can
+  be reached;
 - `opencode models`, which fetches the list of models into that home, then
   `opencode run --standalone --auto -m MODEL PROMPT`, its input closed.
 
 When it ends, or after AB_TIMEOUT seconds (900 when unset, counted a failure), the session is counted from OpenCode's
 own records, its database in the key's home, read-only and from the session tables only, never the one with logins:
 each model call (a step) with its input, cache-read, cache-write, output and reasoning tokens, the tools it called,
-and its last answer. The task's check then decides success, from that answer or from the files left in the world.
-A session that OpenCode ends with an error of the provider's, such as the free model's rate limit, runs again, at most
-twice; the attempts stay in the records. `--resume` runs again, later, a session whose every attempt the provider
-ended, as well as those a stopped run did not reach. Then the key is taken back, which deletes its home, and the
-world is thrown away.
+the commands it ran in the shell and the queries it gave the `arbor look` tool, and its last answer. The task's check
+then decides success, from that answer or from the files left in the world. A session that OpenCode ends with an
+error of the provider's, such as the free model's rate limit, runs again, at most twice; the attempts stay in the
+records. `--resume` runs again, later, a session whose every attempt the provider ended, as well as those a stopped
+run did not reach. Then the key is taken back, which deletes its home, and the world is thrown away.
 
 The run stops if a step names another model or records a cost other than 0, or if MODEL is not one of the free ones
 (its name ends in `-free`). arbor runs with ARBOR_HOME in the temp folder, so none of the person's worlds, keys or
@@ -34,7 +38,8 @@ Writes RESULTS_DIR/sessions_<date>_<host>.jsonl, one record per session, and sum
 replaced by `.`. Everything else lives in one temp folder, removed at the end, also on Ctrl-C.
 
 Environment: OPENCODE (~/.opencode/bin/opencode), AB_MODEL (opencode/deepseek-v4.1-flash-free), AB_TIMEOUT (900),
-ARBOR_BIN, RESULTS_DIR (bench/results), BENCH_TMP or TMPDIR (/tmp).
+AB_GAP (seconds to wait after each session, 0 when unset: the free model's rate limit ends sessions after about 120
+in an hour), ARBOR_BIN, RESULTS_DIR (bench/results), BENCH_TMP or TMPDIR (/tmp).
 """
 import argparse
 import datetime
@@ -60,10 +65,17 @@ import tasks as T  # noqa: E402
 OPENCODE = os.environ.get('OPENCODE') or os.path.expanduser('~/.opencode/bin/opencode')
 MODEL = os.environ.get('AB_MODEL') or 'opencode/deepseek-v4.1-flash-free'
 TIMEOUT = float(os.environ.get('AB_TIMEOUT') or 900)
+GAP = float(os.environ.get('AB_GAP') or 0)
 RESULTS = os.environ.get('RESULTS_DIR') or os.path.join(BENCH, 'results')
 HOSTS = ['opencode.ai', 'models.opencode.ai']
 SETTINGS = {'model': MODEL, 'small_model': MODEL, 'enabled_providers': [MODEL.split('/')[0]], 'autoupdate': False,
             'lsp': False, 'formatter': False}
+# The tool arm's MCP server, as OpenCode names it, and so the tool: `arbor_look`
+MCP = 'arbor'
+LOOK_TOOL = f"{MCP}_{T.TOOL['name']}"
+# look_mcp.py and its tool, in the key's home; the server runs in the cell, in the agent's folder
+MCP_DIR = '.config/opencode'
+MCP_COMMAND = ['sh', '-c', f'exec python3 -I -B "$HOME/{MCP_DIR}/look_mcp.py" "$HOME/{MCP_DIR}/look_tool.json"']
 WORLD = 'task'
 RETRIES = 2
 CHILD = None  # the session running now, stopped if the run is interrupted
@@ -191,11 +203,14 @@ def count(db, folder):
             state = part.get('state') or {}
             out = sum(len(c.get('text') or '') for c in state.get('content') or [] if isinstance(c, dict))
             rec['tool_chars'][tool] = rec['tool_chars'].get(tool, 0) + out
+            given = state.get('input') or {}
             if tool in ('shell', 'bash'):  # OpenCode 2 calls its shell tool `shell`
-                given = state.get('input') or {}
                 command = str(given.get('command') or ' '.join(map(str, given.values()))).replace(folder, '.')
                 rec['commands'].append(command[:300])
                 rec['arbor_look'] += 'arbor look' in command
+            elif tool in (LOOK_TOOL, T.TOOL['name']):
+                rec['commands'].append(f'{tool} {json.dumps(given.get("queries"))}'.replace(folder, '.')[:300])
+                rec['arbor_look'] += 1
         if sid == main:
             rec['context_last'] = ctx
             if text:
@@ -216,8 +231,14 @@ def session(arbor, work, task, arm, n):
     for h in HOSTS:
         args += ['--net', h]
     arbor(*args)
-    arbor('run', WORLD, '--key', key, '--', 'sh', '-c',
-          'mkdir -p ~/.config/opencode && cat > ~/.config/opencode/opencode.json', input=json.dumps(SETTINGS).encode())
+    settings, files = dict(SETTINGS), {}
+    if arm in T.TOOL_ARMS:
+        settings['mcp'] = {MCP: {'type': 'local', 'command': MCP_COMMAND, 'codemode': False}}
+        with open(os.path.join(HERE, 'look_mcp.py'), 'rb') as f:
+            files = {'look_mcp.py': f.read(), 'look_tool.json': json.dumps(T.TOOL).encode()}
+    for name, data in {'opencode.json': json.dumps(settings).encode(), **files}.items():
+        arbor('run', WORLD, '--key', key, '--', 'sh', '-c', f'mkdir -p ~/{MCP_DIR} && cat > ~/{MCP_DIR}/{name}',
+              input=data)
     for _ in range(3):  # a new home fetches the list of models in the background; ask again until MODEL is there
         listed = arbor('run', WORLD, '--key', key, '--', OPENCODE, 'models', '--standalone', check=False)
         if MODEL in listed.stdout.decode(errors='replace').split():
@@ -309,7 +330,8 @@ def main():
             f.write(json.dumps(meta) + '\n')
         for rep in range(a.reps):
             for i, task in enumerate(names):
-                for arm in (arms if (rep + i) % 2 == 0 else arms[::-1]):
+                turn = (rep + i) % len(arms)
+                for arm in arms[turn:] + arms[:turn]:
                     if (rep, task, arm) in done:
                         continue
                     for attempt in range(RETRIES + 1):
@@ -328,6 +350,7 @@ def main():
                         print(f"{n:3d} {task:10s} {arm} rep {rep} steps {rec.get('steps', 0):3d} "
                               f"look {rec.get('arbor_look', 0):2d} {'ok ' if rec['success'] else 'no '} "
                               f"{rec['wall_s']:6.1f}s {rec['why']}", flush=True)
+                        time.sleep(GAP)
                         if not again:
                             break
         meta_end = {'meta_end': True, 'date': datetime.datetime.now().isoformat(timespec='seconds'),
