@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bill</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@400;500;600&display=block" rel="stylesheet">
+<link rel="stylesheet" href="base.css">
+<script src="theme.js"></script>
+<style>
+  .card { width: 880px; height: 264px; padding: 34px 44px; }
+  .bar { display: flex; gap: 2px; height: 26px; margin-top: 24px; }
+  .bar span { height: 100%; }
+  .bar span:first-child { border-radius: 6px 0 0 6px; }
+  .bar span:last-child { border-radius: 0 6px 6px 0; }
+  .s1 { background: var(--green); width: 74.3%; }
+  .s2 { background: var(--violet); width: 13.8%; }
+  .s3 { background: var(--amber); width: 11.9%; }
+  .labels { position: relative; height: 70px; margin-top: 12px; }
+  .l { position: absolute; top: 0; }
+  .l b { display: block; font: 600 20px var(--sans); color: var(--ink); font-variant-numeric: tabular-nums; }
+  .l span { display: block; margin-top: 3px; font: 400 12.5px/1.35 var(--sans); color: var(--ink-3); }
+  .l1 { left: 0; } .l2 { left: calc(74.3% + 2px); width: 100px; } .l3 { left: calc(88.1% + 4px); width: 92px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="eyebrow">measured: 47,700 calls my agents made to a model</div>
+  <div class="title">three quarters of the bill is reading the same words again</div>
+  <div class="bar"><span class="s1"></span><span class="s2"></span><span class="s3"></span></div>
+  <div class="labels">
+    <div class="l l1"><b>74.3%</b><span>reading again what the model already read, at every step</span></div>
+    <div class="l l2"><b>13.8%</b><span>the model's own writing</span></div>
+    <div class="l l3"><b>11.9%</b><span>keeping a copy to reread</span></div>
+  </div>
+</div>
+</body>
+</html>

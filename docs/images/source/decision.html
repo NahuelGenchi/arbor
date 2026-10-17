@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>decision</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@400;500;600&display=block" rel="stylesheet">
+<link rel="stylesheet" href="base.css">
+<script src="theme.js"></script>
+<style>
+  .card { width: 880px; height: 404px; display: flex; gap: 40px; padding: 38px 44px; }
+  .text { width: 318px; flex: none; }
+  .text .sub { font-size: 16.5px; }
+  .note { margin-top: 18px; font: 400 13px/1.5 var(--sans); color: var(--ink-3); }
+  .ui {
+    flex: 1; align-self: center; background: var(--wash); border: 1px solid var(--rule); border-radius: 16px;
+    padding: 18px 20px 18px; box-shadow: 0 1px 0 rgba(0,0,0,.02), 0 12px 28px -18px rgba(0,0,0,.25);
+  }
+  .ui-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px 4px 8px; border-radius: 999px;
+    background: var(--amber-wash); color: var(--amber-ink); font: 600 12px var(--sans);
+  }
+  .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+  .ui-title { font: 600 15px var(--sans); color: var(--ink); }
+  .row { display: grid; grid-template-columns: 142px 1fr; gap: 12px; padding: 9px 0; border-top: 1px solid var(--rule); }
+  .k { font: 500 12.5px/1.4 var(--sans); color: var(--ink-3); }
+  .v { font: 500 13.5px/1.4 var(--sans); color: var(--ink); }
+  .v small { display: block; font: 400 12.5px/1.4 var(--sans); color: var(--ink-3); }
+  .bar { height: 8px; border-radius: 4px; background: var(--rule); margin-top: 7px; overflow: hidden; }
+  .bar b { display: block; height: 100%; width: 68.2%; background: var(--green); border-radius: 4px; }
+  .actions { display: flex; gap: 10px; margin-top: 14px; }
+  .btn { font: 600 13.5px var(--sans); padding: 9px 16px; border-radius: 10px; }
+  .btn.go { background: var(--green); color: #fff; }
+  .btn.no { border: 1px solid var(--rule); color: var(--ink-2); background: var(--paper); }
+  .key { margin-left: auto; align-self: center; font: 400 12px var(--sans); color: var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="text">
+    <div class="eyebrow">one task, start to finish</div>
+    <div class="title">one decision, waiting for you</div>
+    <div class="sub">You asked an agent to move the payment code to a new version and put it on the test site, for five dollars at most. It tried three ways, threw two away, and this is all it asks of you.</div>
+    <div class="note">An imagined example from the proposal. None of this exists yet.</div>
+  </div>
+  <div class="ui">
+    <div class="ui-head"><span class="pill"><i></i>waiting for you</span><span class="ui-title">Payments, moved to version 2</span></div>
+    <div class="row"><div class="k">the change</div><div class="v">18 files in the payment code</div></div>
+    <div class="row"><div class="k">checked by</div><div class="v">214 tests and a type check<small>all pass</small></div></div>
+    <div class="row"><div class="k">spent</div><div class="v num">$3.41 of $5.00<div class="bar"><b></b></div></div></div>
+    <div class="row"><div class="k">will leave the machine</div><div class="v">a deployment to the test site<small>and a note to the payments team</small></div></div>
+    <div class="row"><div class="k">can be undone</div><div class="v">both</div></div>
+    <div class="actions"><span class="btn go">Release both</span><span class="btn no">Refuse</span><span class="key">or touch your security key</span></div>
+  </div>
+</div>
+</body>
+</html>

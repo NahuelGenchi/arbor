@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hero</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@400;500;600&display=block" rel="stylesheet">
+<link rel="stylesheet" href="base.css">
+<script src="theme.js"></script>
+<style>
+  .card { width: 880px; height: 420px; margin: 0; }
+  .head { position: absolute; left: 44px; top: 38px; width: 640px; }
+  svg { position: absolute; left: 0; top: 0; }
+  .lbl { font: 500 13px var(--sans); fill: var(--ink-2); }
+  .lbl-quiet { font: 400 12.5px var(--sans); fill: var(--ink-3); }
+  .lbl-strong { font: 600 13px var(--sans); fill: var(--ink); }
+  .lbl-green { font: 600 13px var(--sans); fill: var(--green-ink); }
+  .lbl-amber { font: 600 13px var(--sans); fill: var(--amber-ink); }
+  .try { stroke: var(--ink-3); }
+  .dead { stroke: var(--cut); stroke-dasharray: 2 7; }
+  .kept { stroke: var(--green); }
+  .main { stroke: var(--quiet); }
+  .step { fill: var(--paper); stroke-width: 2.5; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head">
+    <div class="eyebrow">how arbor works, in one picture</div>
+    <div class="title">every task is a branch</div>
+    <div class="sub">The agent tries three ways at once, each in a world of its own. Checks cut off the tries that fail, and the one that works waits for your yes before anything real changes.</div>
+  </div>
+  <svg width="880" height="420" viewBox="0 0 880 420" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- main world -->
+    <path class="main" d="M44 372H752" stroke-width="5"/>
+    <path class="kept" d="M752 372H836" stroke-width="5"/>
+    <text class="lbl-quiet" x="44" y="398">your real files: nobody touches them while the agent works</text>
+    <text class="lbl-green" x="836" y="398" text-anchor="end">kept, with the change</text>
+
+    <!-- world a: tests fail -->
+    <path class="try" d="M120 372C176 372 168 196 228 196H468" stroke-width="3.5"/>
+    <path class="dead" d="M480 196H600" stroke-width="3"/>
+    <!-- world c: too slow -->
+    <path class="try" d="M120 372C182 372 172 314 236 314H418" stroke-width="3.5"/>
+    <path class="dead" d="M440 314H462" stroke-width="3"/>
+    <!-- world b: kept -->
+    <path class="kept" d="M120 372C180 372 170 255 232 255H660C716 255 700 372 752 372" stroke-width="4.5"/>
+
+    <!-- steps on each world -->
+    <g class="step" stroke="var(--ink-3)">
+      <circle cx="270" cy="196" r="5"/><circle cx="330" cy="196" r="5"/><circle cx="390" cy="196" r="5"/>
+      <circle cx="280" cy="314" r="5"/><circle cx="340" cy="314" r="5"/>
+    </g>
+    <g class="step" stroke="var(--green)">
+      <circle cx="275" cy="255" r="5"/><circle cx="335" cy="255" r="5"/><circle cx="395" cy="255" r="5"/><circle cx="455" cy="255" r="5"/>
+    </g>
+
+    <!-- checks -->
+    <g stroke="var(--ink-3)" stroke-width="3">
+      <path d="M467 189l14 14M481 189l-14 14"/>
+      <path d="M417 307l14 14M431 307l-14 14"/>
+    </g>
+    <text class="lbl" x="476" y="180" text-anchor="middle">world a</text>
+    <text class="lbl-quiet" x="612" y="200">2 tests fail · thrown away</text>
+    <text class="lbl" x="424" y="298" text-anchor="middle">world c</text>
+    <text class="lbl-quiet" x="474" y="318">40% slower · thrown away</text>
+    <text class="lbl-strong" x="232" y="244" fill="var(--green-ink)" style="fill:var(--green-ink)">world b</text>
+    <circle cx="516" cy="255" r="10" fill="var(--green)"/>
+    <path d="M511 255.5l3.5 3.5 6.5-7" stroke="var(--paper)" stroke-width="2.6"/>
+    <text class="lbl-green" x="516" y="285" text-anchor="middle">every test passes</text>
+
+    <!-- the decision -->
+    <rect x="584" y="241" width="28" height="28" rx="6" transform="rotate(45 598 255)" fill="var(--amber)"/>
+    <text class="lbl-amber" x="598" y="228" text-anchor="middle">you say yes</text>
+
+    <!-- start and merge -->
+    <circle cx="120" cy="372" r="9" fill="var(--paper)" stroke="var(--ink-2)" stroke-width="3.5"/>
+    <text class="lbl-strong" x="120" y="349" text-anchor="middle">you ask</text>
+    <circle cx="752" cy="372" r="10" fill="var(--green)"/>
+  </svg>
+</div>
+</body>
+</html>
