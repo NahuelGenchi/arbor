@@ -112,6 +112,9 @@ impl Host {
                     "a key opens the names below a domain, as *.example.com, not a whole top-level domain",
                 ));
             }
+            if domain.ends_with(".localhost") {
+                return Err(own_services(host));
+            }
             Pattern::Below(domain)
         } else if let Ok(ip) = host.parse::<IpAddr>() {
             let ip = ip.to_canonical();
@@ -942,6 +945,7 @@ mod tests {
             "localhost",
             "LOCALHOST:8080",
             "app.localhost",
+            "*.dev.localhost",
             "127.0.0.1",
             "127.1.2.3:80",
             "[::1]:8080",
