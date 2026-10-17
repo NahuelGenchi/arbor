@@ -1,7 +1,7 @@
-//! Keys end to end: a cell sees only its world until a key opens more, for a while and within limits, a key's own
-//! home folder keeps what its commands write there from one run to the next, a key taken back or ended stops what
-//! runs under it, and a renewed one lasts longer, home folder and running commands included. They skip like `common`
-//! says.
+//! Keys end to end: a cell sees only its world until a key opens more, for a while and within limits, password files
+//! and agents' records of your sessions stay hidden even then, a key's own home folder keeps what its commands write
+//! there from one run to the next, a key taken back or ended stops what runs under it, and a renewed one lasts
+//! longer, home folder and running commands included. They skip like `common` says.
 
 mod common;
 
@@ -44,51 +44,52 @@ fn path_of(dirs: &[PathBuf]) -> std::ffi::OsString {
     std::env::join_paths(all).unwrap()
 }
 
-/// Where AI agents keep their logins, in the home folder.
-const AGENT_LOGINS: [&str; 40] = [
-    ".local/share/opencode/opencode.db",
-    ".local/share/opencode/opencode.db-wal",
-    ".local/share/opencode/opencode.db-shm",
-    ".local/share/opencode/auth.json",
-    ".local/share/opencode/mcp-auth.json",
-    ".claude/.credentials.json",
-    ".claude.json",
-    ".claude/backups/.claude.json.backup.1",
-    ".config/anthropic/credentials/default.json",
-    ".codex/auth.json",
-    ".codex/.credentials.json",
-    ".codex/secrets/codex_auth.age",
-    ".gemini/oauth_creds.json",
-    ".qwen/settings.json",
-    ".config/github-copilot/auth.db",
-    ".local/share/amp/secrets.json",
-    ".config/goose/secrets.yaml",
-    ".local/share/crush/crush.json",
-    ".factory/auth.v2.file",
-    ".cline/data/settings/providers.json",
-    ".local/share/kilo/auth.json",
-    ".openhands/agent_settings.json",
-    ".local/share/amazon-q/data.sqlite3",
-    ".config/Cursor/User/globalStorage/state.vscdb",
-    ".kimi-code/credentials/kimi-code.json",
-    ".kimi-code/config.toml",
-    ".kimi/credentials/kimi-code.json",
-    ".kimi/config.toml",
-    ".copilot/config.json",
-    ".copilot/mcp-oauth-config/server.json",
-    ".copilot/mcp-secrets/server.json",
-    ".config/cursor/auth.json",
-    ".cursor/projects/shop/mcp-auth.json",
-    ".aider/oauth-keys.env",
-    ".aider.conf.yml",
-    ".augment/session.json",
-    ".pi/agent/auth.json",
-    ".env",
-    ".vibe/.env",
-    ".continue/.env",
+/// Where AI agents keep their logins, in the home folder, each with what a command reads there while it is hidden:
+/// nothing from a hidden file, and `-` in a hidden folder, which looks empty.
+const AGENT_LOGINS: [(&str, &str); 40] = [
+    (".local/share/opencode/opencode.db", "-"),
+    (".local/share/opencode/opencode.db-wal", "-"),
+    (".local/share/opencode/opencode.db-shm", "-"),
+    (".local/share/opencode/auth.json", "-"),
+    (".local/share/opencode/mcp-auth.json", "-"),
+    (".claude/.credentials.json", ""),
+    (".claude.json", ""),
+    (".claude/backups/.claude.json.backup.1", "-"),
+    (".config/anthropic/credentials/default.json", "-"),
+    (".codex/auth.json", ""),
+    (".codex/.credentials.json", ""),
+    (".codex/secrets/codex_auth.age", "-"),
+    (".gemini/oauth_creds.json", "-"),
+    (".qwen/settings.json", "-"),
+    (".config/github-copilot/auth.db", "-"),
+    (".local/share/amp/secrets.json", "-"),
+    (".config/goose/secrets.yaml", "-"),
+    (".local/share/crush/crush.json", "-"),
+    (".factory/auth.v2.file", "-"),
+    (".cline/data/settings/providers.json", "-"),
+    (".local/share/kilo/auth.json", "-"),
+    (".openhands/agent_settings.json", "-"),
+    (".local/share/amazon-q/data.sqlite3", "-"),
+    (".config/Cursor/User/globalStorage/state.vscdb", "-"),
+    (".kimi-code/credentials/kimi-code.json", "-"),
+    (".kimi-code/config.toml", ""),
+    (".kimi/credentials/kimi-code.json", "-"),
+    (".kimi/config.toml", ""),
+    (".copilot/config.json", ""),
+    (".copilot/mcp-oauth-config/server.json", "-"),
+    (".copilot/mcp-secrets/server.json", "-"),
+    (".config/cursor/auth.json", ""),
+    (".cursor/projects/shop/mcp-auth.json", "-"),
+    (".aider/oauth-keys.env", ""),
+    (".aider.conf.yml", ""),
+    (".augment/session.json", ""),
+    (".pi/agent/auth.json", ""),
+    (".env", ""),
+    (".vibe/.env", ""),
+    (".continue/.env", ""),
 ];
 
-/// The folders among them that stay hidden whole, where a cell finds no login at all rather than an empty one.
+/// The folders among them that stay hidden whole.
 const LOGIN_FOLDERS: [&str; 21] = [
     ".local/share/opencode",
     ".claude/backups",
@@ -130,27 +131,80 @@ const NEXT_TO_LOGINS: [&str; 13] = [
     ".continue/config.yaml",
 ];
 
-/// What a cell reads in the login `rel` while it is hidden, as `reads` gives it: `-` in a hidden folder, where there is
-/// none, and nothing from a hidden file.
-fn hidden_login(rel: &str) -> &'static str {
-    if LOGIN_FOLDERS.iter().any(|f| Path::new(rel).starts_with(f)) {
-        "-"
-    } else {
-        ""
+/// Where AI agents keep their records of your sessions, in the home folder, each with what a command reads there
+/// while it is hidden: nothing from a hidden file, and `-` in a hidden folder, which looks empty. Codex's databases
+/// have made-up version numbers, since the list takes any.
+const AGENT_RECORDS: [(&str, &str); 28] = [
+    (".claude/projects/-home-you-work-shop/0c1d.jsonl", "-"),
+    (".claude/projects/-home-you-work-shop/memory/MEMORY.md", "-"),
+    (".claude/history.jsonl", ""),
+    (".claude/file-history/0c1d/env", "-"),
+    (".claude/paste-cache/paste", "-"),
+    (".claude/image-cache/0c1d/image", "-"),
+    (".claude/uploads/0c1d/upload", "-"),
+    (".claude/plans/plan.md", "-"),
+    (".claude/tasks/list/1.json", "-"),
+    (".claude/todos/0c1d.json", "-"),
+    (".claude/debug/0c1d.txt", "-"),
+    (".claude/feedback-bundles/bundle", "-"),
+    (".claude/feedback/drafts/draft", "-"),
+    (".claude/usage-data/report.html", "-"),
+    (".claude/jobs/0c1d/state.json", "-"),
+    (".claude/agent-memory/reviewer/MEMORY.md", "-"),
+    (".codex/sessions/2026/10/17/rollout.jsonl", "-"),
+    (".codex/archived_sessions/rollout.jsonl", "-"),
+    (".codex/history.jsonl", ""),
+    (".codex/session_index.jsonl", ""),
+    (".codex/log/codex-tui.log", "-"),
+    (".codex/memories/memory_summary.md", "-"),
+    (".codex/memories_v2/memory.md", "-"),
+    (".codex/memories_extensions/memory.md", "-"),
+    (".codex/state_7.sqlite", ""),
+    (".codex/state_7.sqlite-wal", ""),
+    (".codex/thread_history_3.sqlite", ""),
+    (".local/state/opencode/prompt-history.jsonl", "-"),
+];
+
+/// Files next to them that hold none: the settings, instructions and skills a broad grant is for.
+const NEXT_TO_RECORDS: [&str; 6] = [
+    ".claude/settings.json",
+    ".claude/CLAUDE.md",
+    ".claude/skills/review/SKILL.md",
+    ".codex/config.toml",
+    ".codex/AGENTS.md",
+    ".local/state/notes",
+];
+
+/// Writes `text` in each of `files` in the home folder `home`.
+fn put(home: &Path, files: &[&str], text: &str) {
+    for rel in files {
+        let path = home.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
     }
 }
 
 /// Writes a made-up login, `login`, where each agent keeps one in `home`, and `other` in the files next to them.
 fn made_up_logins(home: &Path) {
-    let files = AGENT_LOGINS
-        .map(|f| (f, "login"))
-        .into_iter()
-        .chain(NEXT_TO_LOGINS.map(|f| (f, "other")));
-    for (rel, text) in files {
-        let path = home.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
+    put(home, &AGENT_LOGINS.map(|(f, _)| f), "login");
+    put(home, &NEXT_TO_LOGINS, "other");
+}
+
+/// Writes a made-up record, `record`, where each agent keeps one in `home`, and `other` in the files next to them.
+fn made_up_records(home: &Path) {
+    put(home, &AGENT_RECORDS.map(|(f, _)| f), "record");
+    put(home, &NEXT_TO_RECORDS, "other");
+}
+
+/// Makes the key `name`, which opens each of `opens` in the home folder.
+fn key_opening(e: &Env, name: &str, opens: &[&str]) {
+    let h = e.user_home.to_str().unwrap();
+    let paths: Vec<String> = opens.iter().map(|o| format!("{h}/{o}")).collect();
+    let mut args = vec!["key", "new", name];
+    for p in &paths {
+        args.extend(["--read", p.as_str()]);
     }
+    e.ok(&args);
 }
 
 /// What a command in `world`, under `key` if given, reads in each of `files` in the home folder: its text, nothing
@@ -216,23 +270,13 @@ fn agents_logins_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_the
     let home = &e.user_home;
     made_up_logins(home);
     let h = home.to_str().unwrap();
-    let key = |name: &str, opens: &[&str]| {
-        let paths: Vec<String> = opens.iter().map(|o| format!("{h}/{o}")).collect();
-        let mut args = vec!["key", "new", name];
-        for p in &paths {
-            args.extend(["--read", p.as_str()]);
-        }
-        e.ok(&args);
-    };
-    let every: Vec<&str> = AGENT_LOGINS
-        .iter()
-        .chain(&NEXT_TO_LOGINS)
-        .copied()
-        .collect();
+    let key = |name: &str, opens: &[&str]| key_opening(&e, name, opens);
+    let logins = AGENT_LOGINS.map(|(f, _)| f);
+    let every: Vec<&str> = logins.iter().chain(&NEXT_TO_LOGINS).copied().collect();
     // The hidden folders look empty and the hidden files read empty, while the files next to them show.
     let hidden: Vec<&str> = AGENT_LOGINS
-        .map(hidden_login)
-        .into_iter()
+        .iter()
+        .map(|(_, seen)| *seen)
         .chain(NEXT_TO_LOGINS.map(|_| "other"))
         .collect();
 
@@ -267,7 +311,7 @@ fn agents_logins_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_the
     // ...and a world of the home folder, where writes to them vanish and leave nothing in the world.
     e.ok(&["new", "home", "--from", h]);
     assert_eq!(reads(&e, "home", None, &every), hidden);
-    let writes = AGENT_LOGINS
+    let writes = logins
         .map(|f| {
             let dir = Path::new(f).parent().unwrap().display();
             format!("mkdir -p ~/{dir} && echo x > ~/{f}")
@@ -275,20 +319,21 @@ fn agents_logins_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_the
         .join("; ");
     e.ok(&["run", "home", "--", "sh", "-c", &writes]);
     assert_eq!(e.ok(&["diff", "home"]), "no changes\n");
-    for f in AGENT_LOGINS {
+    for f in logins {
         assert_eq!(fs::read_to_string(home.join(f)).unwrap(), "login", "{f}");
     }
 
     // A key that names a login opens it, while the rest of the home folder stays hidden...
-    key("logins", &AGENT_LOGINS);
-    let mut named = vec!["login"; AGENT_LOGINS.len()];
+    key("logins", &logins);
+    let mut named = vec!["login"; logins.len()];
     named.extend(["-"; NEXT_TO_LOGINS.len()]);
     assert_eq!(reads(&e, "demo", Some("logins"), &every), named);
     // ...as does one that names the folders hidden whole...
     key("whole", &LOGIN_FOLDERS);
     let in_folders: Vec<&str> = AGENT_LOGINS
-        .into_iter()
-        .filter(|f| hidden_login(f) == "-")
+        .iter()
+        .filter(|(_, seen)| *seen == "-")
+        .map(|(f, _)| *f)
         .collect();
     assert_eq!(
         reads(&e, "demo", Some("whole"), &in_folders),
@@ -316,6 +361,86 @@ fn agents_logins_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_the
     assert_eq!(
         reads(&e, "demo", Some("within"), &files),
         ["other", "login", "-", "-", "other", "login"]
+    );
+}
+
+#[test]
+fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_them() {
+    let Some(e) = Env::new("agentrecords") else {
+        return;
+    };
+    new_world(&e);
+    let home = &e.user_home;
+    made_up_records(home);
+    let h = home.to_str().unwrap();
+    let key = |name: &str, opens: &[&str]| key_opening(&e, name, opens);
+    let records = AGENT_RECORDS.map(|(f, _)| f);
+    let every: Vec<&str> = records.iter().chain(&NEXT_TO_RECORDS).copied().collect();
+    // The hidden folders look empty and the hidden files read empty, while the settings next to them show.
+    let hidden: Vec<&str> = AGENT_RECORDS
+        .iter()
+        .map(|(_, seen)| *seen)
+        .chain(["other"; 6])
+        .collect();
+
+    // A key that opens the folders they are in, or the whole home folder, hides them...
+    key("folders", &[".claude", ".codex", ".local/state"]);
+    assert_eq!(reads(&e, "demo", Some("folders"), &every), hidden);
+    e.ok(&["key", "new", "all", "--read", h]);
+    assert_eq!(reads(&e, "demo", Some("all"), &every), hidden);
+    // ...and so does a world of the home folder, where writes to them vanish and leave nothing in the world.
+    e.ok(&["new", "home", "--from", h]);
+    assert_eq!(reads(&e, "home", None, &every), hidden);
+    let writes = records
+        .map(|f| format!("mkdir -p $(dirname ~/{f}) && echo x > ~/{f}"))
+        .join(" && ");
+    e.ok(&["run", "home", "--", "sh", "-c", &writes]);
+    assert_eq!(e.ok(&["diff", "home"]), "no changes\n");
+    for f in records {
+        assert_eq!(fs::read_to_string(home.join(f)).unwrap(), "record", "{f}");
+    }
+
+    // A key that names a record opens it...
+    key(
+        "named",
+        &[
+            ".claude/projects",
+            ".codex/history.jsonl",
+            ".codex/state_7.sqlite",
+            ".local/state/opencode",
+        ],
+    );
+    let files = [
+        ".claude/projects/-home-you-work-shop/0c1d.jsonl",
+        ".codex/history.jsonl",
+        ".codex/state_7.sqlite",
+        ".codex/state_7.sqlite-wal",
+        ".local/state/opencode/prompt-history.jsonl",
+    ];
+    assert_eq!(
+        reads(&e, "demo", Some("named"), &files),
+        ["record", "record", "record", "-", "record"]
+    );
+    // ...also inside a folder the key opens, where the other records stay hidden.
+    key(
+        "within",
+        &[
+            ".claude",
+            ".claude/projects/-home-you-work-shop/memory",
+            ".codex",
+            ".codex/state_7.sqlite",
+        ],
+    );
+    let files = [
+        ".claude/settings.json",
+        ".claude/projects/-home-you-work-shop/memory/MEMORY.md",
+        ".claude/projects/-home-you-work-shop/0c1d.jsonl",
+        ".codex/state_7.sqlite",
+        ".codex/state_7.sqlite-wal",
+    ];
+    assert_eq!(
+        reads(&e, "demo", Some("within"), &files),
+        ["other", "record", "-", "record", ""]
     );
 }
 
@@ -1013,8 +1138,50 @@ fn the_agent_s_own_logins_stay_in_its_home_while_yours_stay_hidden() {
     assert_eq!(cat("~/.cargo/new"), "hidden\n");
     assert!(!cargo.join("new").exists());
     assert_eq!(fs::read_to_string(home.join(".netrc")).unwrap(), "yours");
-    for f in AGENT_LOGINS {
+    for (f, _) in AGENT_LOGINS {
         assert_eq!(fs::read_to_string(home.join(f)).unwrap(), "login", "{f}");
+    }
+}
+
+#[test]
+fn an_agent_s_own_records_stay_in_its_home_while_yours_stay_hidden() {
+    let Some(e) = Env::new("homerecords") else {
+        return;
+    };
+    new_world(&e);
+    let home = &e.user_home;
+    made_up_records(home);
+    let claude = home.join(".claude");
+    e.ok(&[
+        "key",
+        "new",
+        "agent",
+        "--home",
+        "--read",
+        claude.to_str().unwrap(),
+    ]);
+    // What an agent keeps of its sessions in its home is its own to read the next time...
+    inside(
+        &e,
+        Some("agent"),
+        "mkdir -p ~/.codex/sessions ~/.local/state/opencode && printf mine > ~/.codex/sessions/rollout.jsonl && \
+         printf mine > ~/.codex/state_7.sqlite && printf mine > ~/.local/state/opencode/prompt-history.jsonl",
+    );
+    let files = [
+        ".codex/sessions/rollout.jsonl",
+        ".codex/state_7.sqlite",
+        ".local/state/opencode/prompt-history.jsonl",
+        // ...while yours stay hidden, also in your folder that the key opens on top of its home.
+        ".claude/settings.json",
+        ".claude/history.jsonl",
+        ".claude/projects/-home-you-work-shop/0c1d.jsonl",
+    ];
+    assert_eq!(
+        reads(&e, "demo", Some("agent"), &files),
+        ["mine", "mine", "mine", "other", "", "-"]
+    );
+    for (f, _) in AGENT_RECORDS {
+        assert_eq!(fs::read_to_string(home.join(f)).unwrap(), "record", "{f}");
     }
 }
 
