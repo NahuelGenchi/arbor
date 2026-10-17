@@ -29,7 +29,8 @@ arbor discard shop                      # throw the world away
 - **See little else of yours.** Inside a world your home folder is empty, so are `/media` and `/mnt`, and the other folders in `/home` are gone. Anything written there vanishes when the command ends. The rest of the computer, such as its programs in `/usr`, can be read but not changed. Only a few plain variables of the shell that started arbor pass in: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `COLORTERM`, `NO_COLOR`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `EDITOR`, `VISUAL` and `PAGER`. The computer's name reads `arbor`.
 - **Open more only with a key**, for a while: see [Keys](#keys). Password files stay hidden even then.
 - **No network.** It comes later, through a filter that lets in only the hosts you allow.
-- **No way out through the computer's services.** `/run`, where Docker, D-Bus, systemd and your session keep their sockets, is empty inside a world, and so is arbor's own folder with the other worlds and the keys. A command cannot make user namespaces of its own, and it gets an empty keyring instead of your session's.
+- **No way out through the computer's services.** `/run`, where Docker, D-Bus, systemd and your session keep their sockets, is empty inside a world, and so is arbor's own folder with the other worlds and the keys.
+- **Fewer ways into the kernel.** A filter turns away the requests to the Linux kernel that real work rarely needs and that escapes from a sandbox usually start with: the kernel's keyrings, where some logins keep secrets; mounting, and namespaces of a command's own; BPF, perf and io_uring; and a few more. io_uring and the newer mount calls are reported as missing, which tells programs to use the older calls. The filter also keeps a command from typing into your terminal, so a shell in a world keeps job control (Ctrl-Z, `fg`). Debuggers and `strace` still work on the world's own programs. 32-bit programs cannot run in a world: they stop at their first request, with exit code 159 (*Bad system call*).
 
 Not yet: the rest of the computer can still be **read** from inside a world, such as `/etc`, the hardware details under `/sys`, and folders outside `/home`, `/media` and `/mnt`. A world runs one command at a time.
 
@@ -113,11 +114,12 @@ Ubuntu 24.04 and later stop ordinary programs from creating the Linux namespaces
 | `arbor/src/world.rs` | worlds on disk: names, `world.json`, the per-world lock |
 | `arbor/src/tree.rs` | reading a world's changes (whiteouts, opaque folders), keep with its undo journal, and undo |
 | `arbor/src/cell.rs` | running a command in a world through `bwrap`: what a sealed cell sees, its environment, its cgroup, deadlines and `stop`, how it ended and what it cost, and the list `arbor ps` reads |
+| `arbor/src/seccomp.rs` | the seccomp filter every cell runs under: the kernel calls it refuses, as a classic BPF program that bwrap loads |
 | `arbor/src/key.rs` | keys: what they open, narrowing one within another, their end, take-back, and the password files a cell never sees |
 | `arbor/src/cgroup.rs` | cells' cgroups: `arbor serve`, limits, what a cell used |
 | `arbor/src/ledger.rs` | the ledger: appends under a lock, the hash chain, `--verify`, and following it for `watch` |
 | `arbor/src/sys.rs` | the Linux calls the standard library lacks, such as `clone3` into a cgroup and inotify |
 | `arbor/src/main.rs` | the `arbor` command |
-| `arbor/tests/` | end-to-end tests through the binary and `bwrap`, each with its own throwaway home folder: `worlds.rs`, `cells.rs` (limits, `ps`, `watch`), `keys.rs` (what a key opens, password files, `stop`, take-back) |
+| `arbor/tests/` | end-to-end tests through the binary and `bwrap`, each with its own throwaway home folder: `worlds.rs` (worlds, what a sealed cell sees, the kernel calls it refuses), `cells.rs` (limits, `ps`, `watch`), `keys.rs` (what a key opens, password files, `stop`, take-back) |
 
 `./check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test` with the toolchain pinned in `rust-toolchain.toml`. Tests that need `bwrap` print `skipped` and pass where it cannot mount an overlay, and tests of `--mem`, `--cpu` and `--pids` do the same where there is no systemd user session, so a green run there proves less. CI builds bubblewrap 0.11.1 from a pinned commit (its Ubuntu 24.04 runner ships 0.9), starts a user session for the runner, and sets `ARBOR_REQUIRE_BWRAP=1` and `ARBOR_REQUIRE_CGROUPS=1`, which turn those skips into failures.

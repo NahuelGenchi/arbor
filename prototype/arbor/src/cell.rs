@@ -3,16 +3,17 @@
 //! Ubuntu 24.04 and later block plain user namespaces for ordinary programs, but allow `bwrap`. So a cell is a
 //! `bwrap` process, sealed: the computer read-only; the home folders, `/media` and `/mnt` empty; the world's overlay
 //! mounted over its base folder's own path, so tools see the usual paths; `/run` and Arbor's own state hidden; a
-//! cleared environment; no network, no new user namespaces and an empty session keyring. A key (see `key`) opens
-//! more folders and files and passes variables in; password files stay hidden even then. Where the
-//! user's systemd manager allows it, each cell also runs in its own cgroup (see `cgroup`), with its limits, and its
-//! whole cost is read from there. Network through a filter comes later.
+//! cleared environment; no network, no new user namespaces and an empty session keyring; and a filter that refuses
+//! the kernel calls sandbox escapes start from (see `seccomp`). A key (see `key`) opens more folders and files and
+//! passes variables in; password files stay hidden even then. Where the user's systemd manager allows it, each cell
+//! also runs in its own cgroup (see `cgroup`), with its limits, and its whole cost is read from there. Network
+//! through a filter comes later.
 
 use std::env;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::ExitStatusExt;
@@ -26,7 +27,7 @@ use crate::cgroup::{self, Group, Limits, Usage};
 use crate::error::{Context, Error, Result};
 use crate::key::{self, Key};
 use crate::world::{self, Lock, State, World};
-use crate::{paths, sys};
+use crate::{paths, seccomp, sys};
 
 pub struct Options {
     /// The command will talk to the person at the terminal.
@@ -111,14 +112,6 @@ pub fn check_bwrap() -> Result<()> {
     }
 }
 
-/// TIOCSTI lets a process type into its terminal. Linux 6.2+ can switch it off for everyone; where it is still
-/// on, the cell gets a new session so it cannot type into the person's terminal.
-fn tiocsti_possible() -> bool {
-    fs::read_to_string("/proc/sys/dev/tty/legacy_tiocsti")
-        .map(|v| v.trim() != "0")
-        .unwrap_or(true)
-}
-
 /// How a path shows through into a sealed cell.
 #[derive(Clone, Copy)]
 enum Shown {
@@ -134,12 +127,13 @@ fn add(a: &mut Vec<OsString>, items: &[&dyn AsRef<OsStr>]) {
     a.extend(items.iter().map(|s| s.as_ref().to_os_string()));
 }
 
-/// The `bwrap` arguments for a cell in `world` that runs `cmd` in `cwd`. Mounts land in order, each on top of the
-/// ones before it.
+/// The `bwrap` arguments for a cell in `world` that runs `cmd` in `cwd`, with the seccomp filter read from the
+/// descriptor `filter`. Mounts land in order, each on top of the ones before it.
 pub fn bwrap_args(
     world: &World,
     cmd: &[OsString],
     cwd: &Path,
+    filter: RawFd,
     opts: &Options,
 ) -> Result<Vec<OsString>> {
     let mut a: Vec<OsString> = Vec::new();
@@ -260,7 +254,11 @@ pub fn bwrap_args(
             &"arbor",
         ],
     );
-    if !opts.interactive || tiocsti_possible() {
+    // The kernel calls a cell may not make (see `seccomp`). bwrap loads the filter last, right before the command.
+    add(&mut a, &[&"--seccomp", &filter.to_string()]);
+    // A command run at a terminal shares the person's session, so shells keep job control; the filter keeps it from
+    // typing into that terminal. Any other gets a session of its own.
+    if !opts.interactive {
         add(&mut a, &[&"--new-session"]);
     }
     add(
@@ -497,13 +495,14 @@ fn pointers(items: &[CString]) -> Vec<*const libc::c_char> {
 }
 
 /// Starts `program` with `argv` and `envp`, inside the cell's cgroup when it has one, with the session keyring
-/// left behind and death tied to arbor's. Returns its process ID and a descriptor that becomes readable when it
-/// exits.
+/// left behind, death tied to arbor's, and `filter` left open for it. Returns its process ID and a descriptor that
+/// becomes readable when it exits.
 fn spawn(
     program: &CStr,
     argv: &[*const libc::c_char],
     envp: &[*const libc::c_char],
     group: Option<&Group>,
+    filter: BorrowedFd,
 ) -> io::Result<(libc::pid_t, OwnedFd)> {
     let (report, told) = sys::pipe()?;
     let parent = unsafe { libc::getpid() };
@@ -536,6 +535,10 @@ fn spawn(
                 || unsafe { libc::getppid() } != parent
             {
                 fail(libc::ESRCH);
+            }
+            // bwrap reads the seccomp filter from this descriptor, so it stays open across exec.
+            if unsafe { libc::fcntl(filter.as_raw_fd(), libc::F_SETFD, 0) } != 0 {
+                fail(errno());
             }
             unsafe { libc::execve(program.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
             fail(errno())
@@ -695,7 +698,11 @@ pub fn run(
         )));
     }
     let bwrap = bwrap()?;
-    let args = bwrap_args(world, cmd, &start_dir(world), opts)?;
+    // bwrap reads the filter from a pipe until it closes. The filter fits in a pipe's buffer, so it is written whole
+    // now and that end closed.
+    let (filter, to_filter) = sys::pipe()?;
+    File::from(to_filter).write_all(&seccomp::bytes())?;
+    let args = bwrap_args(world, cmd, &start_dir(world), filter.as_raw_fd(), opts)?;
     let limits = &opts.limits;
     let key = opts.key.as_ref();
     let group = cell_group(limits)?;
@@ -751,8 +758,15 @@ pub fn run(
     .into_iter()
     .flatten()
     .min_by_key(|(at, _)| *at);
-    let (pid, exited) = spawn(&program, &pointers(&argv), &pointers(&envp), group.as_ref())
-        .ctx(|| "cannot start the cell".to_string())?;
+    let (pid, exited) = spawn(
+        &program,
+        &pointers(&argv),
+        &pointers(&envp),
+        group.as_ref(),
+        filter.as_fd(),
+    )
+    .ctx(|| "cannot start the cell".to_string())?;
+    drop(filter);
     started(&id);
     // Ctrl-C belongs to the command inside: Arbor waits for it instead of dying first and leaving it behind.
     let (old_int, old_quit) = unsafe {
