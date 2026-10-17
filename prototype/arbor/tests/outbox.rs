@@ -298,7 +298,7 @@ fn inside_a_world_arbor_only_asks() {
     );
     assert_eq!(text(&out.stdout), "3\n3\n2\n", "{}", text(&out.stderr));
     assert!(
-        text(&out.stderr).contains("inside a world, arbor only asks for effects"),
+        text(&out.stderr).contains("inside a world, arbor only looks and asks for effects"),
         "{}",
         text(&out.stderr)
     );

@@ -15,7 +15,7 @@ use arbor::key::{self, Key};
 use arbor::ledger::{self, Cost, Ledger};
 use arbor::outbox::{self, Answer, Effect, Outbox};
 use arbor::world::{self, State, World};
-use arbor::{net, paths, table, tree};
+use arbor::{look, net, paths, table, tree};
 use lexopt::prelude::*;
 
 const HELP: &str = "\
@@ -39,6 +39,8 @@ arbor: try changes on a copy of a folder, then keep them or throw them away.
   arbor refuse ID [--why TEXT]       say no to an effect
   arbor ledger [--last N] [--verify] the record of every step (--verify: check that none was changed)
   arbor watch [--since N]            print each new step as a JSON line (--since N: the steps after N first)
+  arbor look QUERY [+ QUERY]...      read a folder, git's status and log, processes: short tables, several
+                                     in one call (`arbor look` alone says how)
 
 OPTIONS: --key KEY opens what the key opens. LIMITS stop a command that takes too much:
 --mem SIZE (512M, 2G), --cpu CPUS (0.5, 2), --pids N (processes at once), --time DURATION (90s, 10m, 2h).
@@ -49,9 +51,9 @@ GRANTS: --read PATH (a folder or file), --toolchains (~/.cargo, ~/.npm, ~/.pyenv
 cost in all: 5, 2.50), --for DURATION or --until HH:MM (8h if neither), --within KEY (a narrower key,
 made from another).
 
-Inside a world, `arbor effect [--cost AMOUNT] [--why TEXT] [--input FILE] [--wait] -- CMD...` asks for CMD
-to run outside: in the real folder, as you, with the network, once you release it. --wait waits for your
-answer and prints what CMD printed.
+Inside a world, `arbor look` reads what the world sees, and `arbor effect [--cost AMOUNT] [--why TEXT]
+[--input FILE] [--wait] -- CMD...` asks for CMD to run outside: in the real folder, as you, with the
+network, once you release it. --wait waits for your answer and prints what CMD printed.
 
 The real folder does not change until `arbor keep`. Inside a world the rest of the computer is read-only,
 your home folder is empty but for what a key opens, password files stay hidden, and there is no network
@@ -85,12 +87,14 @@ fn run() -> Result<i32> {
         Some(Value(v)) => v.string()?,
         Some(arg) => return Err(arg.unexpected().into()),
     };
-    // Inside a world arbor's own folder is hidden: there, arbor can only ask, through the cell's socket.
+    // Inside a world arbor's own folder is hidden: there, arbor can only read what the world sees and ask, through
+    // the cell's socket.
     if env::var_os(outbox::SOCKET_VAR).is_some_and(|s| !s.is_empty())
-        && !matches!(command.as_str(), "effect" | "help" | "proxy-port")
+        && !matches!(command.as_str(), "look" | "effect" | "help" | "proxy-port")
     {
         return Err(Error::refused(
-            "inside a world, arbor only asks for effects: `arbor effect -- CMD` (see `arbor help`)",
+            "inside a world, arbor only looks and asks for effects: `arbor look`, `arbor effect -- CMD` \
+             (see `arbor help`)",
         ));
     }
     match command.as_str() {
@@ -112,6 +116,7 @@ fn run() -> Result<i32> {
         "refuse" => refuse(&mut p),
         "ledger" => ledger_cmd(&mut p),
         "watch" => watch(&mut p),
+        "look" => look_cmd(&mut p),
         "serve" => serve(&mut p),
         "proxy-port" => proxy_port(&mut p),
         "help" => help(),
@@ -851,6 +856,20 @@ fn keys(p: &mut lexopt::Parser) -> Result<i32> {
         &rows,
     )?;
     Ok(0)
+}
+
+/// `arbor look`: several reads in one call, each a short table. Alone, it says what it answers.
+fn look_cmd(p: &mut lexopt::Parser) -> Result<i32> {
+    let args: Vec<OsString> = p.raw_args()?.collect();
+    if args.is_empty() || matches!(args[0].to_str(), Some("-h" | "--help" | "help")) {
+        print!("{}", look::ABOUT);
+        return Ok(0);
+    }
+    let queries = look::parse(args)?;
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    let all = look::answer(&queries, &mut out)?;
+    out.flush()?;
+    Ok(if all { 0 } else { 1 })
 }
 
 fn watch(p: &mut lexopt::Parser) -> Result<i32> {
