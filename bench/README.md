@@ -1,0 +1,135 @@
+# Arbor baseline suite
+
+Re-measures, on today's Ubuntu install, the numbers marked **M** in [../OPTIMIZATION.md](../OPTIMIZATION.md), so the
+Arbor prototype can later be measured the same way on the same PC and compared row by row.
+
+```bash
+./run.sh
+```
+
+One run takes about 2½ minutes on the M machine (i7-14700KF, 15 GiB RAM) and writes three files to `results/`:
+
+| File | What |
+|---|---|
+| `<date>_<host>.md` | the report: machine stamp, then one table with every metric next to its M value |
+| `<date>_<host>.json` | the same rows with keys and raw context, for diffing two runs |
+| `<date>_<host>.log` | everything the sections printed, one JSON record per measurement |
+
+git ignores `results/`: a report names the machine, its hardware and the programs running on it, so runs stay local.
+
+Run a subset with `ONLY="boot search" ./run.sh`, or leave sections out with `SKIP="storage" ./run.sh`. Sections:
+`memstate boot runtimes cells pycell search heap transcripts formats storage`.
+
+`./check.sh` only checks that every script parses (`bash -n`, `py_compile`, `node --check`, `gcc -fsyntax-only`); it
+measures nothing and reads no personal data. The Checks workflow runs it on every PR.
+
+## Parameters
+
+Every path and input is set in [config.sh](config.sh) and can be overridden from the environment
+(`NAME_QUERY=report ./run.sh`). Nothing personal is hard-coded: defaults derive from `$HOME` and from where `bench/`
+sits.
+
+| Variable | Default | Used by |
+|---|---|---|
+| `PROJECTS_DIR` | the folder holding this project (`bench/../..`) | defaults below |
+| `NAME_SEARCH_ROOT`, `NAME_QUERY` | `$HOME`, `invoice` | name search |
+| `CODE_ROOT`, `CODE_QUERIES` | `$PROJECTS_DIR`, the five M queries (`\|`-separated) | code search |
+| `DEDUP_ROOT` | `$PROJECTS_DIR` | duplicate bytes |
+| `FORK_TREE` | largest directory directly under `$PROJECTS_DIR` | overlay fork |
+| `TRANSCRIPTS_DIR` | `$HOME/.claude/projects` | token accounting, heap input |
+| `HEAP_JSONL`, `HEAP_JSONL_BYTES` | the transcript of exactly the M input's size, else the 3rd largest | heap |
+| `O200K_FILE` | the o200k_base.tiktoken shipped with VS Code's Copilot extension | token counts |
+| `LISTING_DIR`, `FORMATS_LOCALE` | `/usr/bin`, `en_US.UTF-8` | output formats |
+| `GIT_LOG_REPO`, `GIT_LOG_REF` | the repo under `$PROJECTS_DIR` holding the M commit, that commit | `git log` tokens |
+| `DOCKER_IMAGE` | `ubuntu:24.04` (must already be present; never pulled) | docker cell |
+| `INITRD` | `/boot/initrd.img` | initramfs breakdown |
+| `BENCH_TMP`, `RESULTS_DIR` | `$TMPDIR` or `/tmp`, `bench/results` | temp files, reports |
+
+Inputs that keep growing are pinned by content where M used a fixed one: `git log` starts at the commit M saw, and the
+heap test loads the transcript of M's exact byte size.
+
+## What it needs and what it touches
+
+- **No root.** Namespaces are unprivileged user namespaces; the overlay is mounted inside `unshare -Urm`, so it
+  exists only in a private mount namespace and vanishes with it.
+- **Temp files** live in one `mktemp -d` directory under `$BENCH_TMP` (tmpfs, as in the M run) and are removed on
+  exit, also on Ctrl-C or a section timeout. Docker runs with `--rm --pull never --network none`. Python runs with
+  `-I -B`, so no `__pycache__` appears in `bench/`. The only files left behind are the reports in `results/`.
+- **Reads, never writes:** `$HOME` (names only), the projects folder (text files for the code index, all files for
+  hashing; files of 256 KiB and up are read with `O_DIRECT` so the scan does not flush the page cache), the
+  transcripts (only aggregates leave the process), `/boot/initrd.img`, `/proc` and `/sys`.
+- **Tools:** Python 3.14+ (`compression.zstd`), node, gcc with static glibc (`libc6-dev`), rustc (optional,
+  `~/.cargo/bin` is searched), rg, bwrap, unshare, docker (the user in the `docker` group, the image present),
+  zstd, systemd-analyze, git,
+  liblzo2 and liblz4 (for the heap compressors). A missing tool fails only its rows, with the reason in the note.
+- **Kernel settings it relies on:** unprivileged user namespaces allowed; Yama `ptrace_scope` at most 1 (the heap
+  test reads its own child's memory).
+
+## Sections
+
+| Section | Measures | Method |
+|---|---|---|
+| `memstate` | swap and zram size, algorithm, use; RAM available; RSS of Claude Code, Electron, Chrome, GNOME | `/proc/swaps`, zram `mm_stat`, `/proc/meminfo`, `/proc/*/status`; taken first, before the suite loads the machine |
+| `boot` | `systemd-analyze` totals, critical chain, blame; initramfs size by class; modules shipped vs loaded; modules on disk | the early uncompressed cpio archives are walked in place (newc headers), the main archive is piped through `zstd -dc`; module names compared with `/proc/modules` |
+| `runtimes` | start time and idle RSS/PSS of static C, Rust, bash, python3, node (plus `/bin/true`, busybox, `python3 -I -S`) | `posix_spawn` + `wait4`, median of 40 runs after 3 warm-ups, in 3 interleaved blocks; RSS/PSS from `/proc/<pid>/smaps_rollup` 1.5 s after start (`ru_maxrss` under `posix_spawn` reports the parent) |
+| `cells` | start of `unshare -Ur`, `unshare -Urnpfm`, `bwrap --unshare-all`, `docker run` | same timing method; docker: median of 8 |
+| `pycell` | a Python cell importing 13 stdlib modules: fresh interpreter vs `fork()` of a warm template; PSS of each | fresh: median of 20; fork: median of 50; PSS over 10 live cells of each kind |
+| `search` | name search over `$HOME`: `find -iname`, `rg --files -g`, and a catalog (one SQLite row per object with parent id and name, FTS5 trigram index on names); code search: `rg -l -F` vs an FTS5 trigram index | warm cache, median of 3 (index queries: median of 5); also catalog size per object, insert cost, build time, exact-name hash lookup |
+| `heap` | per-4 KiB-page compressibility of an agent heap: zstd-3, zstd-1, LZO1X-1, LZ4, deflate-1; same-filled pages | node parses a 121 MiB transcript; its anonymous memory is read through `/proc/<pid>/mem` and each page compressed alone, as zram does. Read twice: with the file text still referenced (the state M caught) and after a memory-reducing GC (the live objects an idle agent holds) |
+| `transcripts` | cost shares (input 1, cache write 1.25, cache read 0.1, output 5), opening context, context per call, step cost, read-only follow-up steps, tool-result tokens, errors, repeat reads, image tokens | one pass over every transcript, reproducing the four counting rules behind the M values (see the header of `sections/transcripts.js`); o200k tokens |
+| `formats` | o200k tokens of one 100-file listing printed eight ways; `git log` with and without projection; `ps`, `ip`, `df` full vs only the asked fields | tokenizer in `lib/o200k.js`: the tiktoken regex and byte-pair merges over `o200k_base.tiktoken` |
+| `storage` | duplicate bytes in the projects folder, counted once per inode and split by path class; time to fork the largest project with an overlay CoW mount; `git worktree add` as the baseline | `find -printf` for inodes and sizes, BLAKE2b over size-collision groups on all cores; mount timed as in M (`mount(8)` bracketed by `date`) and as the bare `mount(2)` syscall; a write into the fork is checked not to reach the lower tree |
+
+## Reading the report
+
+Each row shows the M value, the value now, the difference and a status:
+
+- ✅ within ±15% of M, or within the precision M was printed with (0.1 MiB for the memory rows);
+- ⚠️ outside ±15%, and the note says why;
+- 🆕 a metric M did not have (first baseline);
+- ❌ failed or not measured, with the error.
+
+**†** marks an M value that comes from the M run's raw output rather than from the text of OPTIMIZATION.md (rows
+next to the quoted ones, kept so they have a baseline too).
+
+The note on a ⚠️ row depends on what kind of number it is:
+
+| Kind | Example | Why it can differ from M |
+|---|---|---|
+| timing on fixed inputs | start times | CPU load and frequency. The note gives the spread of the three block medians, the load average and the busiest processes at the start of the run, and says when M falls inside that spread |
+| RSS | idle RSS of node | mostly file pages: a page fault also maps the cached neighbours of the page it needs, so RSS follows how much of the binary is in the page cache. The suite reads each binary first; the note gives the file/anonymous split |
+| PSS | idle PSS of bash | shared pages are split among every process mapping them; the note counts the other processes running the same program. RSS is the stable floor |
+| growing data set | `$HOME` entries, transcripts, projects folder | the note gives the count now vs at M, per-entry cost where it applies, and CPU load for timings. Code-search rows also say when `rg` had to read the corpus from disk |
+| live state | swap in use, RSS of apps | what runs right now |
+| boot records | `systemd-analyze` | a different boot than the one M described (the note gives both boot times), or a timer ran the unit again after M read `blame` |
+| configuration | initramfs, modules | the file was rebuilt or packages changed |
+
+For a fair before/after comparison: same PC, same CPU energy preference (the header records it), a quiet machine
+(load average near 0; the header records it with the busiest processes), and a fresh boot if the boot rows matter.
+This CPU mixes P- and E-cores, so under load a short single-thread timing may run on an E-core; runs at a load
+average near 10 read 20–40% slower than M. Join two `.json` files on `key` to diff runs.
+
+Two M values needed a closer look:
+
+- **Agent heap compressibility.** M's 2.15× (zstd) was read a second after loading, before V8's first major GC
+  had freed the UTF-16 copy of the 121 MiB file text: that copy was about half of the 459 MiB read. The suite reproduces
+  that state on purpose and also reads the heap after a memory-reducing GC, which is what an idle agent holds:
+  about 186 MiB, compressing 1.78× with zstd-3 and 1.32× with LZO.
+- **`rg` code search for `parseInt` (173.6 ms).** M's other four queries took 37–40 ms over the same files; with
+  0.9 GiB RAM available, M's first query most likely read part of the corpus from disk. The suite gives each query
+  an untimed warm-up run and records how much `rg` read from disk.
+
+## Not covered
+
+M numbers in OPTIMIZATION.md outside the seven areas this suite was asked to cover:
+
+- the cost of a new TLS connection to the model API (12 ms of a 185 ms call): needs traffic to a third-party
+  endpoint and depends on the network;
+- gnome-shell CPU on a still screen (2.1% of a core): needs a screen nobody touches during the run;
+- pages identical across 4 agents for KSM (2%): needs several agents running at once;
+- outline-first code reading (4% and 8% of a file's tokens) and transcript dedup (−38%);
+- the rebuild that follows `git worktree add` (1,774 steps);
+- CPU facts read once (EPP on every core, sched_ext off, Meltdown/Spectre status): the report header records the
+  energy preference of CPU 0.
+
+Energy numbers in OPTIMIZATION.md come from the cited papers; reading RAPL counters on this kernel needs root.
