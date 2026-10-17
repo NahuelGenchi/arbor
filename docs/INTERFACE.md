@@ -39,7 +39,7 @@ Mission Control uses everyday words, with arbor's own terms one click down:
 
 ## The views
 
-Each view names the typed objects it reads: worlds (M2), cells and keys (M3), and the outbox, ledger and budgets (M6). The core is planned to publish them over a Unix socket (`arbor watch`) that Mission Control subscribes to, with no polling. The fields below are the ones planned for the core in M2–M6; where a view needs more, it is listed under [open questions](#open-questions).
+Each view names the typed objects it reads: worlds (M2), cells and keys (M3), and the outbox, ledger and budgets (M6). The core is planned to publish them over a Unix socket (`arbor watch`) that Mission Control subscribes to, with no polling. The fields below are the ones planned for the core in M2–M6; where a view needs more, it is listed under [open questions](#open-questions). Worlds already exist in the prototype ([#14](https://github.com/NahuelGenchi/arbor/issues/14)). A world there is open or kept, and throwing it away deletes it, so the tries that were thrown away, and why, come from the ledger.
 
 ### 1. Now
 
@@ -51,7 +51,7 @@ The first screen, and the one most people will use most. Top to bottom:
 - **Done today**: one line with a count, which opens History.
 - **Budgets**: today's money, memory and attention, spent against the limit, and when the last task ends.
 
-**Reads:** outbox items (waiting, with their cost); worlds (open, kept or thrown away, to count tries); cells (running or idle, to count agents, and memory used against limits); keys (to group rooms into tasks, and their expiry); budgets (money, time, memory, attention).
+**Reads:** outbox items (waiting, with their cost); worlds (open or kept) and the ledger (tries thrown away), to count tries; cells (running or idle, to count agents, and memory used against limits); keys (to group rooms into tasks, and their expiry); budgets (money, time, memory, attention).
 
 ### 2. Decision
 
@@ -83,7 +83,7 @@ What a task is changing, try by try ([#11](https://github.com/NahuelGenchi/arbor
 - **For the chosen try**, the files changed against the folder it was copied from, grouped by folder and shown outline-first: for code, the functions and sections that changed come before any line, and the lines are one click down.
 - **Keep** and **Throw away** act on the whole try, never on part of it. Keep is refused if your own files changed since the try began: the view lists those files and offers a new try from your current files instead. A kept try can be undone.
 
-**Reads:** a world (its name, the folder it was copied from, the files changed, and whether it is open, kept or thrown away). The outline needs the outline-first code objects of M2; until they exist, the view shows the list of files and their text changes, as `arbor diff` gives them ([#14](https://github.com/NahuelGenchi/arbor/issues/14)).
+**Reads:** a world (its name, the folder it was copied from, the files changed, and whether it is open or kept), and the ledger for the tries thrown away and why. The outline needs the outline-first code objects of M2; until they exist, the view shows the files added, changed and deleted, and their changed lines, as `arbor diff` and `arbor diff --patch` give them ([#14](https://github.com/NahuelGenchi/arbor/issues/14)).
 
 ### 4. Room and keys
 
