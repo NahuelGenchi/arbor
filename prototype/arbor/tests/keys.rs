@@ -45,25 +45,100 @@ fn path_of(dirs: &[PathBuf]) -> std::ffi::OsString {
 }
 
 /// Where AI agents keep their logins, in the home folder.
-const AGENT_LOGINS: [&str; 9] = [
+const AGENT_LOGINS: [&str; 40] = [
     ".local/share/opencode/opencode.db",
     ".local/share/opencode/opencode.db-wal",
     ".local/share/opencode/opencode.db-shm",
     ".local/share/opencode/auth.json",
     ".local/share/opencode/mcp-auth.json",
     ".claude/.credentials.json",
+    ".claude.json",
+    ".claude/backups/.claude.json.backup.1",
     ".config/anthropic/credentials/default.json",
     ".codex/auth.json",
     ".codex/.credentials.json",
+    ".codex/secrets/codex_auth.age",
+    ".gemini/oauth_creds.json",
+    ".qwen/settings.json",
+    ".config/github-copilot/auth.db",
+    ".local/share/amp/secrets.json",
+    ".config/goose/secrets.yaml",
+    ".local/share/crush/crush.json",
+    ".factory/auth.v2.file",
+    ".cline/data/settings/providers.json",
+    ".local/share/kilo/auth.json",
+    ".openhands/agent_settings.json",
+    ".local/share/amazon-q/data.sqlite3",
+    ".config/Cursor/User/globalStorage/state.vscdb",
+    ".kimi-code/credentials/kimi-code.json",
+    ".kimi-code/config.toml",
+    ".kimi/credentials/kimi-code.json",
+    ".kimi/config.toml",
+    ".copilot/config.json",
+    ".copilot/mcp-oauth-config/server.json",
+    ".copilot/mcp-secrets/server.json",
+    ".config/cursor/auth.json",
+    ".cursor/projects/shop/mcp-auth.json",
+    ".aider/oauth-keys.env",
+    ".aider.conf.yml",
+    ".augment/session.json",
+    ".pi/agent/auth.json",
+    ".env",
+    ".vibe/.env",
+    ".continue/.env",
+];
+
+/// The folders among them that stay hidden whole, where a cell finds no login at all rather than an empty one.
+const LOGIN_FOLDERS: [&str; 21] = [
+    ".local/share/opencode",
+    ".claude/backups",
+    ".config/anthropic/credentials",
+    ".codex/secrets",
+    ".gemini",
+    ".qwen",
+    ".config/github-copilot",
+    ".local/share/amp",
+    ".config/goose",
+    ".local/share/crush",
+    ".factory",
+    ".cline/data",
+    ".local/share/kilo",
+    ".openhands",
+    ".local/share/amazon-q",
+    ".config/Cursor",
+    ".kimi-code/credentials",
+    ".kimi/credentials",
+    ".copilot/mcp-oauth-config",
+    ".copilot/mcp-secrets",
+    ".cursor/projects",
 ];
 
 /// Files next to them that hold no login.
-const NEXT_TO_LOGINS: [&str; 4] = [
+const NEXT_TO_LOGINS: [&str; 13] = [
     ".local/share/notes",
     ".claude/settings.json",
     ".config/anthropic/configs/default.json",
     ".codex/config.toml",
+    ".copilot/settings.json",
+    ".cursor/cli-config.json",
+    ".cline/rules/style.md",
+    ".kimi-code/tui.toml",
+    ".aider/analytics.json",
+    ".augment/settings.json",
+    ".pi/agent/settings.json",
+    ".vibe/config.toml",
+    ".continue/config.yaml",
 ];
+
+/// What a cell reads in the login `rel` while it is hidden, as `reads` gives it: `-` in a hidden folder, where there is
+/// none, and nothing from a hidden file.
+fn hidden_login(rel: &str) -> &'static str {
+    if LOGIN_FOLDERS.iter().any(|f| Path::new(rel).starts_with(f)) {
+        "-"
+    } else {
+        ""
+    }
+}
 
 /// Writes a made-up login, `login`, where each agent keeps one in `home`, and `other` in the files next to them.
 fn made_up_logins(home: &Path) {
@@ -155,19 +230,49 @@ fn agents_logins_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_the
         .copied()
         .collect();
     // The hidden folders look empty and the hidden files read empty, while the files next to them show.
-    let hidden = [
-        "-", "-", "-", "-", "-", "", "-", "", "", "other", "other", "other", "other",
-    ];
+    let hidden: Vec<&str> = AGENT_LOGINS
+        .map(hidden_login)
+        .into_iter()
+        .chain(NEXT_TO_LOGINS.map(|_| "other"))
+        .collect();
 
-    // A key that opens the folders they are in, or the whole home folder, hides them...
-    key("folders", &[".local/share", ".claude", ".config", ".codex"]);
-    assert_eq!(reads(&e, "demo", Some("folders"), &every), hidden);
+    // A key that opens the whole home folder hides them...
     e.ok(&["key", "new", "all", "--read", h]);
     assert_eq!(reads(&e, "demo", Some("all"), &every), hidden);
-    // ...and so does a world of the home folder, where writes to them vanish and leave nothing in the world.
+    // ...as does one that opens the folders they are in, short of the home folder, for those in them...
+    let folders = [
+        ".local/share",
+        ".config",
+        ".claude",
+        ".codex",
+        ".copilot",
+        ".cursor",
+        ".cline",
+        ".kimi-code",
+        ".kimi",
+        ".aider",
+        ".augment",
+        ".pi",
+        ".vibe",
+        ".continue",
+    ];
+    key("folders", &folders);
+    let (inside, seen): (Vec<&str>, Vec<&str>) = every
+        .iter()
+        .zip(&hidden)
+        .filter(|(f, _)| folders.iter().any(|d| Path::new(f).starts_with(d)))
+        .map(|(f, r)| (*f, *r))
+        .unzip();
+    assert_eq!(reads(&e, "demo", Some("folders"), &inside), seen);
+    // ...and a world of the home folder, where writes to them vanish and leave nothing in the world.
     e.ok(&["new", "home", "--from", h]);
     assert_eq!(reads(&e, "home", None, &every), hidden);
-    let writes = AGENT_LOGINS.map(|f| format!("echo x > ~/{f}")).join("; ");
+    let writes = AGENT_LOGINS
+        .map(|f| {
+            let dir = Path::new(f).parent().unwrap().display();
+            format!("mkdir -p ~/{dir} && echo x > ~/{f}")
+        })
+        .join("; ");
     e.ok(&["run", "home", "--", "sh", "-c", &writes]);
     assert_eq!(e.ok(&["diff", "home"]), "no changes\n");
     for f in AGENT_LOGINS {
@@ -176,14 +281,18 @@ fn agents_logins_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_the
 
     // A key that names a login opens it, while the rest of the home folder stays hidden...
     key("logins", &AGENT_LOGINS);
-    let mut named = vec!["login"; 9];
-    named.extend(["-"; 4]);
+    let mut named = vec!["login"; AGENT_LOGINS.len()];
+    named.extend(["-"; NEXT_TO_LOGINS.len()]);
     assert_eq!(reads(&e, "demo", Some("logins"), &every), named);
-    // ...as does one that names OpenCode's folder...
-    key("opencode", &[".local/share/opencode"]);
+    // ...as does one that names the folders hidden whole...
+    key("whole", &LOGIN_FOLDERS);
+    let in_folders: Vec<&str> = AGENT_LOGINS
+        .into_iter()
+        .filter(|f| hidden_login(f) == "-")
+        .collect();
     assert_eq!(
-        reads(&e, "demo", Some("opencode"), &AGENT_LOGINS[..5]),
-        ["login"; 5]
+        reads(&e, "demo", Some("whole"), &in_folders),
+        vec!["login"; in_folders.len()]
     );
     // ...and one that names a login inside a folder it opens shows that login, while the rest of OpenCode's folder
     // stays hidden.
