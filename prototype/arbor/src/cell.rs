@@ -7,18 +7,19 @@
 //! the kernel calls sandbox escapes start from (see `seccomp`). Its one way out is a socket to the outbox, where it
 //! asks for effects that a person may release (see `outbox`). A key (see `key`) opens more folders and files and
 //! passes variables in; password files stay hidden even then. Where the user's systemd manager allows it, each cell
-//! also runs in its own cgroup (see `cgroup`), with its limits, and its whole cost is read from there. Network
-//! through a filter comes later.
+//! also runs in its own cgroup (see `cgroup`), with its limits, and its whole cost is read from there. A command
+//! the cell would not find is refused before it starts, in plain words: where it is hidden, and the key option that
+//! opens it (see `View::check`). Network through a filter comes later.
 
 use std::env;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::process::ExitStatusExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
@@ -30,7 +31,7 @@ use crate::key::{self, Key};
 use crate::ledger::Ledger;
 use crate::outbox::{self, Outbox};
 use crate::world::{self, Lock, State, World};
-use crate::{paths, seccomp, sys, table};
+use crate::{paths, seccomp, sys, table, tree};
 
 pub struct Options {
     /// The command will talk to the person at the terminal.
@@ -115,192 +116,497 @@ pub fn check_bwrap() -> Result<()> {
     }
 }
 
-/// How a path shows through into a sealed cell.
-#[derive(Clone, Copy)]
-enum Shown {
-    /// The world, over its base folder's path.
+/// One mount of a cell's filesystem. bwrap makes them in order, each on top of the ones before it, so what a cell
+/// sees at a path is what the last mount over that path shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Mount {
+    /// The computer, read-only.
+    Root,
+    Dev,
+    Proc,
+    /// An empty folder whose writes vanish: a fresh `/tmp` or `/run`, the home folders, arbor's own state.
+    Empty,
+    /// An empty folder made inside an empty one, so the cell can stand in the home folder.
+    Dir,
+    /// The world: its changes over its base folder.
     World,
     /// A folder a key opens. Writes to it are thrown away, so tools that keep caches there still work.
     Folder,
     /// A file a key opens, read-only.
     File,
+    /// A folder of password files, empty.
+    Secrets,
+    /// A password file, which reads empty.
+    Secret,
+}
+
+/// What a cell is made of, apart from its way out to the outbox: its mounts in the order bwrap makes them.
+pub struct View {
+    mounts: Vec<(PathBuf, Mount)>,
+    /// The home folder, resolved.
+    home: Option<PathBuf>,
 }
 
 fn add(a: &mut Vec<OsString>, items: &[&dyn AsRef<OsStr>]) {
     a.extend(items.iter().map(|s| s.as_ref().to_os_string()));
 }
 
-/// The `bwrap` arguments for a cell in `world` that runs `cmd` in `cwd`, with the seccomp filter read from the
-/// descriptor `filter` and its outbox socket at `socket`. Mounts land in order, each on top of the ones before it.
-pub fn bwrap_args(
-    world: &World,
-    cmd: &[OsString],
-    cwd: &Path,
-    filter: RawFd,
-    socket: &Path,
-    opts: &Options,
-) -> Result<Vec<OsString>> {
-    let mut a: Vec<OsString> = Vec::new();
-    add(
-        &mut a,
-        &[
-            &"--ro-bind",
-            &"/",
-            &"/",
-            &"--dev",
-            &"/dev",
-            &"--proc",
-            &"/proc",
-            &"--tmpfs",
-            &"/tmp",
+impl View {
+    /// The mounts of a cell in `world`, opened further by `key`.
+    pub fn new(world: &World, key: Option<&Key>) -> Result<View> {
+        let mut m: Vec<(PathBuf, Mount)> = vec![
+            ("/".into(), Mount::Root),
+            ("/dev".into(), Mount::Dev),
+            ("/proc".into(), Mount::Proc),
+            ("/tmp".into(), Mount::Empty),
             // /run holds the computer's and the session's sockets: Docker (which is root), D-Bus, systemd, snapd,
             // the session bus, Wayland and agents. Each is a way out of the cell.
-            &"--tmpfs",
-            &"/run",
-        ],
-    );
-    // The home folders and mounted drives are empty, and writes there vanish: only the world and what its key
-    // opens show through.
-    let home = paths::home()
-        .and_then(|h| fs::canonicalize(h).ok())
-        .filter(|h| h.is_dir() && h != Path::new("/"));
-    let mut hidden: Vec<PathBuf> = ["/home", "/media", "/mnt"]
-        .into_iter()
-        .filter_map(|p| fs::canonicalize(p).ok())
-        .chain(home.clone())
-        .filter(|p| p.is_dir() && p != Path::new("/") && !paths::contains(&world.base, p))
-        .collect();
-    hidden.sort_by_key(|p| p.components().count());
-    for (i, dir) in hidden.iter().enumerate() {
-        if !hidden[..i].iter().any(|h| paths::contains(h, dir)) {
-            add(&mut a, &[&"--tmpfs", dir]);
+            ("/run".into(), Mount::Empty),
+        ];
+        // The home folders and mounted drives are empty, and writes there vanish: only the world and what its key
+        // opens show through.
+        let home = paths::home()
+            .and_then(|h| fs::canonicalize(h).ok())
+            .filter(|h| h.is_dir() && h != Path::new("/"));
+        let mut hidden: Vec<PathBuf> = ["/home", "/media", "/mnt"]
+            .into_iter()
+            .filter_map(|p| fs::canonicalize(p).ok())
+            .chain(home.clone())
+            .filter(|p| p.is_dir() && p != Path::new("/") && !paths::contains(&world.base, p))
+            .collect();
+        hidden.sort_by_key(|p| p.components().count());
+        for (i, dir) in hidden.iter().enumerate() {
+            if !hidden[..i].iter().any(|h| paths::contains(h, dir)) {
+                m.push((dir.clone(), Mount::Empty));
+            }
         }
-    }
-    if let Some(home) = &home
-        && hidden.iter().any(|h| paths::contains(h, home))
-    {
-        add(&mut a, &[&"--dir", home]);
-    }
-    // What shows through, outer paths first so inner ones land on top.
-    let mut shown = vec![(world.base.clone(), Shown::World)];
-    for p in opts.key.iter().flat_map(|k| &k.read) {
-        if let Ok(meta) = fs::metadata(p) {
-            let how = if meta.is_dir() {
-                Shown::Folder
-            } else {
-                Shown::File
-            };
-            shown.push((p.clone(), how));
+        if let Some(home) = &home
+            && hidden.iter().any(|h| paths::contains(h, home))
+        {
+            m.push((home.clone(), Mount::Dir));
         }
+        // What shows through, outer paths first so inner ones land on top.
+        let mut shown = vec![(world.base.clone(), Mount::World)];
+        for p in key.iter().flat_map(|k| &k.read) {
+            if let Ok(meta) = fs::metadata(p) {
+                let how = if meta.is_dir() {
+                    Mount::Folder
+                } else {
+                    Mount::File
+                };
+                shown.push((p.clone(), how));
+            }
+        }
+        shown.sort_by_key(|(p, _)| p.components().count());
+        // Password files stay hidden wherever the cell would see them, inside what shows through too, unless the world or
+        // the key is that file or folder itself. What the key opens inside one of them goes on top.
+        let shown_paths: Vec<PathBuf> = shown.iter().map(|(p, _)| p.clone()).collect();
+        let masks = home
+            .as_deref()
+            .map_or_else(Vec::new, |h| key::secrets_in(h, &hidden, &shown_paths));
+        let masked = |p: &Path| masks.iter().any(|(s, _)| paths::contains(s, p));
+        for (p, how) in &shown {
+            // What lies inside the world is in it already.
+            let in_world = *how != Mount::World && paths::contains(&world.base, p);
+            if !masked(p) && !in_world {
+                m.push((p.clone(), *how));
+            }
+        }
+        for (s, dir) in &masks {
+            m.push((s.clone(), if *dir { Mount::Secrets } else { Mount::Secret }));
+        }
+        for (p, how) in &shown {
+            if masked(p) {
+                m.push((p.clone(), *how));
+            }
+        }
+        // What the cell must not see: every world's changes, and the session's sockets if they live outside /run.
+        m.push((fs::canonicalize(paths::state_dir()?)?, Mount::Empty));
+        if let Some(runtime) = env::var_os("XDG_RUNTIME_DIR")
+            .and_then(|r| fs::canonicalize(r).ok())
+            .filter(|r| r.is_dir() && !r.starts_with("/run"))
+        {
+            m.push((runtime, Mount::Empty));
+        }
+        Ok(View { mounts: m, home })
     }
-    shown.sort_by_key(|(p, _)| p.components().count());
-    // Password files stay hidden wherever the cell would see them, inside what shows through too, unless the world or
-    // the key is that file or folder itself. What the key opens inside one of them goes on top.
-    let shown_paths: Vec<PathBuf> = shown.iter().map(|(p, _)| p.clone()).collect();
-    let masks = home
-        .as_deref()
-        .map_or_else(Vec::new, |h| key::secrets_in(h, &hidden, &shown_paths));
-    let masked = |p: &Path| masks.iter().any(|(m, _)| paths::contains(m, p));
-    let mount = |a: &mut Vec<OsString>, p: &Path, how: Shown| match how {
-        Shown::World => add(
-            a,
+
+    /// The `bwrap` arguments for a cell with these mounts in `world` that runs `cmd` in `cwd` with `path` as its
+    /// `PATH`, with the seccomp filter read from the descriptor `filter` and its outbox socket at `socket`.
+    #[allow(clippy::too_many_arguments)]
+    fn args(
+        &self,
+        world: &World,
+        cmd: &[OsString],
+        cwd: &Path,
+        path: &OsStr,
+        filter: RawFd,
+        socket: &Path,
+        opts: &Options,
+    ) -> Result<Vec<OsString>> {
+        let mut a: Vec<OsString> = Vec::new();
+        for (p, how) in &self.mounts {
+            match how {
+                Mount::Root | Mount::File => add(&mut a, &[&"--ro-bind", p, p]),
+                Mount::Dev => add(&mut a, &[&"--dev", p]),
+                Mount::Proc => add(&mut a, &[&"--proc", p]),
+                Mount::Empty | Mount::Secrets => add(&mut a, &[&"--tmpfs", p]),
+                Mount::Dir => add(&mut a, &[&"--dir", p]),
+                Mount::World => add(
+                    &mut a,
+                    &[
+                        &"--overlay-src",
+                        &world.base,
+                        &"--overlay",
+                        &world.up(),
+                        &world.work(),
+                        &world.base,
+                    ],
+                ),
+                Mount::Folder => add(&mut a, &[&"--overlay-src", p, &"--tmp-overlay", p]),
+                // A plain bind would be `nodev`, and reading the null device there fails; this one reads empty.
+                Mount::Secret => add(&mut a, &[&"--dev-bind", &"/dev/null", p]),
+            }
+        }
+        // The cell's one way out: its socket to the outbox, and the arbor command that asks through it.
+        let exe = env::current_exe().ctx(|| "cannot find the arbor command".to_string())?;
+        let arbor = Path::new(outbox::CELL_BIN).join("arbor");
+        add(
+            &mut a,
             &[
-                &"--overlay-src",
-                &world.base,
-                &"--overlay",
-                &world.up(),
-                &world.work(),
-                &world.base,
+                &"--bind",
+                &socket,
+                &outbox::CELL_SOCKET,
+                &"--ro-bind",
+                &exe,
+                &arbor,
             ],
-        ),
-        Shown::Folder => add(a, &[&"--overlay-src", &p, &"--tmp-overlay", &p]),
-        Shown::File => add(a, &[&"--ro-bind", &p, &p]),
-    };
-    for (p, how) in &shown {
-        // What lies inside the world is in it already.
-        let in_world = !matches!(how, Shown::World) && paths::contains(&world.base, p);
-        if !masked(p) && !in_world {
-            mount(&mut a, p, *how);
+        );
+        // No network, and no user namespaces of its own: those would reopen what bwrap closed. The computer's name is
+        // the cell's own.
+        add(
+            &mut a,
+            &[
+                &"--unshare-all",
+                &"--unshare-user",
+                &"--disable-userns",
+                &"--die-with-parent",
+                &"--hostname",
+                &"arbor",
+            ],
+        );
+        // The kernel calls a cell may not make (see `seccomp`). bwrap loads the filter last, right before the command.
+        add(&mut a, &[&"--seccomp", &filter.to_string()]);
+        // A command run at a terminal shares the person's session, so shells keep job control; the filter keeps it from
+        // typing into that terminal. Any other gets a session of its own.
+        if !opts.interactive {
+            add(&mut a, &[&"--new-session"]);
+        }
+        add(
+            &mut a,
+            &[
+                &"--chdir",
+                &cwd,
+                &"--setenv",
+                &"ARBOR_WORLD",
+                &world.name.as_str(),
+                &"--setenv",
+                &outbox::SOCKET_VAR,
+                &outbox::CELL_SOCKET,
+                &"--setenv",
+                &"PATH",
+                &path,
+                &"--",
+            ],
+        );
+        a.extend(cmd.iter().cloned());
+        Ok(a)
+    }
+
+    /// The last mount over `p`, absolute and without `.` or `..`: it decides what the cell sees there.
+    fn over(&self, p: &Path) -> Mount {
+        self.mounts
+            .iter()
+            .rev()
+            .find(|(m, _)| paths::contains(m, p))
+            .map_or(Mount::Root, |(_, how)| *how)
+    }
+
+    /// What the cell finds at `p`, an absolute path, following links as it would.
+    fn at(&self, world: &World, p: &Path, hops: u32) -> At {
+        let p = normal(p);
+        if hops > 8 {
+            return At::Unsure;
+        }
+        if p == Path::new(outbox::CELL_BIN).join("arbor") {
+            return At::Runs(p);
+        }
+        let file = match self.over(&p) {
+            Mount::Root | Mount::Folder | Mount::File => p.clone(),
+            Mount::World => match world_file(world, &p) {
+                Some(Some(file)) => file,
+                Some(None) => return At::Absent,
+                None => return At::Unsure,
+            },
+            // A fresh /dev or /proc has what the computer's has not, and the other way round.
+            Mount::Dev | Mount::Proc => return At::Unsure,
+            Mount::Empty | Mount::Dir | Mount::Secrets | Mount::Secret => {
+                // The cell sees nothing here; the computer may have it, and where the file really is.
+                return match fs::metadata(&p) {
+                    Ok(meta) if meta.is_file() => {
+                        let mut places = vec![p.clone()];
+                        if let Ok(real) = fs::canonicalize(&p)
+                            && real != p
+                            && !matches!(self.at(world, &real, hops + 1), At::Runs(_))
+                        {
+                            places.push(real);
+                        }
+                        At::Hidden(places)
+                    }
+                    _ => At::Absent,
+                };
+            }
+        };
+        // A folder on the way may be a link, which the cell follows to wherever it points.
+        if file == p {
+            let (Some(parent), Some(name)) = (p.parent(), p.file_name()) else {
+                return At::Absent;
+            };
+            match fs::canonicalize(parent) {
+                Ok(real) if real != parent => return self.at(world, &real.join(name), hops + 1),
+                Ok(_) => {}
+                Err(_) => return At::Absent,
+            }
+        }
+        match fs::symlink_metadata(&file) {
+            Ok(meta) if meta.file_type().is_symlink() => match fs::read_link(&file) {
+                Ok(to) => self.at(world, &p.parent().unwrap_or(&p).join(to), hops + 1),
+                Err(_) => At::Unsure,
+            },
+            // One it may not run makes `execvp` look further and fail otherwise: bwrap says so then.
+            Ok(meta) if meta.is_file() && meta.mode() & 0o111 == 0 => At::Unsure,
+            Ok(meta) if meta.is_file() => At::Runs(file),
+            _ => At::Absent,
         }
     }
-    for (m, dir) in &masks {
-        if *dir {
-            add(&mut a, &[&"--tmpfs", m]);
+
+    /// What the cell runs for `name`, as `execvp` finds it: at that path from `cwd` when it holds a `/`, else in the
+    /// first folder on `path` that has it.
+    fn find(&self, world: &World, name: &OsStr, cwd: &Path, path: &OsStr) -> At {
+        if name.as_bytes().contains(&b'/') {
+            return self.at(world, &cwd.join(name), 0);
+        }
+        let mut hidden = None;
+        for dir in env::split_paths(path) {
+            match self.at(world, &cwd.join(dir).join(name), 0) {
+                At::Hidden(places) => {
+                    hidden.get_or_insert(places);
+                }
+                At::Absent => {}
+                found => return found,
+            }
+        }
+        hidden.map_or(At::Absent, At::Hidden)
+    }
+
+    /// Refuses, in arbor's words, a command the cell would not find: one only in places it hides, with the key that
+    /// would open them, or one it has nowhere. A script whose interpreter is hidden is refused the same way.
+    fn check(
+        &self,
+        world: &World,
+        cmd: &[OsString],
+        cwd: &Path,
+        path: &OsStr,
+        key: Option<&Key>,
+    ) -> Result<()> {
+        let Some(name) = cmd.first() else {
+            return Ok(());
+        };
+        let quoted = |n: &OsStr| format!("`{}`", shown(&[n]));
+        let (what, places) = match self.find(world, name, cwd, path) {
+            At::Runs(file) => match interpreter(&file) {
+                Some(by) => match self.find(world, &by, cwd, path) {
+                    At::Hidden(places) => (
+                        format!(
+                            "{} needs {}, and {} is",
+                            quoted(name),
+                            quoted(&by),
+                            quoted(&by)
+                        ),
+                        places,
+                    ),
+                    _ => return Ok(()),
+                },
+                None => return Ok(()),
+            },
+            At::Hidden(places) => (format!("{} is", quoted(name)), places),
+            At::Absent => {
+                return Err(Error::not_found(format!(
+                    "world {} has no {}",
+                    world.name,
+                    if name.as_bytes().contains(&b'/') {
+                        paths::tilde(&normal(&cwd.join(name)))
+                    } else {
+                        format!("command {}", quoted(name))
+                    }
+                )));
+            }
+            At::Unsure => return Ok(()),
+        };
+        let folders: Vec<String> = places
+            .iter()
+            .map(|p| paths::tilde(p.parent().unwrap_or(p)))
+            .collect();
+        let mut msg = format!("{what} in {}, which the world hides", folders.join(" and "));
+        if let Some(k) = key {
+            msg += &format!(" and key '{}' does not open", k.name);
+        }
+        match openers(&places, self.home.as_deref(), &key::toolchains()) {
+            Some(opens) => {
+                let name = ["dev", "tools"]
+                    .into_iter()
+                    .map(String::from)
+                    .chain((2..).map(|n| format!("tools{n}")))
+                    .find(|n| !key::exists(n))
+                    .unwrap_or_default();
+                msg += &format!(
+                    ". A key opens it: `arbor key new {name} {}`, then add `--key {name}`.",
+                    opens.join(" ")
+                );
+            }
+            None => msg += ", and a key cannot open it.",
+        }
+        Err(Error::not_found(msg))
+    }
+}
+
+/// What a cell finds at a path.
+#[derive(Debug, PartialEq)]
+enum At {
+    /// A file it can run, at this path of the computer, or of the world's changes or base.
+    Runs(PathBuf),
+    /// Nothing it can see; the computer has the file in these places, which the cell does not see.
+    Hidden(Vec<PathBuf>),
+    Absent,
+    /// arbor cannot tell for sure, so the command runs and bwrap says what went wrong, if anything.
+    Unsure,
+}
+
+/// `p` with `.` and `..` worked out from its text alone.
+fn normal(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in p.components() {
+        match part {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            part => out.push(part),
+        }
+    }
+    out
+}
+
+/// Where the world keeps its version of `p`, a path inside its base folder: `Some(Some(file))` in its changes or its
+/// base, `Some(None)` where it deleted `p` or replaced a folder on the way whole, and `None` where arbor cannot tell,
+/// as for a link on the way among its changes.
+fn world_file(world: &World, p: &Path) -> Option<Option<PathBuf>> {
+    let rel = p.strip_prefix(&world.base).ok()?;
+    let changed = world.up().join(rel);
+    let mut at = world.up();
+    let mut replaced = false;
+    for part in rel.components() {
+        at.push(part);
+        match fs::symlink_metadata(&at) {
+            Ok(meta) if sys::is_whiteout(&meta) => return Some(None),
+            Ok(_) if at == changed => return Some(Some(at)),
+            Ok(meta) if meta.file_type().is_symlink() => return None,
+            Ok(meta) if meta.is_dir() => {
+                replaced |= sys::get_xattr(&at, tree::OPAQUE)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|v| v == b"y");
+            }
+            Ok(_) => return Some(None),
+            Err(_) => break,
+        }
+    }
+    Some((!replaced).then(|| p.to_path_buf()))
+}
+
+/// The interpreter a script names on its first line, as `#!/bin/sh` or `#!/usr/bin/env node` do: a path, or a
+/// name to find on `PATH`.
+fn interpreter(file: &Path) -> Option<OsString> {
+    let mut head = [0u8; 256];
+    let n = File::open(file).and_then(|mut f| f.read(&mut head)).ok()?;
+    let line = head[..n].strip_prefix(b"#!")?;
+    let line = &line[..line.iter().position(|&b| b == b'\n').unwrap_or(line.len())];
+    let mut words = line
+        .split(|b| b.is_ascii_whitespace())
+        .filter(|w| !w.is_empty());
+    let program = words.next()?;
+    if program.ends_with(b"/env") {
+        let name = words.next().filter(|w| !w.starts_with(b"-"))?;
+        return Some(OsStr::from_bytes(name).to_os_string());
+    }
+    Some(OsStr::from_bytes(program).to_os_string())
+}
+
+/// Folders of the home folder that hold many programs' files, each in a folder of its own: a key opens that one.
+const SHARED: [&str; 6] = [
+    ".local",
+    ".local/share",
+    ".local/state",
+    ".config",
+    ".cache",
+    ".var/app",
+];
+
+/// The `arbor key new` options that open `places` to a cell: `--toolchains` for a folder among `toolchains`, else
+/// `--read` with the folder of the home folder that holds it, or else its own folder. None when a key may not open
+/// one of them.
+fn openers(places: &[PathBuf], home: Option<&Path>, toolchains: &[PathBuf]) -> Option<Vec<String>> {
+    let mut opens: Vec<String> = Vec::new();
+    for place in places {
+        // Where the file is, through linked folders on the way; a link itself stays where it is.
+        let real = match (place.parent().map(fs::canonicalize), place.file_name()) {
+            (Some(Ok(dir)), Some(name)) => dir.join(name),
+            _ => place.clone(),
+        };
+        let open = if toolchains.iter().any(|t| paths::contains(t, &real)) {
+            "--toolchains".to_string()
         } else {
-            // A plain bind would be `nodev`, and reading the null device there fails; this one reads empty.
-            add(&mut a, &[&"--dev-bind", &"/dev/null", m]);
+            let folder = match home.and_then(|h| Some((h, real.strip_prefix(h).ok()?))) {
+                Some((h, rel)) => {
+                    let mut folder = h.to_path_buf();
+                    for part in rel.components() {
+                        folder.push(part);
+                        let r = folder.strip_prefix(h).unwrap_or(&folder);
+                        if !SHARED.iter().any(|s| Path::new(s) == r) {
+                            break;
+                        }
+                    }
+                    folder
+                }
+                None => real.parent().unwrap_or(&real).to_path_buf(),
+            };
+            key::check_grant(&folder).ok()?;
+            format!("--read {}", paths::tilde(&folder))
+        };
+        if !opens.contains(&open) {
+            opens.push(open);
         }
     }
-    for (p, how) in &shown {
-        if masked(p) {
-            mount(&mut a, p, *how);
-        }
-    }
-    // What the cell must not see: every world's changes, and the session's sockets if they live outside /run.
-    let state = fs::canonicalize(paths::state_dir()?)?;
-    add(&mut a, &[&"--tmpfs", &state]);
-    if let Some(runtime) = env::var_os("XDG_RUNTIME_DIR")
-        .and_then(|r| fs::canonicalize(r).ok())
-        .filter(|r| r.is_dir() && !r.starts_with("/run"))
-    {
-        add(&mut a, &[&"--tmpfs", &runtime]);
-    }
-    // The cell's one way out: its socket to the outbox, and the arbor command that asks through it.
-    let exe = env::current_exe().ctx(|| "cannot find the arbor command".to_string())?;
-    let arbor = Path::new(outbox::CELL_BIN).join("arbor");
-    add(
-        &mut a,
-        &[
-            &"--bind",
-            &socket,
-            &outbox::CELL_SOCKET,
-            &"--ro-bind",
-            &exe,
-            &arbor,
-        ],
-    );
+    opens.sort_by_key(|o| o != "--toolchains");
+    Some(opens)
+}
+
+/// The cell's `PATH`: first the folder of the arbor command that asks for effects, then the person's.
+fn cell_path() -> OsString {
     let mut path = OsString::from(outbox::CELL_BIN);
     path.push(":");
     path.push(env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()));
-    // No network, and no user namespaces of its own: those would reopen what bwrap closed. The computer's name is
-    // the cell's own.
-    add(
-        &mut a,
-        &[
-            &"--unshare-all",
-            &"--unshare-user",
-            &"--disable-userns",
-            &"--die-with-parent",
-            &"--hostname",
-            &"arbor",
-        ],
-    );
-    // The kernel calls a cell may not make (see `seccomp`). bwrap loads the filter last, right before the command.
-    add(&mut a, &[&"--seccomp", &filter.to_string()]);
-    // A command run at a terminal shares the person's session, so shells keep job control; the filter keeps it from
-    // typing into that terminal. Any other gets a session of its own.
-    if !opts.interactive {
-        add(&mut a, &[&"--new-session"]);
-    }
-    add(
-        &mut a,
-        &[
-            &"--chdir",
-            &cwd,
-            &"--setenv",
-            &"ARBOR_WORLD",
-            &world.name.as_str(),
-            &"--setenv",
-            &outbox::SOCKET_VAR,
-            &outbox::CELL_SOCKET,
-            &"--setenv",
-            &"PATH",
-            &path,
-            &"--",
-        ],
-    );
-    a.extend(cmd.iter().cloned());
-    Ok(a)
+    path
 }
 
 /// Where the command starts: the same folder when the person stands inside the base, else the base itself.
@@ -723,6 +1029,10 @@ pub fn run(
     let bwrap = bwrap()?;
     let limits = &opts.limits;
     let key = opts.key.as_ref();
+    let view = View::new(world, key)?;
+    let cwd = start_dir(world);
+    let path = cell_path();
+    view.check(world, cmd, &cwd, &path, key)?;
     let group = cell_group(limits)?;
     let id = group
         .as_ref()
@@ -757,10 +1067,11 @@ pub fn run(
     // now and that end closed.
     let (filter, to_filter) = sys::pipe()?;
     File::from(to_filter).write_all(&seccomp::bytes())?;
-    let args = bwrap_args(
+    let args = view.args(
         world,
         cmd,
-        &start_dir(world),
+        &cwd,
+        &path,
         filter.as_raw_fd(),
         socket.path(),
         opts,
@@ -917,6 +1228,99 @@ mod tests {
         ] {
             assert_eq!(outcome(137, Some(ended), None, &limits, None).0, out);
         }
+    }
+
+    #[test]
+    fn the_last_mount_over_a_path_decides_what_a_cell_sees() {
+        let p = PathBuf::from;
+        let view = View {
+            mounts: vec![
+                (p("/"), Mount::Root),
+                (p("/proc"), Mount::Proc),
+                (p("/tmp"), Mount::Empty),
+                (p("/home"), Mount::Empty),
+                (p("/home/u"), Mount::Dir),
+                (p("/home/u/shop"), Mount::World),
+                (p("/home/u/.cargo"), Mount::Folder),
+                (p("/home/u/.cargo/credentials.toml"), Mount::Secret),
+                (p("/home/u/shop/.state"), Mount::Empty),
+            ],
+            home: Some(p("/home/u")),
+        };
+        for (path, seen) in [
+            ("/usr/bin/env", Mount::Root),
+            ("/proc/self/exe", Mount::Proc),
+            ("/tmp/x", Mount::Empty),
+            ("/home/v/bin/tool", Mount::Empty),
+            ("/home/u/bin/tool", Mount::Dir),
+            ("/home/u/shop/node_modules/.bin/jest", Mount::World),
+            ("/home/u/shopping/x", Mount::Dir),
+            ("/home/u/.cargo/bin/cargo", Mount::Folder),
+            ("/home/u/.cargo/credentials.toml", Mount::Secret),
+            ("/home/u/shop/.state/worlds", Mount::Empty),
+        ] {
+            assert_eq!(view.over(Path::new(path)), seen, "{path}");
+        }
+    }
+
+    #[test]
+    fn reads_paths_and_the_interpreters_scripts_name() {
+        assert_eq!(normal(Path::new("/a/./b/../c")), Path::new("/a/c"));
+        assert_eq!(normal(Path::new("/../x")), Path::new("/x"));
+        let dir = env::temp_dir().join(format!("arbor-unit-interp-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for (script, by) in [
+            ("#!/bin/sh\necho", Some("/bin/sh")),
+            ("#! /usr/bin/env node --flag\n", Some("node")),
+            ("#!/usr/bin/env -S node --flag\n", None),
+            ("#!/usr/bin/python3 -u", Some("/usr/bin/python3")),
+            ("\x7fELF", None),
+            ("", None),
+        ] {
+            let file = dir.join("script");
+            fs::write(&file, script).unwrap();
+            assert_eq!(interpreter(&file), by.map(OsString::from), "{script:?}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn names_the_key_options_that_open_hidden_places() {
+        let home = Path::new("/nowhere/u");
+        let toolchains = [home.join(".cargo"), home.join(".local/bin")];
+        let opens = |places: &[&str]| {
+            let places: Vec<PathBuf> = places.iter().map(|p| home.join(p)).collect();
+            openers(&places, Some(home), &toolchains)
+        };
+        let read = |rel: &str| format!("--read {}", paths::tilde(&home.join(rel)));
+        assert_eq!(
+            opens(&[".cargo/bin/cargo"]),
+            Some(vec!["--toolchains".into()])
+        );
+        // A link in a toolchain's folder to a program's own folder: both open.
+        assert_eq!(
+            opens(&[".local/share/claude/versions/2/claude", ".local/bin/claude"]),
+            Some(vec!["--toolchains".into(), read(".local/share/claude")])
+        );
+        assert_eq!(opens(&["bin/tool"]), Some(vec![read("bin")]));
+        assert_eq!(opens(&["tool"]), Some(vec![read("tool")]));
+        // Outside the home folder, the file's own folder; never what a key may not open.
+        assert_eq!(
+            openers(
+                &[PathBuf::from("/mnt/disk/bin/tool")],
+                Some(home),
+                &toolchains
+            ),
+            Some(vec!["--read /mnt/disk/bin".into()])
+        );
+        assert_eq!(
+            openers(
+                &[PathBuf::from("/run/wrappers/bin/sudo")],
+                Some(home),
+                &toolchains
+            ),
+            None
+        );
     }
 
     #[test]

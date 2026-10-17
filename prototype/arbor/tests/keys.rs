@@ -58,6 +58,87 @@ fn the_home_folder_is_hidden_until_a_key_opens_it_and_password_files_stay_hidden
 }
 
 #[test]
+fn a_command_the_world_hides_is_named_with_the_key_that_opens_it() {
+    let Some(e) = Env::new("tools") else { return };
+    new_world(&e);
+    let home = &e.user_home;
+    let script = |path: &std::path::Path, body: &str| {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    script(&home.join(".cargo/bin/hello"), "#!/bin/sh\necho hello\n");
+    script(&home.join("bin/own"), "#!/bin/sh\necho own\n");
+    // A script in the world whose interpreter the world hides.
+    script(&e.base.join("greet"), "#!/usr/bin/env hello\n");
+    let path = ["", ".cargo/bin", ".npm-global/bin", "bin"]
+        .iter()
+        .map(|d| home.join(d).display().to_string())
+        .skip(1)
+        .chain(["/usr/bin".into(), "/bin".into()])
+        .collect::<Vec<_>>()
+        .join(":");
+    let run = |args: &[&str]| {
+        let out = e.command(args).env("PATH", &path).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        (
+            out.status.code(),
+            String::from_utf8(out.stdout).unwrap(),
+            err,
+        )
+    };
+    let refused = |cmd: &str, key: Option<&str>| {
+        let mut args = vec!["run", "demo"];
+        args.extend(key.map(|k| ["--key", k]).into_iter().flatten());
+        args.extend(["--", cmd]);
+        let (code, _, err) = run(&args);
+        assert_eq!(code, Some(127), "{cmd}: {err}");
+        err
+    };
+
+    // Before it starts, arbor says where the command is and which key option opens it.
+    let err = refused("hello", None);
+    assert!(
+        err.contains("`hello` is in ~/.cargo/bin, which the world hides")
+            && err.contains("`arbor key new dev --toolchains`, then add `--key dev`"),
+        "{err}"
+    );
+    assert!(refused("own", None).contains("`arbor key new dev --read ~/bin`"));
+    let err = refused("./greet", None);
+    assert!(
+        err.contains("`./greet` needs `hello`, and `hello` is in ~/.cargo/bin"),
+        "{err}"
+    );
+    assert!(refused("missing", None).contains("world demo has no command `missing`"));
+    assert!(e.ledger_rows().last().unwrap().contains("not found"));
+
+    // `--toolchains` opens npm's folder for tools installed without root only where there is one.
+    assert!(
+        !e.ok(&["key", "new", "early", "--toolchains"])
+            .contains(".npm-global")
+    );
+    script(&home.join(".npm-global/bin/hi"), "#!/bin/sh\necho hi\n");
+    assert!(refused("hi", None).contains("`arbor key new dev --toolchains`"));
+    let made = e.ok(&["key", "new", "dev", "--toolchains"]);
+    assert!(
+        made.contains("~/.cargo") && made.contains("~/.npm-global"),
+        "{made}"
+    );
+    for (cmd, said) in [("hello", "hello\n"), ("hi", "hi\n"), ("./greet", "hello\n")] {
+        let (code, out, err) = run(&["run", "demo", "--key", "dev", "--", cmd]);
+        assert_eq!((code, out.as_str()), (Some(0), said), "{cmd}: {err}");
+    }
+    // A key that does not open it is named, and the suggested key's name is free.
+    let err = refused("own", Some("dev"));
+    assert!(
+        err.contains("which the world hides and key 'dev' does not open")
+            && err.contains("`arbor key new tools --read ~/bin`"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_variable_passes_in_only_with_a_key_that_names_it() {
     let Some(e) = Env::new("env") else { return };
     new_world(&e);

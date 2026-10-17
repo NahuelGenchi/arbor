@@ -180,6 +180,7 @@ fn recorded(act: &str, world: &str, step: impl FnOnce(&mut Note) -> Result<i32>)
         Ok(_) => note.out.take().unwrap_or_else(|| "ok".into()),
         Err(e) if e.code == error::USAGE => return res,
         Err(e) if e.code == error::REFUSED => "refused".into(),
+        Err(e) if e.code == error::NOT_FOUND => "not found".into(),
         Err(e) if e.code == error::STOPPED => "stopped".into(),
         Err(_) => "failed".into(),
     };
