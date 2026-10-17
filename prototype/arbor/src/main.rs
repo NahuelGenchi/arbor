@@ -2,16 +2,18 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{self, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use arbor::cell::{self, Options};
 use arbor::cgroup::{self, Limits};
-use arbor::error::{self, Error, Result};
+use arbor::error::{self, Context, Error, Result};
 use arbor::key::{self, Key};
 use arbor::ledger::{self, Cost, Ledger};
+use arbor::outbox::{self, Answer, Effect, Outbox};
 use arbor::world::{self, State, World};
 use arbor::{paths, table, tree};
 use lexopt::prelude::*;
@@ -32,6 +34,9 @@ arbor: try changes on a copy of a folder, then keep them or throw them away.
   arbor key new NAME [GRANTS]        make a key that opens more than the world, until a set time
   arbor keys                         list the keys
   arbor key take-back NAME           end a key and every key made within it, and stop their commands
+  arbor outbox [ID] [--all]          list the effects waiting for you (ID: everything about one)
+  arbor release ID                   run an effect a world asked for: as you, once
+  arbor refuse ID [--why TEXT]       say no to an effect
   arbor ledger [--last N] [--verify] the record of every step (--verify: check that none was changed)
   arbor watch [--since N]            print each new step as a JSON line (--since N: the steps after N first)
 
@@ -39,8 +44,13 @@ OPTIONS: --key KEY opens what the key opens. LIMITS stop a command that takes to
 --mem SIZE (512M, 2G), --cpu CPUS (0.5, 2), --pids N (processes at once), --time DURATION (90s, 10m, 2h).
 
 GRANTS: --read PATH (a folder or file), --toolchains (~/.cargo, ~/.npm, ~/.pyenv and the like),
---env VAR (passes a variable in), --world W (only that world), LIMITS, --for DURATION or --until HH:MM
-(8h if neither), --within KEY (a narrower key, made from another).
+--env VAR (passes a variable in), --world W (only that world), LIMITS, --spend AMOUNT (what its effects
+may cost in all: 5, 2.50), --for DURATION or --until HH:MM (8h if neither), --within KEY (a narrower key,
+made from another).
+
+Inside a world, `arbor effect [--cost AMOUNT] [--why TEXT] [--input FILE] [--wait] -- CMD...` asks for CMD
+to run outside: in the real folder, as you, with the network, once you release it. --wait waits for your
+answer and prints what CMD printed.
 
 The real folder does not change until `arbor keep`. Inside a world the rest of the computer is read-only,
 your home folder is empty but for what a key opens, password files stay hidden, and there is no network.
@@ -73,6 +83,14 @@ fn run() -> Result<i32> {
         Some(Value(v)) => v.string()?,
         Some(arg) => return Err(arg.unexpected().into()),
     };
+    // Inside a world arbor's own folder is hidden: there, arbor can only ask, through the cell's socket.
+    if env::var_os(outbox::SOCKET_VAR).is_some_and(|s| !s.is_empty())
+        && !matches!(command.as_str(), "effect" | "help")
+    {
+        return Err(Error::refused(
+            "inside a world, arbor only asks for effects: `arbor effect -- CMD` (see `arbor help`)",
+        ));
+    }
     match command.as_str() {
         "new" => new(&mut p),
         "worlds" | "ls" => worlds(&mut p),
@@ -86,6 +104,10 @@ fn run() -> Result<i32> {
         "stop" => stop(&mut p),
         "key" => key_cmd(&mut p),
         "keys" => keys(&mut p),
+        "effect" => effect(&mut p),
+        "outbox" => outbox_cmd(&mut p),
+        "release" => release(&mut p),
+        "refuse" => refuse(&mut p),
         "ledger" => ledger_cmd(&mut p),
         "watch" => watch(&mut p),
         "serve" => serve(&mut p),
@@ -128,12 +150,14 @@ struct Note {
     world: String,
     key: Option<String>,
     cell: Option<String>,
+    effect: Option<u64>,
     what: String,
     limits: String,
     out: Option<String>,
     cpu_ms: Option<u64>,
     mem_kib: Option<u64>,
     pids: Option<u64>,
+    cents: Option<u64>,
 }
 
 /// Records a step. It has happened by then, so a ledger that cannot be written is a warning, not a failure.
@@ -166,9 +190,11 @@ fn recorded(act: &str, world: &str, step: impl FnOnce(&mut Note) -> Result<i32>)
     }
     append(ledger::New {
         act,
+        by: "you",
         key: note.key.as_deref(),
         world: &note.world,
         cell: note.cell.as_deref(),
+        effect: note.effect,
         what: &note.what,
         limits: Some(&note.limits),
         out: &out,
@@ -177,9 +203,15 @@ fn recorded(act: &str, world: &str, step: impl FnOnce(&mut Note) -> Result<i32>)
             cpu_ms: note.cpu_ms,
             mem_kib: note.mem_kib,
             pids: note.pids,
+            cents: note.cents,
         },
     });
     res
+}
+
+/// `1 effect`, `3 effects`.
+fn count(n: usize, what: &str) -> String {
+    format!("{n} {what}{}", if n == 1 { "" } else { "s" })
 }
 
 fn new(p: &mut lexopt::Parser) -> Result<i32> {
@@ -307,9 +339,11 @@ fn run_noted(note: &mut Note, asked: Asked, cmd: &[OsString], shell: bool) -> Re
     let ran = cell::run(&world, &lock, cmd, &opts, &mut |id| {
         append(ledger::New {
             act: "start",
+            by: "you",
             key: note.key.as_deref(),
             world: &world.name,
             cell: Some(id),
+            effect: None,
             what: &note.what,
             limits: Some(&note.limits),
             out: "running",
@@ -464,9 +498,16 @@ fn undo(p: &mut lexopt::Parser) -> Result<i32> {
 
 fn discard(p: &mut lexopt::Parser) -> Result<i32> {
     let (name, _) = name_and_flags(p, &[])?;
-    recorded("discard", &name, |note| {
+    let mut refused = Vec::new();
+    let res = recorded("discard", &name, |note| {
         let (world, lock) = World::load_locked(&name)?;
         let (state, base) = (world.state, paths::tilde(&world.base));
+        // What it asked for and nobody answered goes with it. Its lock keeps commands from running in it, so
+        // nothing asks again before it is gone.
+        refused = refuse_waiting(
+            |e| e.world == name,
+            &format!("world {name} was thrown away"),
+        );
         world.discard(&lock)?;
         note.what = base.clone();
         match state {
@@ -475,8 +516,16 @@ fn discard(p: &mut lexopt::Parser) -> Result<i32> {
                 println!("removed world {name} and its undo copy; the kept changes stay in {base}")
             }
         }
+        if !refused.is_empty() {
+            println!(
+                "refused the {} it asked for",
+                count(refused.len(), "effect")
+            );
+        }
         Ok(0)
-    })
+    });
+    record_refused(&refused);
+    res
 }
 
 /// Wall time, then CPU time, peak memory and peak processes when a command ran.
@@ -490,6 +539,9 @@ fn cost(c: &Cost) -> String {
     }
     if let Some(pids) = c.pids {
         s += &format!(" pids {pids}");
+    }
+    if let Some(cents) = c.cents {
+        s += &format!(" {}", outbox::money(cents));
     }
     s
 }
@@ -618,6 +670,7 @@ fn key_new(p: &mut lexopt::Parser) -> Result<i32> {
                 let flag = flag.to_string();
                 spec.limits.set(&flag, &p.value()?.string()?)?;
             }
+            Long("spend") => spec.spend = Some(outbox::parse_money(&p.value()?.string()?)?),
             Value(v) if name.is_none() => name = Some(v.string()?),
             arg => return Err(arg.unexpected().into()),
         }
@@ -647,7 +700,8 @@ fn take_back(p: &mut lexopt::Parser) -> Result<i32> {
         }
     }
     let name = name.ok_or_else(|| Error::usage("which key? (see `arbor keys`)"))?;
-    recorded("take-back", "-", |note| {
+    let mut refused = Vec::new();
+    let res = recorded("take-back", "-", |note| {
         note.key = Some(name.clone());
         let gone = key::take_back(&name)?;
         // A cell that started under one of them before it went is stopped; one starting now sees it gone.
@@ -657,20 +711,27 @@ fn take_back(p: &mut lexopt::Parser) -> Result<i32> {
                 stopped += 1;
             }
         }
+        // And what they asked for that still waits is refused.
+        refused = refuse_waiting(
+            |e| e.keys.iter().any(|k| gone.contains(&k.name)),
+            &format!("key {} was taken back", gone[0]),
+        );
         let mut what = format!("key {}", gone[0]);
         match &gone[1..] {
             [] => {}
             [one] => what += &format!(", and key {one} made within it"),
             more => what += &format!(", and keys {} made within it", more.join(", ")),
         }
-        what += &format!(
-            "; stopped {stopped} command{}",
-            if stopped == 1 { "" } else { "s" }
-        );
+        what += &format!("; stopped {}", count(stopped, "command"));
+        if !refused.is_empty() {
+            what += &format!("; refused {}", count(refused.len(), "effect"));
+        }
         println!("took back {what}");
         note.what = what;
         Ok(0)
-    })
+    });
+    record_refused(&refused);
+    res
 }
 
 fn keys(p: &mut lexopt::Parser) -> Result<i32> {
@@ -684,9 +745,16 @@ fn keys(p: &mut lexopt::Parser) -> Result<i32> {
     }
     let now = world::now_ns();
     let or_dash = |s: String| if s.is_empty() { "-".into() } else { s };
+    let effects = Outbox::open()?.list()?;
     let rows: Vec<Vec<String>> = all
         .iter()
         .map(|k| {
+            let spent = outbox::spent(&effects, &k.id());
+            let spend = match k.spend {
+                Some(most) => format!("{} of {}", outbox::money(spent), outbox::money(most)),
+                None if spent > 0 => outbox::money(spent),
+                None => "-".into(),
+            };
             let until = key::clock(k.until_ns, now);
             vec![
                 k.name.clone(),
@@ -698,13 +766,16 @@ fn keys(p: &mut lexopt::Parser) -> Result<i32> {
                 k.within.clone().unwrap_or_else(|| "-".into()),
                 k.opened(),
                 or_dash(k.limits.describe()),
+                spend,
                 or_dash(k.env.join(", ")),
                 or_dash(k.reads()),
             ]
         })
         .collect();
     table::print(
-        &["name", "until", "within", "opens", "limits", "env", "reads"],
+        &[
+            "name", "until", "within", "opens", "limits", "spend", "env", "reads",
+        ],
         &rows,
     )?;
     Ok(0)
@@ -766,9 +837,10 @@ fn ledger_cmd(p: &mut lexopt::Parser) -> Result<i32> {
                 s.key.clone().unwrap_or_else(|| "-".into()),
                 s.out.clone(),
                 cost(&s.cost),
-                match &s.limits {
-                    Some(limits) => format!("{} [{limits}]", s.what),
-                    None => s.what.clone(),
+                match (&s.limits, s.effect) {
+                    (Some(limits), _) => format!("{} [{limits}]", s.what),
+                    (None, Some(id)) => format!("#{id} {}", s.what),
+                    (None, None) => s.what.clone(),
                 },
             ]
         })
@@ -780,4 +852,397 @@ fn ledger_cmd(p: &mut lexopt::Parser) -> Result<i32> {
         &rows,
     )?;
     Ok(0)
+}
+
+/// Refuses the waiting effects that `which` picks, because `why`, and returns them for `record_refused`. What
+/// refuses them goes ahead without them, so a failure here is a warning.
+fn refuse_waiting(which: impl Fn(&Effect) -> bool, why: &str) -> Vec<Effect> {
+    Outbox::open()
+        .and_then(|o| o.refuse_waiting(which, why))
+        .unwrap_or_else(|err| {
+            eprintln!("arbor: warning: effects that would be refused still wait: {err}");
+            Vec::new()
+        })
+}
+
+/// Records effects refused by a step, after that step's own record.
+fn record_refused(refused: &[Effect]) {
+    for e in refused {
+        append(ledger::New {
+            act: "refuse",
+            by: "you",
+            key: e.key(),
+            world: &e.world,
+            cell: Some(&e.cell),
+            effect: Some(e.id),
+            what: &e.shown(),
+            limits: None,
+            out: "ok",
+            cost: Cost::default(),
+        });
+    }
+}
+
+/// Notes which effect a step is about.
+fn noted(note: &mut Note, e: &Effect) {
+    note.world = e.world.clone();
+    note.key = e.key().map(Into::into);
+    note.cell = Some(e.cell.clone());
+    note.effect = Some(e.id);
+    note.what = e.shown();
+}
+
+/// Reads an effect's number: `3` or `#3`.
+fn effect_id(text: &str) -> Result<u64> {
+    text.strip_prefix('#').unwrap_or(text).parse().map_err(|_| {
+        Error::usage(format!(
+            "'{text}' is not an effect's number (see `arbor outbox`)"
+        ))
+    })
+}
+
+/// An exit code for arbor itself: one that arbor could not learn is a failure, never a success.
+fn exit_code(exit: i32) -> i32 {
+    if exit < 0 { 1 } else { exit }
+}
+
+/// Reads an effect's input, up to the most one may carry.
+fn read_input(r: impl Read) -> Result<Vec<u8>> {
+    let mut input = Vec::new();
+    r.take(outbox::MAX_INPUT as u64 + 1)
+        .read_to_end(&mut input)?;
+    if input.len() > outbox::MAX_INPUT {
+        return Err(Error::usage(format!(
+            "the input is larger than {}",
+            cgroup::size(outbox::MAX_INPUT as u64)
+        )));
+    }
+    Ok(input)
+}
+
+/// `arbor effect`, inside a world: asks for a command to run outside, once a person releases it.
+fn effect(p: &mut lexopt::Parser) -> Result<i32> {
+    let socket = env::var_os(outbox::SOCKET_VAR)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Error::usage(
+                "`arbor effect` asks from inside a world (`arbor shell` or `arbor run`); outside one, run \
+                 the command yourself",
+            )
+        })?;
+    let (mut cost, mut why, mut input, mut wait) = (None, String::new(), None, false);
+    let mut cmd = Vec::new();
+    while let Some(arg) = p.next()? {
+        match arg {
+            Long("cost") => cost = Some(outbox::parse_money(&p.value()?.string()?)?),
+            Long("why") => why = p.value()?.string()?,
+            Long("input") => input = Some(PathBuf::from(p.value()?)),
+            Long("wait") => wait = true,
+            Value(v) => {
+                cmd.push(v);
+                cmd.extend(p.raw_args()?);
+            }
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    if cmd.is_empty() {
+        return Err(Error::usage(
+            "which command? usage: arbor effect [--cost AMOUNT] [--why TEXT] [--input FILE] [--wait] -- CMD...",
+        ));
+    }
+    let cmd = cmd
+        .into_iter()
+        .map(|a| {
+            a.into_string()
+                .map_err(|_| Error::usage("an effect's command must be text (UTF-8)"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let input = match input {
+        None => Vec::new(),
+        Some(f) if f.as_os_str() == "-" => read_input(io::stdin().lock())?,
+        Some(f) => read_input(File::open(&f).ctx(|| format!("cannot read {}", f.display()))?)?,
+    };
+    let dir = env::current_dir()
+        .ok()
+        .and_then(|d| d.into_os_string().into_string().ok())
+        .unwrap_or_default();
+    let ask = outbox::Ask {
+        cmd,
+        dir,
+        cost,
+        why,
+        input,
+        wait,
+    };
+    let mut asked = 0;
+    let answer = outbox::ask(Path::new(&socket), &ask, &mut |id| {
+        asked = id;
+        // With --wait, what arbor prints on its output is the effect's own.
+        if wait {
+            eprintln!("effect {id} waiting");
+        } else {
+            println!("effect {id} waiting");
+        }
+        hint(&format!(
+            "A person answers it outside the world: `arbor release {id}` runs it, once; `arbor refuse {id}` says no."
+        ));
+    })?;
+    match answer {
+        None => Ok(0),
+        Some(Answer::Done { exit, output }) => {
+            io::stdout().write_all(&output)?;
+            Ok(exit_code(exit))
+        }
+        Some(Answer::Refused { why }) if why.is_empty() => {
+            Err(Error::refused(format!("effect {asked} was refused")))
+        }
+        Some(Answer::Refused { why }) => Err(Error::refused(format!(
+            "effect {asked} was refused: {}",
+            table::escaped(&why)
+        ))),
+    }
+}
+
+/// `waiting`, `running`, `unknown` (its arbor stopped while it ran), `exit N` or `refused`.
+fn effect_state(outbox: &Outbox, e: &Effect) -> String {
+    match e.state {
+        outbox::State::Waiting => "waiting".into(),
+        outbox::State::Running if outbox.still_running(e.id) => "running".into(),
+        outbox::State::Running => "unknown".into(),
+        outbox::State::Done => e
+            .receipt
+            .as_ref()
+            .map_or("done".into(), |r| format!("exit {}", r.exit)),
+        outbox::State::Refused => "refused".into(),
+    }
+}
+
+fn outbox_cmd(p: &mut lexopt::Parser) -> Result<i32> {
+    let (mut id, mut all) = (None, false);
+    while let Some(arg) = p.next()? {
+        match arg {
+            Long("all") => all = true,
+            Value(v) if id.is_none() => id = Some(effect_id(&v.string()?)?),
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    let outbox = Outbox::open()?;
+    if let Some(id) = id {
+        return show_effect(&outbox, &outbox.load(id)?);
+    }
+    let effects: Vec<Effect> = outbox
+        .list()?
+        .into_iter()
+        .filter(|e| all || matches!(e.state, outbox::State::Waiting | outbox::State::Running))
+        .collect();
+    if effects.is_empty() {
+        hint(if all {
+            "Nothing was asked for yet. Inside a world, `arbor effect -- CMD` asks."
+        } else {
+            "Nothing waits for you."
+        });
+        return Ok(0);
+    }
+    let now = world::now_ns();
+    let rows: Vec<Vec<String>> = effects
+        .iter()
+        .map(|e| {
+            vec![
+                e.id.to_string(),
+                effect_state(&outbox, e),
+                e.world.clone(),
+                e.key().unwrap_or("-").into(),
+                e.cost.map_or("-".into(), outbox::money),
+                key::clock(e.asked_ns, now),
+                e.shown(),
+            ]
+        })
+        .collect();
+    table::print(
+        &["id", "state", "world", "key", "cost", "asked", "what"],
+        &rows,
+    )?;
+    Ok(0)
+}
+
+/// Everything about one effect, for the person who answers it: the facts first, the asker's words last.
+fn show_effect(outbox: &Outbox, e: &Effect) -> Result<i32> {
+    let now = world::now_ns();
+    let at = key::clock(e.answered_ns.unwrap_or(e.asked_ns), now);
+    let state = match effect_state(outbox, e).as_str() {
+        "waiting" => format!("waiting since {}", key::clock(e.asked_ns, now)),
+        "running" => format!("released at {at}, running"),
+        "unknown" => {
+            format!("released at {at}; arbor stopped while it ran, so what it did is not known")
+        }
+        "refused" => format!("refused at {at}"),
+        ended => format!("released at {at}: {ended}"),
+    };
+    let mut out = io::stdout().lock();
+    writeln!(out, "effect {}, {state}", e.id)?;
+    let mut line = |label: &str, text: String| writeln!(out, "  {label:<8}{text}");
+    line("runs", e.shown())?;
+    line(
+        "in",
+        format!(
+            "{}, the real folder, as you, with the network",
+            table::escaped(&paths::tilde(&e.folder()))
+        ),
+    )?;
+    if let Some(n) = e.input {
+        line(
+            "input",
+            format!(
+                "{}, in {}",
+                cgroup::size(n),
+                paths::tilde(&outbox.input_file(e.id))
+            ),
+        )?;
+    }
+    let mut cost = e.cost.map_or("none given".into(), |c| {
+        format!("{}, by the asker's word", outbox::money(c))
+    });
+    let all = outbox.list()?;
+    for k in &e.keys {
+        if let Ok(key) = Key::load(&k.name)
+            && key.made_ns == k.made_ns
+            && let Some(most) = key.spend
+        {
+            cost += &format!(
+                "; key {} has spent {} of {}",
+                key.name,
+                outbox::money(outbox::spent(&all, k)),
+                outbox::money(most)
+            );
+        }
+    }
+    line("cost", cost)?;
+    line(
+        "asked",
+        format!(
+            "by cell {} in world {}{}",
+            e.cell,
+            e.world,
+            e.key().map_or(String::new(), |k| format!(", with key {k}"))
+        ),
+    )?;
+    if e.back {
+        line(
+            "back",
+            "what it prints goes back to the command that asked".into(),
+        )?;
+    }
+    if let Some(r) = &e.receipt {
+        line(
+            "output",
+            format!(
+                "{}, SHA-256 {}, in {}",
+                cgroup::size(r.output),
+                &r.sha256[..16],
+                paths::tilde(&outbox.output_file(e.id))
+            ),
+        )?;
+        line("took", format!("{}ms, cpu {}ms", r.ms, r.cpu_ms))?;
+    }
+    if !e.refusal.is_empty() {
+        line("refused", table::escaped(&e.refusal))?;
+    }
+    if !e.why.is_empty() {
+        line(
+            "why",
+            format!(
+                "(the asker's words, not checked) {}",
+                table::escaped(&e.why)
+            ),
+        )?;
+    }
+    if e.state == outbox::State::Waiting {
+        hint(&format!(
+            "`arbor release {0}` runs it, once; `arbor refuse {0}` says no.",
+            e.id
+        ));
+    }
+    Ok(0)
+}
+
+fn release(p: &mut lexopt::Parser) -> Result<i32> {
+    let mut id = None;
+    while let Some(arg) = p.next()? {
+        match arg {
+            Value(v) if id.is_none() => id = Some(effect_id(&v.string()?)?),
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    let id = id.ok_or_else(|| Error::usage("which effect? (see `arbor outbox`)"))?;
+    recorded("release", "-", |note| {
+        let outbox = Outbox::open()?;
+        noted(note, &outbox.load(id)?);
+        let (e, out) = outbox.begin(id)?;
+        // An effect leaves only once the ledger says so.
+        let begun = Ledger::open().and_then(|l| {
+            l.append(ledger::New {
+                act: "release",
+                by: "you",
+                key: e.key(),
+                world: &e.world,
+                cell: Some(&e.cell),
+                effect: Some(id),
+                what: &note.what,
+                limits: None,
+                out: "running",
+                cost: Cost::default(),
+            })
+        });
+        if let Err(err) = begun {
+            outbox.unbegin(id);
+            return Err(Error::new(format!(
+                "effect {id} was not released, because the ledger cannot record it: {err}"
+            )));
+        }
+        hint(&format!(
+            "Releasing effect {id}: {} in {}",
+            note.what,
+            table::escaped(&paths::tilde(&e.folder()))
+        ));
+        let receipt = match outbox::run(&outbox, &e, out, &mut io::stdout()) {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                outbox.unbegin(id);
+                return Err(err);
+            }
+        };
+        // It ran, so it cost what it said.
+        (note.out, note.cpu_ms, note.cents) = (
+            Some(format!("exit {}", receipt.exit)),
+            Some(receipt.cpu_ms),
+            e.cost,
+        );
+        let code = exit_code(receipt.exit);
+        if let Err(err) = outbox.finish(id, receipt) {
+            eprintln!("arbor: warning: effect {id} ran, but its receipt was not kept: {err}");
+        }
+        hint(&format!(
+            "Effect {id} ran, once. Its receipt is in the ledger and in `arbor outbox {id}`."
+        ));
+        Ok(code)
+    })
+}
+
+fn refuse(p: &mut lexopt::Parser) -> Result<i32> {
+    let (mut id, mut why) = (None, String::new());
+    while let Some(arg) = p.next()? {
+        match arg {
+            Long("why") => why = p.value()?.string()?,
+            Value(v) if id.is_none() => id = Some(effect_id(&v.string()?)?),
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    let id = id.ok_or_else(|| Error::usage("which effect? (see `arbor outbox`)"))?;
+    recorded("refuse", "-", |note| {
+        let outbox = Outbox::open()?;
+        noted(note, &outbox.load(id)?);
+        outbox.refuse(id, &why)?;
+        println!("refused effect {id}: {}", note.what);
+        Ok(0)
+    })
 }

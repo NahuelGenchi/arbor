@@ -4,7 +4,8 @@
 //! `bwrap` process, sealed: the computer read-only; the home folders, `/media` and `/mnt` empty; the world's overlay
 //! mounted over its base folder's own path, so tools see the usual paths; `/run` and Arbor's own state hidden; a
 //! cleared environment; no network, no new user namespaces and an empty session keyring; and a filter that refuses
-//! the kernel calls sandbox escapes start from (see `seccomp`). A key (see `key`) opens more folders and files and
+//! the kernel calls sandbox escapes start from (see `seccomp`). Its one way out is a socket to the outbox, where it
+//! asks for effects that a person may release (see `outbox`). A key (see `key`) opens more folders and files and
 //! passes variables in; password files stay hidden even then. Where the user's systemd manager allows it, each cell
 //! also runs in its own cgroup (see `cgroup`), with its limits, and its whole cost is read from there. Network
 //! through a filter comes later.
@@ -26,8 +27,10 @@ use serde::{Deserialize, Serialize};
 use crate::cgroup::{self, Group, Limits, Usage};
 use crate::error::{Context, Error, Result};
 use crate::key::{self, Key};
+use crate::ledger::Ledger;
+use crate::outbox::{self, Outbox};
 use crate::world::{self, Lock, State, World};
-use crate::{paths, seccomp, sys};
+use crate::{paths, seccomp, sys, table};
 
 pub struct Options {
     /// The command will talk to the person at the terminal.
@@ -128,12 +131,13 @@ fn add(a: &mut Vec<OsString>, items: &[&dyn AsRef<OsStr>]) {
 }
 
 /// The `bwrap` arguments for a cell in `world` that runs `cmd` in `cwd`, with the seccomp filter read from the
-/// descriptor `filter`. Mounts land in order, each on top of the ones before it.
+/// descriptor `filter` and its outbox socket at `socket`. Mounts land in order, each on top of the ones before it.
 pub fn bwrap_args(
     world: &World,
     cmd: &[OsString],
     cwd: &Path,
     filter: RawFd,
+    socket: &Path,
     opts: &Options,
 ) -> Result<Vec<OsString>> {
     let mut a: Vec<OsString> = Vec::new();
@@ -241,6 +245,23 @@ pub fn bwrap_args(
     {
         add(&mut a, &[&"--tmpfs", &runtime]);
     }
+    // The cell's one way out: its socket to the outbox, and the arbor command that asks through it.
+    let exe = env::current_exe().ctx(|| "cannot find the arbor command".to_string())?;
+    let arbor = Path::new(outbox::CELL_BIN).join("arbor");
+    add(
+        &mut a,
+        &[
+            &"--bind",
+            &socket,
+            &outbox::CELL_SOCKET,
+            &"--ro-bind",
+            &exe,
+            &arbor,
+        ],
+    );
+    let mut path = OsString::from(outbox::CELL_BIN);
+    path.push(":");
+    path.push(env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()));
     // No network, and no user namespaces of its own: those would reopen what bwrap closed. The computer's name is
     // the cell's own.
     add(
@@ -269,6 +290,12 @@ pub fn bwrap_args(
             &"--setenv",
             &"ARBOR_WORLD",
             &world.name.as_str(),
+            &"--setenv",
+            &outbox::SOCKET_VAR,
+            &outbox::CELL_SOCKET,
+            &"--setenv",
+            &"PATH",
+            &path,
             &"--",
         ],
     );
@@ -287,17 +314,20 @@ pub fn start_dir(world: &World) -> PathBuf {
     }
 }
 
-/// A command as a shell would take it back: arguments with spaces or quotes are quoted.
-pub fn shown(cmd: &[OsString]) -> String {
-    let word = |a: &OsString| {
-        let a = a.to_string_lossy();
-        let plain = !a.is_empty()
-            && a.chars()
-                .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-        if plain {
-            a.into_owned()
-        } else {
-            format!("'{}'", a.replace('\'', "'\\''"))
+/// A command as a shell would take it back: arguments with spaces or quotes are quoted, and those with characters a
+/// terminal would act on or not show, such as escape sequences, newlines and direction marks, are spelled out in
+/// `$'…'`, so what is shown is what runs.
+pub fn shown<S: AsRef<OsStr>>(cmd: &[S]) -> String {
+    let word = |a: &S| {
+        let bytes = a.as_ref().as_bytes();
+        let plain = !bytes.is_empty()
+            && bytes
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(b));
+        match std::str::from_utf8(bytes) {
+            Ok(a) if plain => a.to_string(),
+            Ok(a) if !a.chars().any(table::unseen) => format!("'{}'", a.replace('\'', "'\\''")),
+            _ => table::ansi_quoted(bytes),
         }
     };
     cmd.iter().map(word).collect::<Vec<_>>().join(" ")
@@ -391,6 +421,7 @@ pub fn running() -> Result<Vec<Running>> {
                     cgroup::kill_dir(&group);
                     cgroup::remove_dir(&group);
                 }
+                let _ = fs::remove_file(path.with_extension("sock"));
                 let _ = fs::remove_file(&path);
             }
         }
@@ -452,14 +483,6 @@ pub struct Ran {
     pub mem_kib: u64,
     /// Peak number of processes and threads, when it had its own cgroup.
     pub pids: Option<u64>,
-}
-
-/// What this process's finished children have used so far: CPU milliseconds and the largest peak memory in KiB.
-fn children_usage() -> (u64, u64) {
-    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-    unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) };
-    let ms = |t: libc::timeval| t.tv_sec as u64 * 1000 + t.tv_usec as u64 / 1000;
-    (ms(ru.ru_utime) + ms(ru.ru_stime), ru.ru_maxrss as u64)
 }
 
 /// The cell's own cgroup, where this session can have one. Memory, CPU and process limits need it; a cell
@@ -698,11 +721,6 @@ pub fn run(
         )));
     }
     let bwrap = bwrap()?;
-    // bwrap reads the filter from a pipe until it closes. The filter fits in a pipe's buffer, so it is written whole
-    // now and that end closed.
-    let (filter, to_filter) = sys::pipe()?;
-    File::from(to_filter).write_all(&seccomp::bytes())?;
-    let args = bwrap_args(world, cmd, &start_dir(world), filter.as_raw_fd(), opts)?;
     let limits = &opts.limits;
     let key = opts.key.as_ref();
     let group = cell_group(limits)?;
@@ -727,6 +745,26 @@ pub fn run(
     {
         return Err(Error::refused(format!("key '{}' was taken back", k.name)));
     }
+    // Who asks through the cell's socket is known here, never taken from what the cell sends.
+    let asker = outbox::Asker {
+        world: world.name.clone(),
+        base: world.base.clone(),
+        cell: id.clone(),
+        keys: key.map(Key::chain).transpose()?.unwrap_or_default(),
+    };
+    let socket = outbox::Socket::bind(&running_dir()?.join(format!("{id}.sock")))?;
+    // bwrap reads the filter from a pipe until it closes. The filter fits in a pipe's buffer, so it is written whole
+    // now and that end closed.
+    let (filter, to_filter) = sys::pipe()?;
+    File::from(to_filter).write_all(&seccomp::bytes())?;
+    let args = bwrap_args(
+        world,
+        cmd,
+        &start_dir(world),
+        filter.as_raw_fd(),
+        socket.path(),
+        opts,
+    )?;
     // Everything exec needs is made before the fork: the child may not allocate.
     let program = c_string(bwrap.as_os_str())?;
     let argv = std::iter::once(OsStr::new("bwrap"))
@@ -745,7 +783,7 @@ pub fn run(
     // cell's CPU time and memory would go with it. As a subreaper, arbor adopts that init and waits for it below,
     // so they count.
     unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) };
-    let (cpu_before, _) = children_usage();
+    let (cpu_before, _) = sys::children_usage();
     // The cell stops at its time limit or when its key ends, whichever comes first.
     let now = Instant::now();
     let deadline = [
@@ -768,6 +806,17 @@ pub fn run(
     .ctx(|| "cannot start the cell".to_string())?;
     drop(filter);
     started(&id);
+    // Until the server answers, what the cell asks waits; without one, it is refused.
+    let server = Outbox::open()
+        .and_then(|o| Ok((o, Ledger::open()?)))
+        .and_then(|(o, l)| socket.serve(asker, o, l));
+    let server = match server {
+        Ok(server) => Some(server),
+        Err(e) => {
+            eprintln!("arbor: warning: this command cannot ask for effects: {e}");
+            None
+        }
+    };
     // Ctrl-C belongs to the command inside: Arbor waits for it instead of dying first and leaving it behind.
     let (old_int, old_quit) = unsafe {
         (
@@ -784,6 +833,8 @@ pub fn run(
         libc::signal(libc::SIGINT, old_int);
         libc::signal(libc::SIGQUIT, old_quit);
     }
+    // Every process of the cell has ended, so its requests have too.
+    drop(server);
     drop(stops);
     let (status, ended) = waited?;
     let code = status
@@ -796,7 +847,7 @@ pub fn run(
         }
         e => e,
     };
-    let (cpu, max_rss) = children_usage();
+    let (cpu, max_rss) = sys::children_usage();
     let usage = group.as_ref().map(Group::usage);
     let (out, warning) = outcome(code, ended, usage.as_ref(), limits, key);
     Ok(Ran {
@@ -877,6 +928,7 @@ mod tests {
             read: Vec::new(),
             env: vec!["CARGO_HOME".into()],
             limits: Limits::default(),
+            spend: None,
             made_ns: 0,
             until_ns: 1,
         };

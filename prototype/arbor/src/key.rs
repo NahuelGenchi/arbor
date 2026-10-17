@@ -1,7 +1,8 @@
-//! Keys: what a command in a world may open beyond the world, until when, and within which limits. A cell starts
-//! sealed (see `cell`): the home folders are empty and the environment is cleared. A key opens folders and files
-//! there, passes variables in by name and caps the cell's limits, until a set time, like a valet key. A key can be
-//! narrowed into another, never widened, and taking one back takes back every key made within it.
+//! Keys: what a command in a world may open beyond the world, until when, within which limits, and what the effects
+//! it asks for may cost. A cell starts sealed (see `cell`): the home folders are empty and the environment is
+//! cleared. A key opens folders and files there, passes variables in by name and caps the cell's limits, until a set
+//! time, like a valet key. A key can be narrowed into another, never widened, and taking one back takes back every
+//! key made within it.
 //!
 //! A key holds names and paths, never a secret's value. Each is a file in the state folder's `keys`.
 
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cgroup::Limits;
 use crate::error::{Context, Error, Result};
+use crate::outbox::{self, Cents};
 use crate::{paths, sys, world};
 
 /// How long a key lasts when nobody says: a working day.
@@ -103,9 +105,25 @@ pub struct Key {
     pub env: Vec<String>,
     #[serde(default)]
     pub limits: Limits,
+    /// What the effects released under it, and under the keys made within it, may cost in total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend: Option<Cents>,
     /// When it was made and when it ends, in nanoseconds since 1970.
     pub made_ns: u64,
     pub until_ns: u64,
+}
+
+/// A key as an effect remembers it: its name and when it was made, so that a key made later under the same name is
+/// another key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyRef {
+    pub name: String,
+    pub made_ns: u64,
+}
+
+/// True while `k` names a key that has not been taken back.
+pub fn current(k: &KeyRef) -> bool {
+    Key::load(&k.name).is_ok_and(|key| key.made_ns == k.made_ns)
 }
 
 /// What `arbor key new` asks for.
@@ -118,6 +136,7 @@ pub struct Spec {
     pub toolchains: bool,
     pub env: Vec<String>,
     pub limits: Limits,
+    pub spend: Option<Cents>,
     /// When it ends. Unset is 8 hours from now, or, within another key, that key's end.
     pub until_ns: Option<u64>,
 }
@@ -352,6 +371,7 @@ impl Key {
             read,
             env: sorted(spec.env),
             limits: spec.limits,
+            spend: spec.spend,
             made_ns: now,
             until_ns: spec
                 .until_ns
@@ -409,6 +429,13 @@ impl Key {
             .limits
             .within(outer.limits)
             .map_err(|what| refuse(format!("allows less {what}")))?;
+        match (self.spend, outer.spend) {
+            (Some(spend), Some(most)) if spend > most => {
+                return Err(refuse(format!("may spend {}", outbox::money(most))));
+            }
+            (None, most) => self.spend = most,
+            _ => {}
+        }
         if !named_end {
             self.until_ns = outer.until_ns;
         } else if self.until_ns > outer.until_ns {
@@ -459,6 +486,31 @@ impl Key {
         now_ns >= self.until_ns
     }
 
+    pub fn id(&self) -> KeyRef {
+        KeyRef {
+            name: self.name.clone(),
+            made_ns: self.made_ns,
+        }
+    }
+
+    /// This key, then each key it was made within, outwards.
+    pub fn chain(&self) -> Result<Vec<KeyRef>> {
+        let mut chain = vec![self.id()];
+        let mut within = self.within.clone();
+        while let Some(name) = within {
+            if chain.len() > 64 || chain.iter().any(|k| k.name == name) {
+                return Err(Error::new(format!(
+                    "key '{}' is made within itself",
+                    self.name
+                )));
+            }
+            let outer = Key::load(&name)?;
+            chain.push(outer.id());
+            within = outer.within;
+        }
+        Ok(chain)
+    }
+
     pub fn opens(&self, world: &str) -> bool {
         self.worlds.is_empty() || self.worlds.iter().any(|w| w == world)
     }
@@ -501,7 +553,8 @@ impl Key {
             .join(", ")
     }
 
-    /// `opens shop; reads ~/.cargo; env CARGO_HOME; mem 4GiB; within dev; until 18:00`, for the ledger.
+    /// `opens shop; reads ~/.cargo; env CARGO_HOME; mem 4GiB; spend $5.00; within dev; until 18:00`, for the
+    /// ledger.
     pub fn describe(&self) -> String {
         let mut parts = vec![format!("opens {}", self.opened())];
         if !self.read.is_empty() {
@@ -513,6 +566,9 @@ impl Key {
         let limits = self.limits.describe();
         if !limits.is_empty() {
             parts.push(limits);
+        }
+        if let Some(spend) = self.spend {
+            parts.push(format!("spend {}", outbox::money(spend)));
         }
         if let Some(w) = &self.within {
             parts.push(format!("within {w}"));
@@ -563,6 +619,7 @@ mod tests {
             read: Vec::new(),
             env: Vec::new(),
             limits: Limits::default(),
+            spend: None,
             made_ns: 0,
             until_ns: 10_000,
         }
@@ -575,6 +632,7 @@ mod tests {
         outer.read = vec![PathBuf::from("/home/u/.cargo")];
         outer.env = vec!["CARGO_HOME".into()];
         outer.limits.mem = Some(1 << 30);
+        outer.spend = Some(500);
 
         // What it leaves out, it inherits.
         let mut k = key("tests");
@@ -585,6 +643,7 @@ mod tests {
                 k.read.clone(),
                 k.env.clone(),
                 k.limits,
+                k.spend,
                 k.until_ns
             ),
             (
@@ -592,6 +651,7 @@ mod tests {
                 outer.read.clone(),
                 outer.env.clone(),
                 outer.limits,
+                Some(500),
                 10_000
             )
         );
@@ -600,9 +660,13 @@ mod tests {
         let mut k = key("tests");
         k.read = vec![PathBuf::from("/home/u/.cargo/bin")];
         k.limits.mem = Some(512 << 20);
+        k.spend = Some(200);
         k.until_ns = 5_000;
         k.narrow(&outer, true, true, 0).unwrap();
-        assert_eq!((k.limits.mem, k.until_ns), (Some(512 << 20), 5_000));
+        assert_eq!(
+            (k.limits.mem, k.spend, k.until_ns),
+            (Some(512 << 20), Some(200), 5_000)
+        );
 
         let wider = |change: &dyn Fn(&mut Key)| {
             let mut k = key("tests");
@@ -619,6 +683,7 @@ mod tests {
         );
         assert!(wider(&|k| k.env = vec!["TOKEN".into()]).contains("does not pass TOKEN"));
         assert!(wider(&|k| k.limits.mem = Some(2 << 30)).contains("allows less memory"));
+        assert!(wider(&|k| k.spend = Some(501)).contains("may spend $5.00"));
         assert!(wider(&|k| k.until_ns = 20_000).contains("ends at"));
     }
 

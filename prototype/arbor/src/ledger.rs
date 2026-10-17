@@ -42,6 +42,9 @@ pub struct Cost {
     /// Peak number of processes and threads in the cell, where it had a cgroup and the kernel keeps the count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pids: Option<u64>,
+    /// Money, in cents: what a released effect said it would cost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cents: Option<u64>,
 }
 
 /// One step, as recorded.
@@ -51,25 +54,31 @@ pub struct Step {
     pub seq: u64,
     /// When it finished, in nanoseconds since 1970.
     pub ts: u64,
-    /// Who acted: `you` for the arbor command. Agents come later, in cells of their own.
+    /// Who acted: `you` for the arbor command, `cell` for a command in a world asking for an effect. Agents come
+    /// later, in cells of their own.
     pub by: String,
     /// The key a command ran under, or the key a `key` step made and a `take-back` step took back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// `new`, `start`, `run`, `shell`, `stop`, `keep`, `undo`, `discard`, `key` or `take-back`. A command's cell
-    /// records `start` when it begins, then `run` or `shell` when it ends.
+    /// `new`, `start`, `run`, `shell`, `stop`, `keep`, `undo`, `discard`, `key`, `take-back`, `effect`, `release` or
+    /// `refuse`. A command's cell records `start` when it begins, then `run` or `shell` when it ends. An effect is
+    /// asked for (`effect`), then refused, or released: `release` records it running before it starts, then how it
+    /// ended.
     pub act: String,
     pub world: String,
-    /// The cell a command ran in, as `arbor ps` names it.
+    /// The cell a command ran in, as `arbor ps` names it, or the one that asked for an effect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cell: Option<String>,
+    /// The effect an `effect`, `release` or `refuse` step is about, as `arbor outbox` numbers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<u64>,
     /// What exactly: the command, the folder, or a summary of the changes.
     pub what: String,
     /// The limits a command ran under: `mem 512MiB, cpu 0.5, pids 64, time 10m`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<String>,
-    /// `ok`, `running`, `exit N`, `killed: time limit`, `killed: memory limit`, `killed: key expired`, `stopped`,
-    /// `stopped: key taken back`, `refused` or `failed`.
+    /// `ok`, `running`, `waiting`, `exit N`, `killed: time limit`, `killed: memory limit`, `killed: key expired`,
+    /// `stopped`, `stopped: key taken back`, `refused` or `failed`.
     pub out: String,
     pub cost: Cost,
 }
@@ -77,9 +86,11 @@ pub struct Step {
 /// A step to record; the ledger numbers and stamps it.
 pub struct New<'a> {
     pub act: &'a str,
+    pub by: &'a str,
     pub key: Option<&'a str>,
     pub world: &'a str,
     pub cell: Option<&'a str>,
+    pub effect: Option<u64>,
     pub what: &'a str,
     pub limits: Option<&'a str>,
     pub out: &'a str,
@@ -162,11 +173,12 @@ impl Ledger {
         let step = Step {
             seq: seq + 1,
             ts: world::now_ns(),
-            by: "you".into(),
+            by: new.by.into(),
             key: new.key.map(Into::into),
             act: new.act.into(),
             world: new.world.into(),
             cell: new.cell.map(Into::into),
+            effect: new.effect,
             what: short(new.what),
             limits: new.limits.filter(|l| !l.is_empty()).map(Into::into),
             out: new.out.into(),
@@ -381,9 +393,11 @@ mod tests {
     fn add(l: &Ledger, what: &str) -> Step {
         l.append(New {
             act: "run",
+            by: "you",
             key: None,
             world: "demo",
             cell: Some("0badcafe"),
+            effect: None,
             what,
             limits: None,
             out: "exit 0",
