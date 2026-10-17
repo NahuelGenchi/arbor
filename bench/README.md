@@ -8,7 +8,8 @@ by row.
 ./run.sh
 ```
 
-One run takes about 2½ minutes on the M machine (i7-14700KF, 15 GiB RAM) and writes three files to `results/`:
+One run takes about 2½ minutes on the M machine (i7-14700KF, 15 GiB RAM), and about 2 more for the `screen` section,
+during which the PC should be left alone. It writes three files to `results/`:
 
 | File | What |
 |---|---|
@@ -19,7 +20,7 @@ One run takes about 2½ minutes on the M machine (i7-14700KF, 15 GiB RAM) and wr
 git ignores `results/`: a report names the machine, its hardware and the programs running on it, so runs stay local.
 
 Run a subset with `ONLY="boot search" ./run.sh`, or leave sections out with `SKIP="storage" ./run.sh`. Sections:
-`memstate boot runtimes cells pycell search heap transcripts formats storage arbor`.
+`memstate boot runtimes cells pycell search heap transcripts formats storage arbor screen`.
 
 `./check.sh` only checks that every script parses (`bash -n`, `py_compile`, `node --check`, `gcc -fsyntax-only`); it
 measures nothing and reads no personal data. The Checks workflow runs it on every PR.
@@ -45,6 +46,8 @@ sits.
 | `DOCKER_IMAGE` | `ubuntu:24.04` (must already be present; never pulled) | docker cell |
 | `INITRD` | `/boot/initrd.img` | initramfs breakdown |
 | `ARBOR_BIN` | empty: a release build of `../prototype` in the temp dir | the prototype |
+| `SCREEN_STILL_S`, `FRAMES_S` | `60`, `20` (seconds) | still screen; each frame-pacing run |
+| `FRAMES_CELLS`, `FRAMES_SPIKE_MIB` | empty: one busy cell per CPU thread, and a spike of all the available memory but 1 GiB | the loaded frame-pacing run |
 | `BENCH_TMP`, `RESULTS_DIR` | `$TMPDIR` or `/tmp`, `bench/results` | temp files, reports |
 
 Inputs that keep growing are pinned by content where M used a fixed one: `git log` starts at the commit M saw, and the
@@ -69,12 +72,24 @@ heap test loads the transcript of M's exact byte size.
   are read, also when the run is interrupted or times out, unless a cell that is not the section's runs in it by then.
   It never stops a service it did not start: if the service already runs another arbor binary, the two memory rows
   fail and their note says how to stop it.
+- **The screen.** The `screen` section reads the compositor's CPU time, context switches and GPU time from `/proc`,
+  and asks GNOME's idle monitor over D-Bus how long ago a key or the mouse was last used; it never reads window
+  titles or anything on the screen. It finds the compositor by connecting to the Wayland socket and asking who
+  listens on it (`SO_PEERCRED`). For the first minute nothing should touch the PC: a minute with input fails the two
+  still-screen rows. Then it opens a small window of its own, 480×270, which animates for about 21 s twice and
+  closes. During the second run it starts one busy cell per CPU thread (`bwrap --unshare-all`, a shell loop) and a
+  memory spike that takes all the memory available but 1 GiB, so for those seconds the PC is slow, other programs
+  may be swapped out, and files leave the page cache. The cells, the spike and the window end with the section,
+  also on a timeout or Ctrl-C. Leave it out with `SKIP=screen`.
 - **Tools:** Python 3.14+ (`compression.zstd`), node, gcc with static glibc (`libc6-dev`), rustc (optional,
   `~/.cargo/bin` is searched), rg, bwrap (0.11 or later for the overlay), unshare, docker (the user in the `docker`
   group, the image present), zstd, systemd-analyze, git, liblzo2 and liblz4 (for the heap compressors). The `arbor`
   section needs cargo with the toolchain that `../prototype/rust-toolchain.toml` pins and the prototype's crates
   already downloaded, since it builds offline and installs nothing (or `ARBOR_BIN`), and a systemd user manager for
-  the cgroup and service rows. A missing tool fails only its rows, with the reason in the note.
+  the cgroup and service rows. The `screen` section needs a Wayland session whose compositor has the
+  presentation-time protocol (GNOME's has it), gcc with static glibc for its test client, which speaks the Wayland
+  protocol itself and so needs no Wayland library, bwrap for the cells, and gdbus for the input check. A missing tool
+  fails only its rows, with the reason in the note.
 - **User namespaces.** `cell.unshare_user`, `cell.unshare_4ns`, `storage.fork_ms` and `storage.fork_syscall_ms` run
   `unshare` from the suite's own process. `cell.bwrap`, `storage.fork_bwrap_ms` and `storage.fork_bwrap_overlay_ms`
   go through bwrap. Ubuntu 24.04 and later set `kernel.apparmor_restrict_unprivileged_userns = 1`: a process whose
@@ -104,6 +119,7 @@ heap test loads the transcript of M's exact byte size.
 | `formats` | o200k tokens of one 100-file listing printed eight ways; `git log` with and without projection; `ps`, `ip`, `df` full vs only the asked fields | tokenizer in `lib/o200k.js`: the tiktoken regex and byte-pair merges over `o200k_base.tiktoken` |
 | `storage` | duplicate bytes in the projects folder, counted once per inode and split by path class; time to fork the largest project with an overlay CoW mount, inside `unshare -Urm` and through bwrap; `git worktree add` as the baseline | `find -printf` for inodes and sizes, BLAKE2b over size-collision groups on all cores; mount timed as in M (`mount(8)` bracketed by `date`) and as the bare `mount(2)` syscall; through bwrap: `true` started in a sandbox with the overlay over the tree's own path (`--overlay-src` and `--tmp-overlay`), against the same sandbox without it, with the start-time method in 5 interleaved blocks; a write into either fork is checked not to reach the lower tree |
 | `arbor` | the prototype, in a state folder of its own: making a world, starting a sealed command without and with a cgroup, asking for an effect from inside a world and releasing one, keeping and undoing a world that added 1,000 files, the idle memory of `arbor serve`, the size of the release binary, and the o200k tokens of `arbor diff` for 100 changed files | the start-time method in 3 interleaved blocks for the cell rows; asking is the difference between `arbor run W -- arbor effect -- true` and `arbor run W -- true`; `arbor new` median of 20, release median of 40, keep and undo median of 11 cycles; memory from `/proc/<pid>/smaps_rollup` of the service; each keep and undo is checked to move all 1,000 files, and `arbor diff` to list all 100 |
+| `screen` | the compositor on a still screen: its CPU share and its wakeups per second over 60 s with no input; frame pacing of a test window: the share of refreshes that showed no new frame, and the slowest 1% of frame times, first on the machine as it is, then with a busy cell per CPU thread and a memory spike | the compositor is the process listening on the Wayland socket; CPU from `/proc/<pid>/stat` (all threads), wakeups as voluntary context switches summed over `/proc/<pid>/task/*/status`; input checked with GNOME's idle monitor; GPU time from `drm-engine-*` in `/proc/<pid>/fdinfo`. Frames: `src/frames.c`, a static Wayland client, draws a new frame on each `wl_surface.frame` for 1 s of warm-up and 20 s, and reports each frame's presentation (`wp_presentation`); missed refreshes are counted from the presentation sequence numbers, or from the timestamps where the compositor gives none |
 
 ## Reading the report
 
@@ -129,7 +145,7 @@ The note on a ⚠️ row depends on what kind of number it is:
 | RSS | idle RSS of node | mostly file pages: a page fault also maps the cached neighbours of the page it needs, so RSS follows how much of the binary is in the page cache. The suite reads each binary first; the note gives the file/anonymous split |
 | PSS | idle PSS of bash | shared pages are split among every process mapping them; the note counts the other processes running the same program. RSS is the stable floor |
 | growing data set | `$HOME` entries, transcripts, projects folder | the note gives the count now vs at M, per-entry cost where it applies, and CPU load for timings. Code-search rows also say when `rg` had to read the corpus from disk |
-| live state | swap in use, RSS of apps | what runs right now |
+| live state | swap in use, RSS of apps, the still screen, frame pacing | what runs right now; for the screen rows, also what other programs drew and the load beside the test window (the note says both) |
 | boot records | `systemd-analyze` | a different boot than the one M described (the note gives both boot times), or a timer ran the unit again after M read `blame` |
 | configuration | initramfs, modules | the file was rebuilt or packages changed |
 
@@ -156,7 +172,6 @@ M numbers in OPTIMIZATION.md outside the seven areas this suite was asked to cov
 
 - the cost of a new TLS connection to the model API (12 ms of a 185 ms call): needs traffic to a third-party
   endpoint and depends on the network;
-- gnome-shell CPU on a still screen (2.1% of a core): needs a screen nobody touches during the run;
 - pages identical across 4 agents for KSM (2%): needs several agents running at once;
 - outline-first code reading (4% and 8% of a file's tokens) and transcript dedup (−38%);
 - the rebuild that follows `git worktree add` (1,774 steps);
