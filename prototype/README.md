@@ -21,7 +21,14 @@ arbor undo shop                         # changed your mind? take them back out
 arbor discard shop                      # throw the world away
 ```
 
-`arbor run shop -- npm test` runs one command instead of a shell, and `arbor diff shop --patch` shows the changed lines. Inside a world your home folder is empty, so tools installed there, such as `~/.nvm` or `~/.cargo`, need a key: `arbor key new dev --toolchains` makes one that opens them, and `arbor run shop --key dev -- npm test` uses it. When a command, or the program a script runs with, is only in a place the world hides, arbor says so before it starts and names the key that opens it: `` `cargo` is in ~/.cargo/bin, which the world hides. A key opens it: `arbor key new dev --toolchains`, then add `--key dev`. `` `arbor run shop --mem 2G --time 10m -- npm test` stops the tests if they take more than 2 GiB of memory or 10 minutes. `arbor worlds` lists every world, `arbor ps` what is running in them, `arbor stop` stops one, and `arbor ledger` shows what happened. A command in a world asks for what only you can do, such as `arbor effect -- git push`, and `arbor outbox` shows what waits for your answer: see [The outbox](#the-outbox).
+`arbor run shop -- npm test` runs one command instead of a shell, and `arbor diff shop --patch` shows the changed lines. Inside a world your home folder is empty, so tools installed there, such as `~/.nvm` or `~/.cargo`, need a key: `arbor key new dev --toolchains` makes one that opens them, and `arbor run shop --key dev -- npm test` uses it. When a command, or the program a script runs with, is only in a place the world hides, arbor says so before it starts, and names the key that opens it:
+
+```console
+$ arbor run shop -- cargo test
+arbor: `cargo` is in ~/.cargo/bin, which the world hides. A key opens it: `arbor key new dev --toolchains`, then add `--key dev`.
+```
+
+`arbor run shop --mem 2G --time 10m -- npm test` stops the tests if they take more than 2 GiB of memory or 10 minutes. `arbor worlds` lists every world, `arbor ps` what is running in them, `arbor stop` stops one, and `arbor ledger` shows what happened. A command in a world asks for what only you can do, such as `arbor effect -- git push`, and `arbor outbox` shows what waits for your answer: see [The outbox](#the-outbox).
 
 ## What a command inside a world can do
 
