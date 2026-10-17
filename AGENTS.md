@@ -20,6 +20,7 @@ Never describe something as working, built or measured unless a recorded check e
 | `bench/results/` | Run reports, ignored by git |
 | `prototype/` | The first prototype in Rust: one binary, `arbor` (`arbor/src/`: `world`, `tree` for diff/keep/undo, `cell` for `bwrap`), end-to-end tests in `arbor/tests/`, and `check.sh`. The toolchain is pinned in `rust-toolchain.toml` |
 | `docs/` | Tracking guide and README images |
+| `docs/INTERFACE.md` | The Mission Control design brief: views, scale, motion, accessibility, targets and open questions. Its wireframes and their sources are in `docs/images/`. No interface exists yet |
 | `.github/workflows/` | `checks.yml` runs `bench/check.sh` on every PR; `project-tracking.yml` keeps milestones and labels in order |
 
 ## Commands

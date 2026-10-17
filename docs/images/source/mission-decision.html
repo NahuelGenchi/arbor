@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mission-decision</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@400;500;600&display=block" rel="stylesheet">
+<link rel="stylesheet" href="base.css">
+<link rel="stylesheet" href="mission.css">
+<script src="theme.js"></script>
+<style>
+  .card { height: 616px; }
+  .bar .pill { margin-left: 10px; }
+  .bar .count { margin-left: auto; font: 400 12.5px var(--sans); color: var(--ink-3); }
+  .body { display: flex; }
+  .facts { flex: 1; padding: 8px 24px 22px; }
+  .row { display: grid; grid-template-columns: 150px 1fr; gap: 12px; padding: 10px 0; border-top: 1px solid var(--rule); }
+  .row:first-child { border-top: 0; }
+  .k { font: 500 12.5px/1.4 var(--sans); color: var(--ink-3); }
+  .v { font: 500 13.5px/1.4 var(--sans); color: var(--ink); }
+  .v small { display: block; font: 400 12.5px/1.4 var(--sans); color: var(--ink-3); }
+  .v small u { text-decoration: none; color: var(--green-ink); font-weight: 500; }
+  .words { margin: 4px 0 0; padding: 11px 14px; border-left: 3px solid var(--quiet); background: var(--paper); border-radius: 0 10px 10px 0; }
+  .words .label { display: flex; justify-content: space-between; }
+  .words p { margin: 7px 0 0; font: italic 400 15px/1.4 var(--serif); color: var(--ink-2); }
+  .actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+  .actions .key { margin-left: auto; font: 400 12px var(--sans); color: var(--ink-3); }
+  .steps { width: 300px; flex: none; padding: 20px 22px; border-left: 1px solid var(--rule); background: var(--paper); }
+  .tl { position: relative; margin-top: 14px; }
+  .tl::before { content: ""; position: absolute; left: 4px; top: 8px; bottom: 26px; width: 1.5px; background: var(--rule); }
+  .st { position: relative; display: grid; grid-template-columns: 14px 42px 1fr; gap: 6px; padding-bottom: 13px; }
+  .st i { width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: var(--paper); box-shadow: inset 0 0 0 1.8px var(--ink-3); position: relative; }
+  .st i.ok { background: var(--green); box-shadow: none; }
+  .st i.wait { background: var(--amber); box-shadow: none; }
+  .st i.cut { box-shadow: none; background: var(--paper); }
+  .st i.cut::after { content: "×"; position: absolute; left: -2px; right: -2px; top: -4.5px; text-align: center; font: 600 13px/1 var(--sans); color: var(--ink-3); }
+  .t { font: 500 12px/1.45 var(--sans); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .d { font: 400 12.5px/1.45 var(--sans); color: var(--ink); }
+  .d small { display: block; font-size: 12px; color: var(--ink-3); }
+  .all { margin-top: 2px; padding-top: 12px; border-top: 1px solid var(--rule); font: 500 12.5px var(--sans); color: var(--green-ink); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head">
+    <div>
+      <div class="eyebrow">mission control · a decision</div>
+      <div class="title">everything you need to say yes, in one place</div>
+    </div>
+    <div class="note">A wireframe with made-up data.<br>No interface exists yet.</div>
+  </div>
+  <div class="win">
+    <div class="bar">
+      <span class="back">← Now</span>
+      <span class="crumb">Payments, moved to version 2</span>
+      <span class="pill wait"><i></i>waiting for you</span>
+      <span class="count num">1 of 3 that need you</span>
+    </div>
+    <div class="body">
+      <div class="facts">
+        <div class="row"><div class="k">will leave the machine</div><div class="v">a deployment to the test site<small>and a note to the payments team</small></div></div>
+        <div class="row"><div class="k">can be undone</div><div class="v">both</div></div>
+        <div class="row"><div class="k">the change</div><div class="v">18 files in the payment code<small>try b of 3 · <u>See the changes</u></small></div></div>
+        <div class="row"><div class="k">checked by</div><div class="v">214 tests and a type check<small>all pass</small></div></div>
+        <div class="row"><div class="k">spent</div><div class="v num">$3.41 of $5.00<div class="meter"><b style="width:68.2%"></b></div></div></div>
+        <div class="words">
+          <div class="label"><span>in the agent's own words</span><span>not checked</span></div>
+          <p>“Moved the payment code to version 2. Refunds keep the old rules until the team says otherwise.”</p>
+        </div>
+        <div class="actions"><span class="btn go">Release both</span><span class="btn plain">Refuse</span><span class="key">or touch your security key</span></div>
+      </div>
+      <div class="steps">
+        <div class="label">the steps behind it</div>
+        <div class="tl">
+          <div class="st"><i></i><span class="t">13:52</span><span class="d">You asked for it, with $5 to spend</span></div>
+          <div class="st"><i></i><span class="t">13:52</span><span class="d">Three tries began, each on a copy of the shop's code</span></div>
+          <div class="st"><i class="cut"></i><span class="t">13:58</span><span class="d">Try a: 2 tests failed<small>thrown away</small></span></div>
+          <div class="st"><i class="cut"></i><span class="t">14:01</span><span class="d">Try c: 40% slower<small>thrown away</small></span></div>
+          <div class="st"><i class="ok"></i><span class="t">14:05</span><span class="d">Try b: all 214 tests pass</span></div>
+          <div class="st"><i class="wait"></i><span class="t">14:06</span><span class="d">Try b asked to deploy and send a note</span></div>
+        </div>
+        <div class="all">All 1,212 steps in History</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

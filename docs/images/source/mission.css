@@ -1,0 +1,69 @@
+/* Shared parts of the Mission Control wireframes in docs/INTERFACE.md, on top of base.css. Made-up data only.
+   Contrast meets WCAG 2.2 AA in both themes: the faintest text (--ink-3) is at least 4.7:1 on paper and wash, the
+   main button 6.8:1 in light and 8.9:1 in dark, and every status mark and meter fill at least 3:1 against what is
+   behind it, which is why the light theme's amber is darker here than in the README's pictures. */
+:root {
+  --amber: #a86f0c;
+  --go: #146845; --on-go: #ffffff;
+  --stop: #a13d2c; --stop-wash: #f8e8e4;
+}
+:root[data-theme="dark"] {
+  --go: #5cc795; --on-go: #0f1512;
+  --stop: #f08c78; --stop-wash: #35201b;
+}
+.card { width: 880px; padding: 30px 32px 32px; }
+.head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.head .title { margin-top: 8px; }
+.head .note { width: 220px; flex: none; text-align: right; font: 400 12.5px/1.45 var(--sans); color: var(--ink-3); }
+
+/* the app window */
+.win {
+  margin-top: 20px; background: var(--wash); border: 1px solid var(--rule); border-radius: 14px; overflow: hidden;
+  box-shadow: 0 1px 0 rgba(0,0,0,.02), 0 14px 30px -20px rgba(0,0,0,.28);
+}
+.bar { display: flex; align-items: center; gap: 6px; height: 46px; padding: 0 14px 0 18px; border-bottom: 1px solid var(--rule); background: var(--paper); }
+.app { font: 600 13px var(--sans); color: var(--ink); margin-right: 14px; display: flex; align-items: center; gap: 8px; }
+.app img { width: 18px; height: 18px; }
+.tab { font: 500 13px var(--sans); color: var(--ink-2); padding: 6px 10px; border-radius: 8px; }
+.tab.on { color: var(--ink); background: var(--wash); box-shadow: inset 0 0 0 1px var(--rule); font-weight: 600; }
+.find {
+  margin-left: auto; display: flex; align-items: center; gap: 10px; width: 250px; height: 30px; box-sizing: border-box;
+  padding: 0 6px 0 12px; border: 1px solid var(--rule); border-radius: 8px; background: var(--wash);
+  font: 400 12.5px var(--sans); color: var(--ink-3);
+}
+.kbd { margin-left: auto; font: 500 11px var(--sans); color: var(--ink-3); border: 1px solid var(--rule); border-radius: 5px; padding: 2px 6px; background: var(--paper); }
+.back { font: 500 13px var(--sans); color: var(--ink-2); margin-right: 12px; }
+.crumb { font: 600 14px var(--sans); color: var(--ink); }
+
+/* text */
+.h { font: 500 25px/1.15 var(--serif); color: var(--ink); letter-spacing: -.01em; }
+.lead { font: 400 13.5px/1.45 var(--sans); color: var(--ink-2); margin-top: 4px; }
+.label { font: 600 11px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.quiet { color: var(--ink-3); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* states: always a word, a colour and a mark of its own shape */
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 7px; border-radius: 999px; font: 600 11.5px var(--sans); white-space: nowrap; }
+.pill i { width: 8px; height: 8px; flex: none; }
+.pill.wait { background: var(--amber-wash); color: var(--amber-ink); }
+.pill.wait i { border-radius: 50%; background: var(--amber); }
+.pill.stop { background: var(--stop-wash); color: var(--stop); }
+.pill.stop i { border-radius: 2px; background: var(--stop); }
+.pill.work { background: var(--green-wash); color: var(--green-ink); }
+.pill.work i { border-radius: 50%; background: var(--green); }
+.mark { display: inline-block; width: 8px; height: 8px; flex: none; }
+.mark.work { border-radius: 50%; background: var(--green); }
+.mark.idle { border-radius: 50%; box-shadow: inset 0 0 0 1.6px var(--ink-3); }
+.mark.wait { border-radius: 50%; background: var(--amber); }
+
+/* buttons */
+.btn { display: inline-flex; align-items: center; font: 600 13px var(--sans); padding: 8px 14px; border-radius: 9px; white-space: nowrap; }
+.btn.go { background: var(--go); color: var(--on-go); }
+.btn.plain { border: 1px solid var(--rule); color: var(--ink); background: var(--paper); }
+.btn.small { font-size: 12.5px; padding: 6px 12px; }
+
+/* meters */
+.meter { height: 7px; border-radius: 4px; background: var(--rule); overflow: hidden; margin-top: 7px; }
+.meter b { display: block; height: 100%; border-radius: 4px; background: var(--green); }
+.meter b.amber { background: var(--amber); }
+.meter b.violet { background: var(--violet); }

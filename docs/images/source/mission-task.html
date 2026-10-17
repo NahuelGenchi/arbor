@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mission-task</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@400;500;600&display=block" rel="stylesheet">
+<link rel="stylesheet" href="base.css">
+<link rel="stylesheet" href="mission.css">
+<script src="theme.js"></script>
+<style>
+  .card { height: 646px; }
+  .bar .pill { margin-left: 10px; }
+  .bar .count { margin-left: auto; font: 400 12.5px var(--sans); color: var(--ink-3); }
+  .tries { padding: 14px 20px 14px 24px; border-bottom: 1px solid var(--rule); }
+  .chips { display: flex; gap: 8px; margin-top: 10px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px 6px 9px; border-radius: 9px;
+    border: 1px solid var(--rule); background: var(--paper); font: 500 12.5px var(--sans); color: var(--ink-2); white-space: nowrap;
+  }
+  .chip b { font-weight: 600; color: var(--ink); }
+  .chip.on { box-shadow: inset 0 0 0 1.5px var(--green); border-color: var(--green); }
+  .chip.cut { background: transparent; color: var(--ink-3); }
+  .chip.cut b { color: var(--ink-3); }
+  .ok { width: 14px; height: 14px; border-radius: 50%; background: var(--green); position: relative; flex: none; }
+  .ok::after { content: ""; position: absolute; left: 4.5px; top: 2.5px; width: 3px; height: 6px; border: solid var(--paper); border-width: 0 1.8px 1.8px 0; transform: rotate(45deg); }
+  .x { font: 600 13px/1 var(--sans); color: var(--ink-3); }
+  .body { display: flex; }
+  .changes { flex: 1; padding: 16px 24px 20px; }
+  .changes .label { display: flex; justify-content: space-between; }
+  .dir { margin-top: 12px; font: 600 12.5px var(--sans); color: var(--ink-2); }
+  .dir span { font-weight: 400; color: var(--ink-3); }
+  .f { display: grid; grid-template-columns: 98px 1fr auto; gap: 10px; align-items: baseline; padding: 7px 0 7px 12px; border-top: 1px solid var(--rule); margin-top: 6px; }
+  .f + .f { margin-top: 0; }
+  .fn { font: 500 12.5px var(--sans); color: var(--ink); }
+  .what { font: 400 12.5px/1.4 var(--sans); color: var(--ink-2); }
+  .what i { font-style: normal; color: var(--ink-3); }
+  .lines { font: 500 12px var(--sans); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .more { padding: 6px 0 0 12px; font: 400 12px var(--sans); color: var(--ink-3); }
+  .actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+  .actions .hint { margin-left: 6px; font: 400 12px/1.4 var(--sans); color: var(--ink-3); }
+  .side { width: 268px; flex: none; padding: 16px 20px 18px; border-left: 1px solid var(--rule); background: var(--paper); }
+  .sub { margin-top: 14px; font: 600 13px var(--sans); color: var(--ink); display: flex; align-items: center; gap: 8px; }
+  .kv { display: grid; grid-template-columns: 74px 1fr; gap: 8px; margin-top: 8px; font: 400 12.5px/1.4 var(--sans); }
+  .kv .k { color: var(--ink-3); }
+  .kv .v { color: var(--ink); }
+  .kv .meter { margin-top: 5px; }
+  .aside { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); font: 400 12px/1.5 var(--sans); color: var(--ink-3); }
+  .side .btns { display: flex; gap: 8px; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head">
+    <div>
+      <div class="eyebrow">mission control · one task</div>
+      <div class="title">what a task changes, and what it may touch</div>
+    </div>
+    <div class="note">A wireframe with made-up data.<br>No interface exists yet.</div>
+  </div>
+  <div class="win">
+    <div class="bar">
+      <span class="back">← Now</span>
+      <span class="crumb">Website speed-up</span>
+      <span class="pill work"><i></i>working</span>
+      <span class="count num">48 agents · $2 of $6 · until 18:00</span>
+    </div>
+    <div class="tries">
+      <div class="label">6 tries, each on its own copy of the site's code · 2 thrown away</div>
+      <div class="chips">
+        <span class="chip on"><span class="ok"></span><b>a</b> 31% faster</span>
+        <span class="chip"><span class="mark work"></span><b>b</b> working</span>
+        <span class="chip"><span class="mark work"></span><b>c</b> working</span>
+        <span class="chip cut"><span class="x">×</span><b>d</b> 12% slower</span>
+        <span class="chip cut"><span class="x">×</span><b>e</b> tests failed</span>
+        <span class="chip"><span class="mark work"></span><b>f</b> working</span>
+      </div>
+    </div>
+    <div class="body">
+      <div class="changes">
+        <div class="label"><span>try a · 9 files changed</span><span>kept or thrown away whole</span></div>
+        <div class="dir">pages <span>· 4 files</span></div>
+        <div class="f"><span class="fn">product.html</span><span class="what"><i>sections changed:</i> gallery, reviews</span><span class="lines">+12 −8</span></div>
+        <div class="more">and 3 more pages, the same change</div>
+        <div class="dir">scripts <span>· 3 files</span></div>
+        <div class="f"><span class="fn">gallery.js</span><span class="what"><i>new:</i> loadWhenVisible · <i>changed:</i> showGallery</span><span class="lines">+41 −6</span></div>
+        <div class="more">and 2 more scripts</div>
+        <div class="dir">styles <span>· 2 files</span></div>
+        <div class="f"><span class="fn">main.css</span><span class="what"><i>rules changed:</i> gallery, header</span><span class="lines">+9 −14</span></div>
+        <div class="more">and print.css</div>
+        <div class="actions"><span class="btn go">Keep try a</span><span class="btn plain">Throw it away</span><span class="hint">Keeping applies all 9 files at once,<br>and can be undone.</span></div>
+      </div>
+      <div class="side">
+        <div class="label">try a's room and key</div>
+        <div class="sub"><span class="mark idle"></span>room · idle since 14:20</div>
+        <div class="kv num">
+          <span class="k">processor</span><span class="v">idle, limit 1 core</span>
+          <span class="k">memory</span><span class="v">180 of 512 MB<div class="meter"><b class="violet" style="width:35%"></b></div></span>
+        </div>
+        <div class="sub">key</div>
+        <div class="kv num">
+          <span class="k">opens</span><span class="v">the site's code, to read</span>
+          <span class="k">until</span><span class="v">18:00 today</span>
+          <span class="k">may spend</span><span class="v">$1.00, $0.62 spent<div class="meter"><b style="width:62%"></b></div></span>
+        </div>
+        <div class="aside">What it changes stays in try a until you keep it. Anything that would leave the machine waits for you first.</div>
+        <div class="btns"><span class="btn plain small">Stop the room</span><span class="btn plain small">Take back the key</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
