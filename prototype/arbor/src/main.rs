@@ -17,15 +17,16 @@ arbor: try changes on a copy of a folder, then keep them or throw them away.
 
   arbor new [NAME] [--from DIR]      make a world: an instant copy of DIR (default: here)
   arbor worlds                       list the worlds
-  arbor shell NAME [--net]           open a shell inside a world
-  arbor run NAME [--net] -- CMD...   run one command inside a world
+  arbor shell NAME                   open a shell inside a world
+  arbor run NAME -- CMD...           run one command inside a world
   arbor diff NAME [--patch]          list what the world changed (--patch: show the lines)
   arbor keep NAME [--force]          apply the world's changes to the real folder
   arbor undo NAME [--force]          take kept changes back out of the real folder
   arbor discard NAME                 throw a world away
 
 The real folder does not change until `arbor keep`. Inside a world the rest of the computer is read-only,
-changes elsewhere in your home folder vanish when the command ends, and there is no network unless --net.
+changes elsewhere in your home folder vanish when the command ends, and there is no network.
+Read the diff before keeping: kept files such as .git/hooks run later on your computer.
 ";
 
 fn main() -> ExitCode {
@@ -106,6 +107,7 @@ fn new(p: &mut lexopt::Parser) -> Result<i32> {
         Some(f) => f,
         None => env::current_dir()?,
     };
+    cell::check_bwrap()?;
     let world = World::create(name.as_deref(), &from)?;
     println!(
         "made world {} over {}",
@@ -150,8 +152,8 @@ fn worlds(p: &mut lexopt::Parser) -> Result<i32> {
 }
 
 fn shell(p: &mut lexopt::Parser) -> Result<i32> {
-    let (name, flags) = name_and_flags(p, &["net"])?;
-    let world = World::load(&name)?;
+    let (name, _) = name_and_flags(p, &[])?;
+    let (world, lock) = World::load_locked(&name)?;
     let sh = env::var_os("SHELL")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| OsString::from("/bin/sh"));
@@ -160,14 +162,7 @@ fn shell(p: &mut lexopt::Parser) -> Result<i32> {
         world.name,
         paths::tilde(&world.base)
     );
-    let code = cell::run(
-        &world,
-        &[sh],
-        &Options {
-            net: flags.iter().any(|f| f == "net"),
-            interactive: true,
-        },
-    )?;
+    let code = cell::run(&world, &lock, &[sh], &Options { interactive: true })?;
     hint(&format!(
         "Back outside. See the changes with `arbor diff {}`.",
         world.name
@@ -176,10 +171,9 @@ fn shell(p: &mut lexopt::Parser) -> Result<i32> {
 }
 
 fn run_cmd(p: &mut lexopt::Parser) -> Result<i32> {
-    let (mut name, mut net, mut cmd) = (None, false, Vec::new());
+    let (mut name, mut cmd) = (None, Vec::new());
     while let Some(arg) = p.next()? {
         match arg {
-            Long("net") => net = true,
             Value(v) if name.is_none() => name = Some(v.string()?),
             Value(v) => {
                 cmd.push(v);
@@ -194,12 +188,12 @@ fn run_cmd(p: &mut lexopt::Parser) -> Result<i32> {
             "which command? usage: arbor run NAME -- CMD...",
         ));
     }
-    let world = World::load(&name)?;
+    let (world, lock) = World::load_locked(&name)?;
     cell::run(
         &world,
+        &lock,
         &cmd,
         &Options {
-            net,
             interactive: io::stdin().is_terminal(),
         },
     )
@@ -245,8 +239,8 @@ fn summary(changes: &[tree::Change]) -> String {
 
 fn keep(p: &mut lexopt::Parser) -> Result<i32> {
     let (name, flags) = name_and_flags(p, &["force"])?;
-    let mut world = World::load(&name)?;
-    let _lock = world.lock()?;
+    let (mut world, _lock) = World::load_locked(&name)?;
+    let _near = world.lock_neighbours()?;
     let kept = tree::keep(&mut world, flags.iter().any(|f| f == "force"))?;
     let applied: Vec<_> = kept
         .changes
@@ -272,8 +266,8 @@ fn keep(p: &mut lexopt::Parser) -> Result<i32> {
 
 fn undo(p: &mut lexopt::Parser) -> Result<i32> {
     let (name, flags) = name_and_flags(p, &["force"])?;
-    let mut world = World::load(&name)?;
-    let _lock = world.lock()?;
+    let (mut world, _lock) = World::load_locked(&name)?;
+    let _near = world.lock_neighbours()?;
     tree::undo(&mut world, flags.iter().any(|f| f == "force"))?;
     let changes = tree::changes(&world, &tree::entries(&world)?)?;
     println!(
@@ -287,8 +281,7 @@ fn undo(p: &mut lexopt::Parser) -> Result<i32> {
 
 fn discard(p: &mut lexopt::Parser) -> Result<i32> {
     let (name, _) = name_and_flags(p, &[])?;
-    let world = World::load(&name)?;
-    let lock = world.lock()?;
+    let (world, lock) = World::load_locked(&name)?;
     let (state, base) = (world.state, paths::tilde(&world.base));
     world.discard(&lock)?;
     match state {

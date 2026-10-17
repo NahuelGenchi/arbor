@@ -4,7 +4,7 @@ The first working piece of arbor, built as a layer on today's Linux that needs n
 
 ## Try it
 
-You need Linux with [bubblewrap](https://github.com/containers/bubblewrap) 0.10 or later, for its overlay support (on Ubuntu: `sudo apt install bubblewrap`), and Rust to build it. Install the `arbor` command into `~/.cargo/bin`:
+You need Linux with [bubblewrap](https://github.com/containers/bubblewrap) 0.10 or later, for its overlays, and Rust to build arbor. Ubuntu 26.04 ships bubblewrap 0.11 (`sudo apt install bubblewrap`). Ubuntu 24.04 ships 0.9, which has no overlays, so `arbor new` stops there and says so. Install the `arbor` command into `~/.cargo/bin`:
 
 ```sh
 cargo install --locked --path prototype/arbor
@@ -27,16 +27,20 @@ arbor discard shop                      # throw the world away
 
 - **Change the folder, but only in the world.** The world is a copy-on-write layer mounted over the folder's own path, so tools see their usual paths. Every change lands in the world, and the real folder stays as it was until `arbor keep`.
 - **Read the rest of the computer, not change it.** Everything else is read-only. Writes elsewhere in your home folder go to a throwaway layer that vanishes when the command ends.
-- **No network** unless you ask with `--net`.
-- **No way out through the session.** arbor's own folder, the other worlds, and the session's sockets (D-Bus, Wayland, agents) are hidden.
+- **No network.** It comes later, through a filter that lets in only the hosts you allow.
+- **No way out through the computer's services.** `/run`, where Docker, D-Bus, systemd and your session keep their sockets, is empty inside a world, and so is arbor's own folder with the other worlds. A command cannot make user namespaces of its own, and it gets an empty keyring instead of your session's.
 
-Not yet: files in your home folder, such as `~/.ssh`, can still be **read** from inside a world. Hiding them is the job of keys in M3, as are limits on time, CPU and memory. A world runs one command at a time.
+Not yet: files in your home folder, such as `~/.ssh`, the environment variables of the shell that started arbor, and hardware details under `/sys` can still be **read** from inside a world, and could be copied into it. Hiding them is the job of keys in M3, as are limits on time, CPU and memory. A world runs one command at a time.
+
+**Read the diff before you keep.** Kept files such as `.git/hooks` or a project's scripts run later on your computer, outside any world.
 
 ## Keep, conflicts and undo
 
 Before applying anything, `keep` checks that nothing it would overwrite or delete changed in the real folder after the world was made. If something did, it lists those paths and changes nothing. `keep --force` applies the world anyway.
 
 Every file that keep replaces or deletes is moved into the world's undo folder first, so `arbor undo` can put the real folder back exactly as it was. Undo also moves the changes back into the world, so you can keep them again later. If you edited the real folder after keeping, undo refuses. `undo --force` then moves your later edits into the world instead of losing them.
+
+Ctrl-C during a keep or an undo stops it between two changes, never halfway through one. After a stopped keep, `arbor undo` takes back what was applied; after a stopped undo, running it again finishes it. While a command runs in a world, keeping or undoing any world over the same folder waits for it: arbor says the world is busy.
 
 ## Where it keeps things
 
@@ -60,4 +64,4 @@ Ubuntu 24.04 and later stop ordinary programs from creating the Linux namespaces
 | `arbor/src/main.rs` | the `arbor` command |
 | `arbor/tests/worlds.rs` | end-to-end tests through the binary and `bwrap` |
 
-`./check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test` with the toolchain pinned in `rust-toolchain.toml`. Tests that need `bwrap` print `skipped` and pass where it cannot mount an overlay, so a green run there proves less.
+`./check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test` with the toolchain pinned in `rust-toolchain.toml`. Tests that need `bwrap` print `skipped` and pass where it cannot mount an overlay, so a green run there proves less. CI builds bubblewrap 0.11.1 from a pinned commit (its Ubuntu 24.04 runner ships 0.9) and sets `ARBOR_REQUIRE_BWRAP=1`, which turns a skip into a failure.

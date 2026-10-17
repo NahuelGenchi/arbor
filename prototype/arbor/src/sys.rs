@@ -1,5 +1,5 @@
-//! Thin wrappers for the few Linux calls the standard library lacks: locks, atomic renames, extended attributes
-//! and whiteouts. Each returns `io::Result` and never follows a final symlink.
+//! Thin wrappers for the few Linux calls the standard library lacks: locks, atomic renames, extended attributes,
+//! whiteouts, the session keyring and deferred interrupts. Path calls never follow a final symlink.
 
 use std::ffi::CString;
 use std::fs::File;
@@ -8,6 +8,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn cpath(p: &Path) -> io::Result<CString> {
     CString::new(p.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
@@ -147,4 +148,63 @@ pub fn make_whiteout(path: &Path) -> io::Result<()> {
 pub fn is_whiteout(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     meta.file_type().is_char_device() && meta.rdev() == 0
+}
+
+/// Gives the calling process a new, empty session keyring, so a command started from it cannot use the keys of
+/// the person's login session. Safe between fork and exec.
+pub fn new_session_keyring() -> io::Result<()> {
+    const KEYCTL_JOIN_SESSION_KEYRING: libc::c_long = 1;
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_keyctl,
+            KEYCTL_JOIN_SESSION_KEYRING,
+            std::ptr::null::<libc::c_char>(),
+        )
+    };
+    if ret < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+const DEFERRED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
+
+extern "C" fn note_interrupt(_: libc::c_int) {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
+/// While held, Ctrl-C, a closed terminal or `kill` only raise a flag that `interrupted` reads, so keep and undo
+/// stop between two steps with their journal in order, never halfway through one. Signals ignored before (as
+/// under `nohup`) stay ignored.
+pub struct Interrupts {
+    old: [libc::sighandler_t; 3],
+}
+
+pub fn defer_interrupts() -> Interrupts {
+    INTERRUPTED.store(false, Ordering::SeqCst);
+    let handler = note_interrupt as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    let old = DEFERRED.map(|sig| unsafe {
+        let old = libc::signal(sig, handler);
+        if old == libc::SIG_IGN {
+            libc::signal(sig, libc::SIG_IGN);
+        }
+        old
+    });
+    Interrupts { old }
+}
+
+impl Interrupts {
+    pub fn interrupted(&self) -> bool {
+        INTERRUPTED.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Interrupts {
+    fn drop(&mut self) {
+        for (sig, old) in DEFERRED.into_iter().zip(self.old) {
+            unsafe { libc::signal(sig, old) };
+        }
+    }
 }

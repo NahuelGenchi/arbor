@@ -33,15 +33,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The end-to-end tests run commands in worlds through bubblewrap. Ubuntu's runner blocks unprivileged user
-      # namespaces through AppArmor; this throwaway VM lifts that, so the tests run instead of skipping.
-      - name: Install bubblewrap and allow user namespaces on the runner
+      # The end-to-end tests run commands in worlds through bubblewrap 0.10 or later (for overlays). Ubuntu 24.04
+      # ships 0.9, so the job builds 0.11.1, the version Ubuntu 26.04 ships, from a pinned commit. The runner's
+      # AppArmor blocks unprivileged user namespaces for a bwrap it has no profile for; this throwaway VM lifts
+      # that, so the tests run instead of skipping.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: containers/bubblewrap
+          ref: 124c4cdf4321f63ef17a1cb0ce8f9dd45bd7adbe # v0.11.1
+          path: bubblewrap
+          persist-credentials: false
+      - name: Build bubblewrap and allow user namespaces on the runner
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends meson ninja-build libcap-dev pkg-config
+          meson setup bubblewrap/_build bubblewrap -Dman=disabled -Dselinux=disabled -Dtests=false \
+            -Dbash_completion=disabled -Dzsh_completion=disabled
+          meson compile -C bubblewrap/_build
+          sudo meson install -C bubblewrap/_build
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-          bwrap --version
+          command -v bwrap && bwrap --version
       - name: Install the pinned Rust toolchain
         working-directory: prototype
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rustfmt,clippy

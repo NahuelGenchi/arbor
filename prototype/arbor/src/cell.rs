@@ -2,24 +2,22 @@
 //!
 //! Ubuntu 24.04 and later block plain user namespaces for ordinary programs, but allow `bwrap`. So a cell is a
 //! `bwrap` process: the computer read-only, the world's overlay mounted over its base folder's own path so tools
-//! see the usual paths, a throwaway layer over the rest of the home folder (writes there vanish at exit), Arbor's
-//! own state and the session's sockets hidden, and no network unless asked for. Sealing the home folder, keys and
-//! limits come in M3.
+//! see the usual paths, a throwaway layer over the rest of the home folder (writes there vanish at exit), `/run`
+//! and Arbor's own state hidden, no network, no new user namespaces and an empty session keyring. Sealing the
+//! home folder, keys and limits come in M3; network through a filter after that.
 
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Context, Error, Result};
-use crate::paths;
-use crate::world::{State, World};
+use crate::world::{Lock, State, World};
+use crate::{paths, sys};
 
 pub struct Options {
-    /// Share the computer's network with the cell.
-    pub net: bool,
     /// The command will talk to the person at the terminal.
     pub interactive: bool,
 }
@@ -37,6 +35,37 @@ pub fn bwrap() -> Result<PathBuf> {
     which("bwrap").ok_or_else(|| {
         Error::new("Arbor needs bubblewrap (the `bwrap` command) to run commands in a world; on Ubuntu: sudo apt install bubblewrap")
     })
+}
+
+/// The first bubblewrap that mounts overlays (`--overlay-src`).
+const BWRAP_MIN: (u32, u32) = (0, 10);
+
+/// Reads `bubblewrap 0.11.1` as (0, 11).
+fn bwrap_version(text: &str) -> Option<(u32, u32)> {
+    let mut parts = text.split_whitespace().nth(1)?.split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// Checks once, when a world is made, that bubblewrap can mount its overlay, so an old one is named in plain words
+/// instead of failing later with "Unknown option --overlay-src".
+pub fn check_bwrap() -> Result<()> {
+    let bwrap = bwrap()?;
+    let out = Command::new(&bwrap)
+        .arg("--version")
+        .output()
+        .ctx(|| format!("cannot run {}", bwrap.display()))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    match bwrap_version(&text) {
+        Some(v) if v >= BWRAP_MIN => Ok(()),
+        _ => Err(Error::new(format!(
+            "Arbor needs bubblewrap {}.{} or later, for overlays, and {} is \"{}\". \
+             Ubuntu 26.04 ships 0.11 (sudo apt install bubblewrap); Ubuntu 24.04's 0.9 is too old.",
+            BWRAP_MIN.0,
+            BWRAP_MIN.1,
+            bwrap.display(),
+            text.trim()
+        ))),
+    }
 }
 
 /// TIOCSTI lets a process type into its terminal. Linux 6.2+ can switch it off for everyone; where it is still
@@ -68,6 +97,10 @@ pub fn bwrap_args(
         &"/proc",
         &"--tmpfs",
         &"/tmp",
+        // /run holds the computer's and the session's sockets: Docker (which is root), D-Bus, systemd, snapd, the
+        // session bus, Wayland and agents. Each is a way out of the cell.
+        &"--tmpfs",
+        &"/run",
     ]);
     // Writes anywhere else in the home folder land in a layer that is thrown away when the cell ends.
     if let Some(home) = paths::home().and_then(|h| fs::canonicalize(h).ok())
@@ -84,19 +117,22 @@ pub fn bwrap_args(
         &world.work(),
         &world.base,
     ]);
-    // What the cell must not see: every world's changes and the session's sockets (D-Bus, Wayland, agents).
+    // What the cell must not see: every world's changes, and the session's sockets if they live outside /run.
     let state = fs::canonicalize(paths::state_dir()?)?;
     push(&[&"--tmpfs", &state]);
-    let runtime = env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })));
-    if runtime.is_dir() {
+    if let Some(runtime) = env::var_os("XDG_RUNTIME_DIR")
+        .and_then(|r| fs::canonicalize(r).ok())
+        .filter(|r| r.is_dir() && !r.starts_with("/run"))
+    {
         push(&[&"--tmpfs", &runtime]);
     }
-    push(&[&"--unshare-all", &"--die-with-parent"]);
-    if opts.net {
-        push(&[&"--share-net"]);
-    }
+    // No network, and no user namespaces of its own: those would reopen what bwrap closed.
+    push(&[
+        &"--unshare-all",
+        &"--unshare-user",
+        &"--disable-userns",
+        &"--die-with-parent",
+    ]);
     if !opts.interactive || tiocsti_possible() {
         push(&[&"--new-session"]);
     }
@@ -123,8 +159,9 @@ pub fn start_dir(world: &World) -> PathBuf {
     }
 }
 
-/// Runs `cmd` in the world and returns its exit code (128 + signal when it was killed).
-pub fn run(world: &World, cmd: &[OsString], opts: &Options) -> Result<i32> {
+/// Runs `cmd` in the world and returns its exit code (128 + signal when it was killed). The caller holds the
+/// world's lock and loaded the world after taking it.
+pub fn run(world: &World, _lock: &Lock, cmd: &[OsString], opts: &Options) -> Result<i32> {
     if world.state != State::Open {
         return Err(Error::refused(format!(
             "world '{}' was kept; run `arbor undo {}` to reopen it",
@@ -138,12 +175,18 @@ pub fn run(world: &World, cmd: &[OsString], opts: &Options) -> Result<i32> {
         )));
     }
     let bwrap = bwrap()?;
-    let _lock = world.lock()?;
     let args = bwrap_args(world, cmd, &start_dir(world), opts)?;
-    let mut child = Command::new(bwrap)
-        .args(&args)
-        .spawn()
-        .ctx(|| "cannot start bwrap".to_string())?;
+    let mut command = Command::new(bwrap);
+    command.args(&args);
+    // The login session's keyring stays outside. Where keyctl is blocked (as in Docker's default profile), the
+    // cell cannot reach a keyring either, so a failure is ignored.
+    unsafe {
+        command.pre_exec(|| {
+            let _ = sys::new_session_keyring();
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().ctx(|| "cannot start bwrap".to_string())?;
     // Ctrl-C belongs to the command inside: Arbor waits for it instead of dying first and leaving it behind.
     let (old_int, old_quit) = unsafe {
         (
@@ -160,4 +203,15 @@ pub fn run(world: &World, cmd: &[OsString], opts: &Options) -> Result<i32> {
     Ok(status
         .code()
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reads_bwrap_versions() {
+        assert_eq!(super::bwrap_version("bubblewrap 0.11.1\n"), Some((0, 11)));
+        assert_eq!(super::bwrap_version("bubblewrap 0.9.0"), Some((0, 9)));
+        assert!(super::bwrap_version("bubblewrap 0.9.0") < Some(super::BWRAP_MIN));
+        assert_eq!(super::bwrap_version("garbage"), None);
+    }
 }

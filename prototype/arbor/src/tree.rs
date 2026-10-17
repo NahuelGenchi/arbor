@@ -3,8 +3,10 @@
 //! reads them (diff), applies them to the base (keep) and takes them back (undo).
 //!
 //! Keep moves each change into the base with an atomic rename where it can, and moves every original it replaces
-//! or deletes into the world's `undo/files`, writing one journal line per step. Undo replays the journal backwards
-//! and restores the world's `up` exactly, whiteouts and opaque folders included, so a kept world can be kept again.
+//! or deletes into the world's `undo/files`, writing one journal line per step. Undo replays the journal backwards,
+//! cutting each line off once its step is undone, and restores the world's `up` exactly, whiteouts and opaque
+//! folders included, so a kept world can be kept again. Both stop between steps, never inside one, when
+//! interrupted, so the journal always lists exactly what is still applied.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -419,8 +421,19 @@ pub struct Kept {
     pub skipped: usize,
 }
 
+/// The error for a keep or undo stopped by Ctrl-C, a closed terminal or `kill`.
+fn interrupted(msg: String) -> Error {
+    Error { msg, code: 130 }
+}
+
 /// Applies the world to its base. The caller holds the world's lock.
 pub fn keep(world: &mut World, force: bool) -> Result<Kept> {
+    let interrupts = sys::defer_interrupts();
+    keep_until(world, force, &mut || interrupts.interrupted())
+}
+
+/// Keep, asking `stop` before each step whether to stop there.
+fn keep_until(world: &mut World, force: bool, stop: &mut dyn FnMut() -> bool) -> Result<Kept> {
     if world.state != State::Open {
         return Err(Error::refused(format!(
             "world '{}' was already kept",
@@ -459,6 +472,9 @@ pub fn keep(world: &mut World, force: bool) -> Result<Kept> {
         .create(true)
         .append(true)
         .open(world.undo_dir().join("journal.jsonl"))?;
+    if stop() {
+        return Err(interrupted("keep was interrupted; nothing was kept".into()));
+    }
     // From the first step on the world counts as kept, so a failure part-way can still be undone.
     world.state = State::Kept;
     world.kept_ns = Some(world::stamp_now());
@@ -466,16 +482,24 @@ pub fn keep(world: &mut World, force: bool) -> Result<Kept> {
 
     let mut skipped = 0;
     let mut failure = None;
-    for e in &entries {
+    for (done, e) in entries.iter().enumerate() {
+        if done > 0 && stop() {
+            failure = Some(interrupted(format!(
+                "keep was interrupted after {done} of {} changes; `arbor undo {}` takes those back out",
+                entries.len(),
+                world.name
+            )));
+            break;
+        }
         match apply_entry(e, &up, &base, &files, &mut journal) {
             Ok(true) => {}
             Ok(false) => skipped += 1,
             Err(err) => {
-                failure = Some(format!(
+                failure = Some(Error::new(format!(
                     "keep stopped at {}: {err}\nWhat was applied so far is in the journal; `arbor undo {}` puts it back.",
                     e.path().display(),
                     world.name
-                ));
+                )));
                 break;
             }
         }
@@ -484,8 +508,8 @@ pub fn keep(world: &mut World, force: bool) -> Result<Kept> {
     // Stamped after the last step, so undo can tell keep's own renames from later edits.
     world.kept_ns = Some(world::stamp_now());
     world.save()?;
-    if let Some(msg) = failure {
-        return Err(Error::new(msg));
+    if let Some(err) = failure {
+        return Err(err);
     }
     prune_empty(&up, true)?;
     Ok(Kept { changes, skipped })
@@ -538,22 +562,29 @@ fn apply_entry(
     Ok(true)
 }
 
-fn read_journal(world: &World) -> Result<Vec<Step>> {
+/// The journal's steps, each with the offset where its line starts, so undo can cut a line off once its step is
+/// undone.
+fn read_journal(world: &World) -> Result<Vec<(u64, Step)>> {
     let path = world.undo_dir().join("journal.jsonl");
     let file = match File::open(&path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e).ctx(|| format!("cannot read {}", path.display())),
     };
-    let mut steps = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if !line.trim().is_empty() {
-            steps.push(
-                serde_json::from_str(&line)
-                    .ctx(|| format!("damaged journal line in {}", path.display()))?,
-            );
+    let (mut steps, mut at, mut reader) = (Vec::new(), 0u64, BufReader::new(file));
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            break;
         }
+        if !line.trim().is_empty() {
+            let step = serde_json::from_str(&line)
+                .ctx(|| format!("damaged journal line in {}", path.display()))?;
+            steps.push((at, step));
+        }
+        at += n as u64;
     }
     Ok(steps)
 }
@@ -562,6 +593,12 @@ fn read_journal(world: &World) -> Result<Vec<Step>> {
 /// world's lock. Refuses when the base changed since the keep, unless `force`, which moves those later
 /// versions into the world instead of losing them.
 pub fn undo(world: &mut World, force: bool) -> Result<usize> {
+    let interrupts = sys::defer_interrupts();
+    undo_until(world, force, &mut || interrupts.interrupted())
+}
+
+/// Undo, asking `stop` before each step whether to stop there.
+fn undo_until(world: &mut World, force: bool, stop: &mut dyn FnMut() -> bool) -> Result<usize> {
     if world.state != State::Kept {
         return Err(Error::refused(format!(
             "world '{}' has not been kept; there is nothing to undo",
@@ -576,7 +613,7 @@ pub fn undo(world: &mut World, force: bool) -> Result<usize> {
         world.undo_dir().join("files"),
     );
     let mut problems = Vec::new();
-    for s in &steps {
+    for (_, s) in &steps {
         let b = base.join(&s.path);
         let present = lstat(&b)?.is_some();
         let why = match s.op {
@@ -605,7 +642,23 @@ pub fn undo(world: &mut World, force: bool) -> Result<usize> {
             }
         )));
     }
-    for s in steps.iter().rev() {
+    let journal = match steps.is_empty() {
+        true => None,
+        false => Some(
+            OpenOptions::new()
+                .write(true)
+                .open(world.undo_dir().join("journal.jsonl"))?,
+        ),
+    };
+    for (left, (at, s)) in steps.iter().enumerate().rev() {
+        if stop() {
+            return Err(interrupted(format!(
+                "undo was interrupted with {} of {} changes still kept; run `arbor undo {}` again to finish",
+                left + 1,
+                steps.len(),
+                world.name
+            )));
+        }
         let (u, b, f) = (up.join(&s.path), base.join(&s.path), files.join(&s.path));
         let res = (|| -> io::Result<()> {
             match s.op {
@@ -629,6 +682,10 @@ pub fn undo(world: &mut World, force: bool) -> Result<usize> {
             }
         })();
         res.map_err(|e| Error::new(format!("undo stopped at {}: {e}", s.path.display())))?;
+        // The step is undone: its line goes, so an undo cut short here resumes after it.
+        if let Some(j) = &journal {
+            j.set_len(*at)?;
+        }
     }
     world::remove_tree(&world.undo_dir())?;
     world.state = State::Open;
@@ -854,6 +911,42 @@ mod tests {
         // Undo leaves the world ready to be kept again, with the same result.
         keep(&mut world, false).unwrap();
         assert_eq!(snapshot(&world.base), base_kept);
+    }
+
+    #[test]
+    fn an_interrupted_keep_or_undo_stops_between_steps_and_can_be_finished() {
+        let t = Temp::new("stop");
+        let mut world = fixture(&t);
+        let (base_before, up_before) = (snapshot(&world.base), snapshot(&world.up()));
+        // Lets `n` steps through, then asks to stop.
+        let stop_after = |n: usize| {
+            let mut asked = 0;
+            move || {
+                asked += 1;
+                asked > n
+            }
+        };
+
+        let Err(err) = keep_until(&mut world, false, &mut stop_after(3)) else {
+            panic!("keep should have stopped");
+        };
+        assert_eq!(err.code, 130);
+        assert_eq!(world.state, State::Kept);
+        assert_eq!(read_journal(&world).unwrap().len(), 3);
+
+        let err = undo_until(&mut world, false, &mut stop_after(1))
+            .expect_err("undo should have stopped");
+        assert_eq!(err.code, 130);
+        assert_eq!(
+            read_journal(&world).unwrap().len(),
+            2,
+            "an undone step stayed in the journal"
+        );
+
+        undo(&mut world, false).unwrap();
+        assert_eq!(world.state, State::Open);
+        assert_eq!(snapshot(&world.base), base_before);
+        assert_eq!(snapshot(&world.up()), up_before);
     }
 
     #[test]

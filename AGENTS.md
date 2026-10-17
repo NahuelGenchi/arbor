@@ -26,7 +26,7 @@ Never describe something as working, built or measured unless a recorded check e
 
 - `bench/check.sh` runs the source checks (`bash -n`, `python3 -m py_compile`, `node --check`, `gcc -fsyntax-only`). It needs Python 3.14+, Node.js and gcc, reads no personal data and keeps compiled Python files out of `bench/`.
 - `bench/run.sh` runs the whole suite, about 2½ minutes; `ONLY="boot search" bench/run.sh` or `SKIP="storage" bench/run.sh` for a subset. `bench/README.md` lists what it needs, reads and touches.
-- `prototype/check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. The end-to-end tests need `bwrap` 0.10+ and skip with a note where it cannot mount an overlay. `cargo build --release` in `prototype/` builds `target/release/arbor`; `prototype/README.md` shows how to use it.
+- `prototype/check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. The end-to-end tests need `bwrap` 0.10+ and skip with a note where it cannot mount an overlay; CI builds 0.11.1 and sets `ARBOR_REQUIRE_BWRAP=1`, so there they must run. `cargo build --release` in `prototype/` builds `target/release/arbor`; `prototype/README.md` shows how to use it.
 
 ## Working well here
 

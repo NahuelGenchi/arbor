@@ -3,6 +3,7 @@
 //! `ARBOR_REQUIRE_BWRAP` is set, as in CI, where that is a failure.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -140,35 +141,28 @@ fn a_world_changes_nothing_until_kept() {
 }
 
 #[test]
-fn a_cell_has_no_network_and_cannot_see_arbor_or_keep_home_writes() {
+fn a_cell_is_sealed() {
     let Some(e) = Env::new("seal") else { return };
+    fs::set_permissions(&e.base, fs::Permissions::from_mode(0o750)).unwrap();
     e.ok(&["new", "demo", "--from", e.base.to_str().unwrap()]);
     let leak = format!(".arbor-it-leak-{}", std::process::id());
+    // In order: network interfaces (/proc/net/dev lists only loopback), what is left of /run (the computer's
+    // sockets) and of Arbor's state, whether a user namespace can be made, the mode of the world's root, a
+    // write to the home folder, and the world's name.
     let script = format!(
-        "grep -c : /proc/net/dev; ls -A \"$ARBOR_HOME\" | wc -l; echo x > \"$HOME/{leak}\" && echo wrote; echo $ARBOR_WORLD"
+        "grep -c : /proc/net/dev; ls -A /run | wc -l; ls -A \"$ARBOR_HOME\" | wc -l; \
+         unshare -U true 2>/dev/null && echo userns || echo no-userns; stat -c %a .; \
+         echo x > \"$HOME/{leak}\" && echo wrote; echo $ARBOR_WORLD"
     );
     let out = e.ok(&["run", "demo", "--", "sh", "-c", &script]);
     let home = PathBuf::from(std::env::var_os("HOME").unwrap());
     let leaked = home.join(&leak).exists();
     let _ = fs::remove_file(home.join(&leak));
-    // /proc/net/dev lists the namespace's interfaces: only loopback.
-    assert_eq!(out, "1\n0\nwrote\ndemo\n", "unexpected cell output");
-    assert!(!leaked, "a write to the home folder escaped the cell");
-    let with_net = e.ok(&[
-        "run",
-        "demo",
-        "--net",
-        "--",
-        "grep",
-        "-c",
-        ":",
-        "/proc/net/dev",
-    ]);
-    assert_ne!(
-        with_net.trim(),
-        "1",
-        "--net should share the computer's interfaces"
+    assert_eq!(
+        out, "1\n0\n0\nno-userns\n750\nwrote\ndemo\n",
+        "unexpected cell output"
     );
+    assert!(!leaked, "a write to the home folder escaped the cell");
 }
 
 #[test]
@@ -192,6 +186,13 @@ fn exit_codes_and_refusals() {
         Some(2)
     );
     assert_eq!(e.arbor(&["frobnicate"]).status.code(), Some(2));
+    assert_eq!(
+        e.arbor(&["run", "demo", "--net", "--", "true"])
+            .status
+            .code(),
+        Some(2),
+        "worlds have no network option"
+    );
     assert_eq!(e.arbor(&["diff", "nope"]).status.code(), Some(2));
     // A world over a folder that holds Arbor's own state is refused (overlay layers may not nest).
     assert_eq!(
@@ -211,6 +212,12 @@ fn exit_codes_and_refusals() {
 fn keep_waits_for_a_running_command() {
     let Some(e) = Env::new("busy") else { return };
     e.ok(&["new", "demo", "--from", e.base.to_str().unwrap()]);
+    e.ok(&[
+        "new",
+        "beside",
+        "--from",
+        e.base.join("src").to_str().unwrap(),
+    ]);
     let mut running = Command::new(env!("CARGO_BIN_EXE_arbor"))
         .args(["run", "demo", "--", "sh", "-c", "touch started && sleep 3"])
         .env("ARBOR_HOME", &e.home)
@@ -230,6 +237,14 @@ fn keep_waits_for_a_running_command() {
         "keep must refuse while a command runs"
     );
     assert!(String::from_utf8_lossy(&busy.stderr).contains("busy"));
+    // Keeping another world over the same folder would change it under the running command.
+    let near = e.arbor(&["keep", "beside"]);
+    assert_eq!(
+        near.status.code(),
+        Some(3),
+        "keep must wait for a world over the same folder"
+    );
+    assert!(String::from_utf8_lossy(&near.stderr).contains("world 'demo'"));
     assert!(running.wait().unwrap().success());
     e.ok(&["keep", "demo"]);
     assert!(e.base.join("started").exists());

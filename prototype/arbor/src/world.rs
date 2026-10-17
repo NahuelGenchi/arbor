@@ -4,11 +4,12 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Context, Error, Result};
+use crate::error::{self, Context, Error, Result};
 use crate::{paths, sys};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +39,8 @@ pub struct World {
     pub dir: PathBuf,
 }
 
-/// Held while a command runs in a world or while it is kept, undone or discarded; released when dropped.
+/// Held while a command runs in a world, while it is kept, undone or discarded, and while a world over the same
+/// folder is kept or undone; released when dropped.
 pub struct Lock {
     _file: File,
 }
@@ -188,6 +190,9 @@ impl World {
             dir,
         };
         fs::create_dir(world.up())?;
+        // The overlay's root shows `up`'s mode, so it starts as the base's.
+        let mode = fs::metadata(&world.base)?.permissions().mode() & 0o7777;
+        fs::set_permissions(world.up(), fs::Permissions::from_mode(mode))?;
         fs::create_dir(world.work())?;
         File::create(world.dir.join("lock"))?;
         world.save()?;
@@ -278,11 +283,44 @@ impl World {
         match sys::flock(&file, true, false) {
             Ok(()) => Ok(Lock { _file: file }),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(Error::refused(format!(
-                "world '{}' is busy: a command is still running in it, or it is being kept",
+                "world '{}' is busy: a command is running in it, or a keep or undo is changing its folder; \
+                 try again when that ends",
                 self.name
             ))),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Takes the world's lock, then reads it again, so what the caller acts on cannot have changed in between.
+    pub fn load_locked(name: &str) -> Result<(World, Lock)> {
+        let lock = World::load(name)?.lock()?;
+        Ok((World::load(name)?, lock))
+    }
+
+    /// Locks every other world whose base is this world's base, inside it or around it. Keep and undo change
+    /// those worlds' lower layer, which overlayfs does not allow while a command runs in them.
+    pub fn lock_neighbours(&self) -> Result<Vec<Lock>> {
+        let mut locks = Vec::new();
+        for other in World::list()? {
+            let near = paths::contains(&self.base, &other.base)
+                || paths::contains(&other.base, &self.base);
+            if other.name == self.name || !near {
+                continue;
+            }
+            match other.lock() {
+                Ok(lock) => locks.push(lock),
+                Err(e) if e.code == error::REFUSED => {
+                    return Err(Error::refused(format!(
+                        "world '{}' over {} is busy, and this would change the folder under it; \
+                         try again when it is done",
+                        other.name,
+                        paths::tilde(&other.base)
+                    )));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(locks)
     }
 
     /// Deletes the world and everything it holds. Its base is not touched.
