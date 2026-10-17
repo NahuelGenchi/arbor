@@ -22,6 +22,6 @@ for f in lib/*.py sections/*.py; do check "py_compile $f" python3 -m py_compile 
 
 for f in lib/*.js sections/*.js; do check "node --check $f" node --check "$f"; done
 
-check "gcc -fsyntax-only src/hello.c" gcc -fsyntax-only src/hello.c
+for f in src/*.c; do check "gcc -fsyntax-only $f" gcc -fsyntax-only "$f"; done
 
 exit "$fail"

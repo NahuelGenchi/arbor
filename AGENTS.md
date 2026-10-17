@@ -14,9 +14,9 @@ Never describe something as working, built or measured unless a recorded check e
 | `bench/run.sh` | Runs the suite and writes `bench/results/<date>_<host>.{md,json,log}` |
 | `bench/config.sh` | Every path and input, each overridable from the environment |
 | `bench/check.sh` | Source checks: every script parses |
-| `bench/sections/` | One script per area: `memstate`, `boot`, `runtimes`, `cells`, `pycell`, `search`, `heap`, `transcripts` (JavaScript), `formats`, `storage`, and `arbor`, which builds the prototype into its temp folder and measures it |
+| `bench/sections/` | One script per area: `memstate`, `boot`, `runtimes`, `cells`, `pycell`, `search`, `heap`, `transcripts` (JavaScript), `formats`, `storage`, `arbor`, which builds the prototype into its temp folder and measures it, and `screen`, the still-screen cost of the compositor and the frame pacing of a test window |
 | `bench/lib/` | Shared helpers, the M reference values (`reference.py`), the report writer, the machine stamp, and an o200k token counter (`o200k.js`) |
-| `bench/src/` | The static C and Rust programs timed by `runtimes` |
+| `bench/src/` | The static C and Rust programs timed by `runtimes`, and `frames.c`, the static Wayland test client of `screen` |
 | `bench/results/` | Run reports, ignored by git |
 | `prototype/` | The first prototype in Rust: one binary, `arbor` (`arbor/src/`: `world`, `tree` for diff/keep/undo, `cell` for sealed `bwrap` cells, `seccomp` for the kernel calls a cell may not make, `cgroup` for limits, `key` for keys, `outbox` for effects and budgets, `ledger`), end-to-end tests in `arbor/tests/`, and `check.sh`. The toolchain is pinned in `rust-toolchain.toml` |
 | `docs/` | Tracking guide and README images |
@@ -26,7 +26,7 @@ Never describe something as working, built or measured unless a recorded check e
 ## Commands
 
 - `bench/check.sh` runs the source checks (`bash -n`, `python3 -m py_compile`, `node --check`, `gcc -fsyntax-only`). It needs Python 3.14+, Node.js and gcc, reads no personal data and keeps compiled Python files out of `bench/`.
-- `bench/run.sh` runs the whole suite, about 2½ minutes; `ONLY="boot search" bench/run.sh` or `SKIP="storage" bench/run.sh` for a subset. `bench/README.md` lists what it needs, reads and touches.
+- `bench/run.sh` runs the whole suite, about 2½ minutes plus 2 for `screen`, which needs the PC left alone; `ONLY="boot search" bench/run.sh` or `SKIP="storage" bench/run.sh` for a subset. `bench/README.md` lists what it needs, reads and touches.
 - `prototype/check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. The end-to-end tests need `bwrap` 0.10+, and the limit tests a systemd user manager; each skips with a note where it is missing. CI builds bubblewrap 0.11.1, starts a user manager, and sets `ARBOR_REQUIRE_BWRAP=1` and `ARBOR_REQUIRE_CGROUPS=1`, so there they must run. `cargo build --release` in `prototype/` builds `target/release/arbor`; `prototype/README.md` shows how to use it.
 
 ## Working well here
@@ -34,7 +34,7 @@ Never describe something as working, built or measured unless a recorded check e
 - Start from the active issue, then read only the code involved.
 - The suite needs no root and must stay that way: namespaces are unprivileged, the overlay lives in a private mount namespace, temp files go in one `mktemp -d` folder removed on exit, and Docker runs with `--rm --pull never --network none`.
 - The prototype needs no root either. On Ubuntu 24.04+ AppArmor blocks plain `unshare` for ordinary programs but allows `bwrap`, so cells go through `bwrap`; check new sandbox code from an ordinary process (`systemd-run --user --pipe --wait …`), not only from an agent session, whose AppArmor profile may allow more. `arbor` writes only its state folder (`$ARBOR_HOME`, else `~/.local/share/arbor`), on keep or undo the world's base folder, and its own cgroups under `arbor.slice` in the user's systemd manager (held by `arbor serve`, a transient user service); `arbor release` also runs, as the user, an effect's command that a person approved. Tests set `ARBOR_HOME` and `HOME` to temp folders.
-- It reads `$HOME` (names only), the projects folder, the transcripts, `/boot` and, to build the prototype offline, the crates and config in `~/.cargo`, and never writes outside its temp folder and `bench/results/`: cargo gets a `CARGO_HOME` in the temp folder. The `arbor` section starts `arbor serve` when it is not running and stops it again, also when the run is interrupted. Only aggregates leave the transcript pass. Keep all of that true.
+- It reads `$HOME` (names only), the projects folder, the transcripts, `/boot` and, to build the prototype offline, the crates and config in `~/.cargo`, and never writes outside its temp folder and `bench/results/`: cargo gets a `CARGO_HOME` in the temp folder. The `arbor` section starts `arbor serve` when it is not running and stops it again, also when the run is interrupted. The `screen` section reads only process and thread names and timings, never window titles or screen contents; its test window, cells and memory spike end with it, also when the run is interrupted. Only aggregates leave the transcript pass. Keep all of that true.
 - A run on a busy machine reads slow: note the load average and the busiest processes, as the report header does, and compare runs only on the same PC under the same conditions (`bench/README.md`, *Reading the report*).
 - A new number in `OPTIMIZATION.md` or the README is marked **M**, links its source, or says **est.**. A new M number gets a row in the suite, with its reference value in `bench/lib/reference.py`.
 

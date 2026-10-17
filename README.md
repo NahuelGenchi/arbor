@@ -192,7 +192,7 @@ A sealed command starts about 24 times faster than the Docker container above (1
 
 ## Measure your own PC
 
-The measurements are a suite of scripts you can run on a Linux PC. It needs no administrator rights, only reads your files, writes nothing but a temporary folder and its own report, and takes about two and a half minutes. With Rust set up for the prototype, it also builds the prototype in that temporary folder and measures it the same way, in about 11 seconds more; if the prototype's background service is not running, it starts it for those rows and stops it again:
+The measurements are a suite of scripts you can run on a Linux PC. It needs no administrator rights, only reads your files, writes nothing but a temporary folder and its own report, and takes about two and a half minutes. With Rust set up for the prototype, it also builds the prototype in that temporary folder and measures it the same way, in about 11 seconds more; if the prototype's background service is not running, it starts it for those rows and stops it again. Last, on a Wayland desktop, it spends about two minutes on the screen: for one minute nothing should touch the PC, then a small window of its own animates, first on a quiet PC and then with every core busy and most of the free memory taken:
 
 ```sh
 git clone https://github.com/NahuelGenchi/arbor.git
