@@ -1,4 +1,5 @@
-"""Helpers shared by the bench sections: result records, process timing, memory readings and namespace access.
+"""Helpers shared by the bench sections: result records, process timing, memory readings, namespace access and
+the repository the git rows read.
 
 Every section appends one JSON object per measurement to $BENCH_RESULTS:
   {"key": ..., "value": number|string|null, "ctx": {...}, "err": "..."}
@@ -219,3 +220,24 @@ def timed(fn, n):
         r = fn()
         ts.append((time.perf_counter() - t0) * 1000)
     return statistics.median(ts), r, ts
+
+
+def git_target():
+    """(repo, ref): $GIT_LOG_REPO if set, else the repo under $PROJECTS_DIR that holds $GIT_LOG_REF,
+    else the most recently committed repo there at HEAD."""
+    ref, repo = env('GIT_LOG_REF', 'HEAD'), env('GIT_LOG_REPO')
+    if repo:
+        return repo, ref
+    root = env('PROJECTS_DIR')
+    if not root or not os.path.isdir(root):
+        return None, ref
+    repos = [os.path.join(root, d) for d in sorted(os.listdir(root)) if os.path.isdir(os.path.join(root, d, '.git'))]
+    for r in repos:
+        if subprocess.run(['git', '-C', r, 'cat-file', '-e', f'{ref}^{{commit}}'], capture_output=True).returncode == 0:
+            return r, ref
+    latest = []
+    for r in repos:
+        t = subprocess.run(['git', '-C', r, 'log', '-1', '--format=%ct'], capture_output=True, text=True).stdout.strip()
+        if t:
+            latest.append((int(t), r))
+    return (max(latest)[1], 'HEAD') if latest else (None, ref)
