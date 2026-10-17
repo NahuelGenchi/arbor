@@ -1,16 +1,17 @@
 //! Thin wrappers for the few Linux calls the standard library lacks: locks, atomic renames, extended attributes,
-//! whiteouts, the session keyring, process and folder watches, and deferred interrupts. Path calls never follow a
-//! final symlink.
+//! whiteouts, the session keyring, process and folder watches, threads that leave signals to the main one, and
+//! deferred interrupts. Path calls never follow a final symlink.
 
 use std::ffi::CString;
 use std::fs::File;
 use std::io;
-use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 fn cpath(p: &Path) -> io::Result<CString> {
@@ -226,11 +227,60 @@ pub fn readable_within(fd: BorrowedFd, timeout: Duration) -> io::Result<bool> {
     }
 }
 
+/// Waits until one of `fds` is readable or hung up, or until `timeout` passes. Returns which are.
+pub fn ready(fds: &[BorrowedFd], timeout: Option<Duration>) -> io::Result<Vec<bool>> {
+    let mut polled: Vec<libc::pollfd> = fds
+        .iter()
+        .map(|fd| libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    let ms = timeout.map_or(-1, |t| t.as_millis().min(i32::MAX as u128) as i32);
+    loop {
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, ms) };
+        if n >= 0 {
+            return Ok(polled.iter().map(|p| p.revents != 0).collect());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
 /// A pipe whose ends close on exec: (read, write).
 pub fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
     check(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) })?;
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+/// Starts a thread with every signal blocked. Signals sent to arbor then reach its main thread, which waits for
+/// them (see `Interrupts`), and a write to a socket whose reader went away fails with an error instead of killing
+/// arbor with SIGPIPE.
+pub fn spawn_quiet<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> io::Result<JoinHandle<T>> {
+    unsafe {
+        let mut all: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&mut all);
+        let mut before: libc::sigset_t = std::mem::zeroed();
+        libc::pthread_sigmask(libc::SIG_SETMASK, &all, &mut before);
+        // The new thread starts with the mask of the one that makes it.
+        let thread = std::thread::Builder::new().spawn(f);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &before, std::ptr::null_mut());
+        thread
+    }
+}
+
+/// What this process's finished children have used so far: CPU milliseconds and the largest peak memory in KiB.
+pub fn children_usage() -> (u64, u64) {
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) };
+    let ms = |t: libc::timeval| t.tv_sec as u64 * 1000 + t.tv_usec as u64 / 1000;
+    (ms(ru.ru_utime) + ms(ru.ru_stime), ru.ru_maxrss as u64)
 }
 
 /// `clone3`'s arguments, as in linux/sched.h.
@@ -370,12 +420,28 @@ impl DirWatch {
                 return Ok(false);
             }
             if fds[0].revents & libc::POLLIN != 0 {
-                // Which file changed does not matter: the caller looks again.
-                let mut buf = [0u8; 4096];
-                unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                self.clear();
                 return Ok(true);
             }
         }
+    }
+
+    /// Waits until something in the folder changes (true), or until one of `ends` is readable or hung up (false):
+    /// a peer that wrote or went away, or a pipe whose other end closed.
+    pub fn wait_or(&self, ends: &[BorrowedFd]) -> io::Result<bool> {
+        let mut fds = vec![self.fd.as_fd()];
+        fds.extend_from_slice(ends);
+        if ready(&fds, None)?[1..].iter().any(|&r| r) {
+            return Ok(false);
+        }
+        self.clear();
+        Ok(true)
+    }
+
+    /// Reads the waiting events. Which file changed does not matter: the caller looks again.
+    fn clear(&self) {
+        let mut buf = [0u8; 4096];
+        unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
     }
 }
 

@@ -94,18 +94,22 @@ fn a_cell_is_sealed() {
     fs::set_permissions(&e.base, fs::Permissions::from_mode(0o750)).unwrap();
     e.ok(&["new", "demo", "--from", e.base.to_str().unwrap()]);
     fs::write(e.user_home.join("notes"), "private").unwrap();
-    // In order: network interfaces (/proc/net/dev lists only loopback); what is left of /run (the computer's
-    // sockets), of Arbor's state, of the home folder, of /home and of the mounted drives; whether a user namespace
-    // can be made; the mode of the world's root; a write to the home folder; the computer's name; the world's name.
+    // In order: network interfaces (/proc/net/dev lists only loopback); what is left of /run (none of the
+    // computer's sockets: only the outbox's socket and the arbor that asks through it), of Arbor's state, of the
+    // home folder, of /home and of the mounted drives; whether a user namespace can be made; the mode of the world's
+    // root; a write to the home folder; the computer's name; the world's name.
     let script = format!(
-        "grep -c : /proc/net/dev; ls -A /run | wc -l; ls -A '{}' | wc -l; ls -A ~ | wc -l; ls -A /home | wc -l; \
-         ls -A /media /mnt 2>/dev/null | grep -c '^[^/]'; unshare -U true 2>/dev/null && echo userns || echo no-userns; \
-         stat -c %a .; echo x > ~/leak && echo wrote; hostname; echo $ARBOR_WORLD",
+        "grep -c : /proc/net/dev; echo $(ls -A /run /run/arbor /run/arbor/bin); ls -A '{}' | wc -l; ls -A ~ | wc -l; \
+         ls -A /home | wc -l; ls -A /media /mnt 2>/dev/null | grep -c '^[^/]'; \
+         unshare -U true 2>/dev/null && echo userns || echo no-userns; stat -c %a .; echo x > ~/leak && echo wrote; \
+         hostname; echo $ARBOR_WORLD",
         e.home.display()
     );
     let out = e.ok(&["run", "demo", "--", "sh", "-c", &script]);
     assert_eq!(
-        out, "1\n0\n0\n0\n0\n0\nno-userns\n750\nwrote\narbor\ndemo\n",
+        out,
+        "1\n/run: arbor /run/arbor: bin outbox.sock /run/arbor/bin: arbor\n0\n0\n0\n0\nno-userns\n750\nwrote\narbor\n\
+         demo\n",
         "unexpected cell output"
     );
     assert!(
