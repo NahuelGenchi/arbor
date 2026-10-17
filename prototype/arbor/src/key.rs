@@ -58,7 +58,7 @@ pub const TOOLCHAINS: [&str; 19] = [
 
 /// Password and key files and folders, relative to the home folder. They stay hidden in a cell even when its world
 /// or its key includes the folder they are in, unless that world or key is the file or folder itself.
-pub const SECRETS: [&str; 35] = [
+pub const SECRETS: [&str; 66] = [
     // Keys and passwords
     ".ssh",
     ".gnupg",
@@ -97,11 +97,55 @@ pub const SECRETS: [&str; 35] = [
     // files beside it that come and go, so its whole folder stays hidden.
     ".local/share/opencode",
     ".claude/.credentials.json",
+    // Claude Code's own file, which holds its sign-in session and personal MCP servers' settings, and its copies
+    ".claude.json",
+    ".claude/backups",
     // Anthropic's profiles, where Claude Code keeps a Console login made without an API key
     ".config/anthropic/credentials",
     ".codex/auth.json",
     // Codex's logins to MCP servers, where there is no keyring
     ".codex/.credentials.json",
+    // Codex's logins, encrypted, where it keeps their key in the keyring
+    ".codex/secrets",
+    // Whole folders, of the agents that replace a login by renaming a new file over it, which takes a hidden file's
+    // mask away in a running cell, or that keep logins in a database or in files that change between versions: Gemini
+    // CLI, Qwen Code, Copilot in editors, Amp, Goose, Crush, Factory's Droid, Cline, Kilo, OpenHands and Amazon Q,
+    // and Cursor's editor, whose database holds the login with all the rest of its state.
+    ".gemini",
+    ".qwen",
+    ".config/github-copilot",
+    ".local/share/amp",
+    ".config/goose",
+    ".local/share/crush",
+    ".factory",
+    ".cline/data",
+    ".local/share/kilo",
+    ".openhands",
+    ".local/share/amazon-q",
+    ".config/Cursor",
+    // Kimi Code's logins and the API keys in its settings, and those of Kimi CLI before it
+    ".kimi-code/credentials",
+    ".kimi-code/config.toml",
+    ".kimi/credentials",
+    ".kimi/config.toml",
+    // The Copilot CLI's login, and its MCP servers' logins and secrets, where there is no keyring
+    ".copilot/config.json",
+    ".copilot/mcp-oauth-config",
+    ".copilot/mcp-secrets",
+    // Cursor's CLI, and its MCP servers' logins, one file per project
+    ".config/cursor/auth.json",
+    ".cursor/projects",
+    // Aider's OpenRouter key, and the API keys in its settings
+    ".aider/oauth-keys.env",
+    ".aider.conf.yml",
+    // Augment's Auggie, and Pi
+    ".augment/session.json",
+    ".pi/agent/auth.json",
+    // API keys that Gemini CLI, Qwen Code and Aider read from the home folder, that Mistral Vibe keeps where there is
+    // no keyring, and that Continue's settings refer to
+    ".env",
+    ".vibe/.env",
+    ".continue/.env",
 ];
 
 /// What AI agents keep of your sessions, relative to the home folder: the transcripts, with each file read and each
