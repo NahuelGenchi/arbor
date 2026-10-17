@@ -1,4 +1,4 @@
-"""Helpers shared by the bench sections: result records, process timing and memory readings.
+"""Helpers shared by the bench sections: result records, process timing, memory readings and namespace access.
 
 Every section appends one JSON object per measurement to $BENCH_RESULTS:
   {"key": ..., "value": number|string|null, "ctx": {...}, "err": "..."}
@@ -8,6 +8,7 @@ import json
 import os
 import re
 import resource
+import shutil
 import statistics
 import subprocess
 import time
@@ -81,9 +82,21 @@ def spawn_blocks(cases, blocks=3, n=40):
                 continue
             try:
                 meds[key].append(statistics.median(spawn_ms(argv, n)))
-            except Exception as e:  # missing binary, namespace denied, ...
+            except RuntimeError as e:  # it ran and failed: the timed runs discard stderr, so run it once more for it
+                errs[key] = f'{e}: {stderr_tail(argv)}'
+            except Exception as e:  # missing binary, ...
                 errs[key] = e
     return meds, errs
+
+
+def stderr_tail(argv):
+    """The last line a command prints to stderr."""
+    try:
+        r = subprocess.run(argv, stdout=DEVNULL, stderr=subprocess.PIPE, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return str(e)
+    lines = r.stderr.decode(errors='replace').strip().splitlines()
+    return lines[-1] if lines else 'nothing on stderr'
 
 
 def emit_blocks(meds, errs, extra=None):
@@ -143,6 +156,54 @@ def same_program(pid):
 
 def run(argv, timeout=120, **kw):
     return subprocess.run(argv, capture_output=True, timeout=timeout, **kw)
+
+
+def sysctl(name):
+    """A kernel setting from /proc/sys ('user.max_user_namespaces'), or None where the kernel has no such setting."""
+    try:
+        with open('/proc/sys/' + name.replace('.', '/')) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+BLOCKED_TOO = '; this process may not use user namespaces (see the unshare rows)'
+
+
+def userns_blocked():
+    """Why this process cannot do what `unshare -Ur` does (create a user namespace and map its own uid in it), or None
+    when it can, or when unshare is missing and it cannot tell. Ubuntu 24.04 and later set
+    kernel.apparmor_restrict_unprivileged_userns = 1: a process whose AppArmor label does not allow user namespaces (a
+    shell in an ordinary terminal runs unconfined) can still create one, but AppArmor confines it there to the
+    unprivileged_userns profile, which denies every capability, so writing its uid_map fails. bwrap is exempt where
+    AppArmor has a profile for it (bwrap-userns-restrict)."""
+    unshare = shutil.which('unshare')
+    if not unshare:
+        return None
+    try:
+        r = run([unshare, '-Ur', 'true'], timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f'`unshare -Ur` did not run: {e}'
+    if r.returncode == 0:
+        return None
+    err = (r.stderr.decode(errors='replace').strip().splitlines() or [f'exit status {r.returncode}'])[-1]
+    if sysctl('user.max_user_namespaces') == '0':
+        return f'user namespaces are turned off (user.max_user_namespaces = 0): {err}'
+    if sysctl('kernel.unprivileged_userns_clone') == '0':
+        return f'unprivileged user namespaces are turned off (kernel.unprivileged_userns_clone = 0): {err}'
+    if sysctl('kernel.apparmor_restrict_unprivileged_userns') == '1':
+        label = '/proc/self/attr/apparmor/current'
+        try:  # the profile of this process, and the one a user namespace it creates is put under
+            outer = open(label).read().strip()
+            inner = run([unshare, '-U', 'cat', label], timeout=30).stdout.decode(errors='replace')
+        except (OSError, subprocess.TimeoutExpired):
+            outer = inner = ''
+        if inner.startswith('unprivileged_userns'):
+            return ('blocked by AppArmor: kernel.apparmor_restrict_unprivileged_userns = 1 (Ubuntu 24.04 and later), '
+                    f'and this process runs as `{outer}`, which does not allow user namespaces, so the one `unshare` '
+                    'makes is confined to the `unprivileged_userns` profile, which denies the capabilities it needs '
+                    f'({err})')
+    return f'`unshare -Ur` failed: {err}'
 
 
 def child_disk_mib():

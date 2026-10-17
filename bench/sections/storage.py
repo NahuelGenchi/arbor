@@ -3,8 +3,13 @@
 Fork: inside `unshare -Urm` (a private user + mount namespace, so nothing is mounted outside it) an overlay is
 mounted over $FORK_TREE with upper/work dirs in the temp dir. Timed like the M run: `mount -t overlay` bracketed by
 `date +%s%N` in bash (so it includes starting mount(8)); the mount(2) syscall alone is timed too. A write into the
-fork must not reach the lower tree. Baseline: `git worktree add` from a `git clone --shared` of the same repo.
-Default tree: the largest directory directly under $PROJECTS_DIR.
+fork must not reach the lower tree. This needs this process to be allowed user namespaces; where AppArmor blocks them
+(Ubuntu 24.04 and later, from an ordinary terminal) both rows fail with that reason (common.userns_blocked).
+The same fork through bwrap, which runs there where AppArmor has a profile for it, is a different method with its own
+rows: `true` started in a sandbox whose view of the tree is an overlay with a tmpfs upper (`--tmp-overlay`), mounted
+over the tree's own path, and the overlay's share of that start against the same sandbox without it.
+Baseline: `git worktree add` from a `git clone --shared` of the same repo. Default tree: the largest directory
+directly under $PROJECTS_DIR.
 
 Dedup: every regular file under $DEDUP_ROOT, counted once per inode; files that share a size are hashed (BLAKE2b,
 whole file; reads of files >= 256 KiB use O_DIRECT so the scan does not flush the page cache) and every copy after
@@ -22,7 +27,8 @@ import time
 from multiprocessing import Pool
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib'))
-from common import WORK, child_disk_mib, emit, env, fail, run  # noqa: E402
+from common import (BLOCKED_TOO, WORK, child_disk_mib, emit, env, fail, run, spawn_blocks,  # noqa: E402
+                    userns_blocked)
 
 DIRECT_MIN = 256 * 1024
 CLASSES = ('/node_modules/', '/.claude/worktrees/', '/.git/', '/target/', '/build/', '/dist/', '/.venv/', '/venv/',
@@ -69,8 +75,10 @@ EOF
 '''
 
 
-def fork(tree):
+def fork(tree, blocked):
     keys = ['storage.fork_ms', 'storage.fork_syscall_ms']
+    if blocked or not shutil.which('unshare'):
+        return fail(keys, blocked or 'unshare not found')
     W = os.path.join(WORK, 'ov')
     os.makedirs(W, exist_ok=True)
     sh = os.path.join(W, 'fork.sh')
@@ -92,6 +100,37 @@ def fork(tree):
         emit('storage.fork_syscall_ms', statistics.median(sysc), {'runs_ms': [round(x, 3) for x in sysc]})
     else:
         fail('storage.fork_syscall_ms', 'mount(2) timing did not run: ' + r.stderr.decode(errors='replace'))
+
+
+def fork_bwrap(tree, blocked):
+    """The fork through bwrap, timed as the cells (posix_spawn + wait4, 40 runs after 3 warm-ups per block) in 5
+    interleaved blocks, since the overlay's share is the difference of two close medians."""
+    keys = ['storage.fork_bwrap_ms', 'storage.fork_bwrap_overlay_ms']
+    bwrap, true_bin = shutil.which('bwrap'), shutil.which('true') or '/bin/true'
+    if not bwrap:
+        return fail(keys, 'bwrap not found')
+    sandbox = [bwrap, '--ro-bind', '/', '/', '--die-with-parent']
+    overlay = ['--overlay-src', tree, '--tmp-overlay', tree]
+    # The fork shows the tree and takes a write that stays in its tmpfs upper (the rest of / is read-only in there).
+    probe = os.path.join(tree, f'__arbor_fork_test_{os.getpid()}.txt')
+    r = run(sandbox + overlay + ['sh', '-c', 'find "$1" -maxdepth 2 | wc -l; echo hello > "$2" && cat "$2"',
+                                 'sh', tree, probe], timeout=120)
+    out = r.stdout.decode(errors='replace').split()
+    if r.returncode != 0 or out[1:] != ['hello']:
+        err = (r.stderr.decode(errors='replace').strip().splitlines() or [f'exit status {r.returncode}'])[-1]
+        return fail(keys, f'overlay through bwrap failed: {err}' + (BLOCKED_TOO if blocked else ''))
+    leak = os.path.exists(probe)
+    if leak:
+        os.remove(probe)
+    meds, errs = spawn_blocks([('sandbox', sandbox + [true_bin]), ('fork', sandbox + overlay + [true_bin])], blocks=5)
+    if errs:
+        return fail(keys, '; '.join(f'{k}: {e}' for k, e in errs.items()))
+    share = [f - b for f, b in zip(meds['fork'], meds['sandbox'])]
+    emit('storage.fork_bwrap_ms', statistics.median(meds['fork']),
+         {'blocks': [round(x, 4) for x in meds['fork']], 'tree': os.path.basename(tree),
+          'visible_entries_depth2': int(out[0]), 'write_reached_lower': 'yes' if leak else 'no'})
+    emit('storage.fork_bwrap_overlay_ms', statistics.median(share),
+         {'blocks': [round(x, 4) for x in share], 'sandbox_ms': round(statistics.median(meds['sandbox']), 4)})
 
 
 def worktree(tree):
@@ -215,16 +254,22 @@ def main():
         du = subprocess.run(['du', '-s', '--apparent-size', '--block-size=1', tree], capture_output=True, text=True)
         if du.stdout.split():
             emit('storage.fork_tree_gib', int(du.stdout.split()[0]) / 2**30, {'tree': os.path.basename(tree)})
+        blocked = userns_blocked()
         try:
-            fork(tree)
+            fork(tree, blocked)
         except Exception as e:
             fail(['storage.fork_ms', 'storage.fork_syscall_ms'], e)
+        try:
+            fork_bwrap(tree, blocked)
+        except Exception as e:
+            fail(['storage.fork_bwrap_ms', 'storage.fork_bwrap_overlay_ms'], e)
         try:
             worktree(tree)
         except Exception as e:
             fail('storage.git_worktree_ms', e)
     else:
-        fail(['storage.fork_ms', 'storage.fork_syscall_ms', 'storage.git_worktree_ms'], 'no tree to fork (set FORK_TREE)')
+        fail(['storage.fork_ms', 'storage.fork_syscall_ms', 'storage.fork_bwrap_ms', 'storage.fork_bwrap_overlay_ms',
+              'storage.git_worktree_ms'], 'no tree to fork (set FORK_TREE)')
     root = env('DEDUP_ROOT', projects)
     if root and os.path.isdir(root):
         try:
