@@ -195,8 +195,8 @@ fn add(a: &mut Vec<OsString>, items: &[&dyn AsRef<OsStr>]) {
 }
 
 impl View {
-    /// The mounts of a cell in `world`, opened further by `key`.
-    pub fn new(world: &World, key: Option<&Key>) -> Result<View> {
+    /// The mounts of a cell in `world`, opened further by `key`, for a command that starts in `cwd`.
+    pub fn new(world: &World, key: Option<&Key>, cwd: &Path) -> Result<View> {
         let mut m: Vec<(PathBuf, Mount)> = vec![
             ("/".into(), Mount::Root),
             ("/dev".into(), Mount::Dev),
@@ -273,13 +273,12 @@ impl View {
         }
         shown.sort_by_key(|(p, _)| p.components().count());
         // Password files and agents' records stay hidden wherever the cell would see them, inside what shows through
-        // too, unless the world or the key is that file or folder itself. What the key opens inside one of them goes
-        // on top.
+        // too, unless the world or the key is that file or folder itself, and so do the records agents keep in a
+        // project's folder. What the key opens inside one of them goes on top.
         let shown_paths: Vec<PathBuf> = shown.iter().map(|(p, _)| p.clone()).collect();
-        let key::Hidden { masks, missing } = home
-            .as_deref()
-            .map(|h| key::secrets_in(h, &hidden, &shown_paths))
-            .unwrap_or_default();
+        let in_projects = project_records(world, &shown, cwd);
+        let key::Hidden { masks, missing } =
+            key::secrets_in(home.as_deref(), &hidden, &shown_paths, &in_projects);
         let masked = |p: &Path| masks.iter().any(|(s, _)| paths::contains(s, p));
         for (p, how) in &shown {
             // What lies inside the world is in it already.
@@ -788,6 +787,34 @@ impl Drop for Layer {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
     }
+}
+
+/// The records agents keep in a project's folder (`key::PROJECT_RECORDS`) that a cell in `world` would find, where
+/// the agents would have written them: at the top of the world's folder and of each folder in `shown` that the key
+/// opens, in each folder right inside one of those, and in `cwd`, where the command starts, and in each folder above
+/// it up to the top of the world. Deeper ones are not looked for: a walk of a project's tree would take longer than a
+/// cell takes to start. In the world, only those its base holds count, as it holds them: what a command in the world
+/// wrote is the world's own, as a key's home folder keeps what an agent writes there.
+fn project_records(world: &World, shown: &[(PathBuf, Mount)], cwd: &Path) -> Vec<PathBuf> {
+    let tops = shown
+        .iter()
+        .filter(|(_, how)| matches!(how, Mount::World | Mount::Folder))
+        .map(|(p, _)| (p.as_path(), true));
+    let above = cwd
+        .ancestors()
+        .take_while(|dir| paths::contains(&world.base, dir))
+        .map(|dir| (dir, false));
+    let mut found: Vec<PathBuf> = tops
+        .chain(above)
+        .flat_map(|(dir, inside)| key::in_project(dir, inside))
+        .filter(|p| {
+            !paths::contains(&world.base, p) || world_file(world, p) == Some(Some(p.clone()))
+        })
+        .collect();
+    // Outer ones first, so one inside another is covered by it.
+    found.sort();
+    found.dedup();
+    found
 }
 
 /// `p` with `.` and `..` worked out from its text alone.
@@ -1352,8 +1379,8 @@ pub fn run(
     let bwrap = bwrap()?;
     let limits = &opts.limits;
     let key = opts.key.as_ref();
-    let view = View::new(world, key)?;
     let cwd = start_dir(world);
+    let view = View::new(world, key, &cwd)?;
     let path = cell_path();
     view.check(world, cmd, &cwd, &path, key)?;
     let group = cell_group(limits)?;
@@ -1732,6 +1759,64 @@ mod tests {
         assert_eq!(layer.on(&config), None);
         drop(layer);
         assert!(!dir.exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn finds_records_in_a_project_where_agents_wrote_them_but_not_the_world_s_own() {
+        let root = env::temp_dir().join(format!("arbor-unit-projects-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for dir in [
+            "base/a/b/c",
+            "base/sub",
+            "base/gone",
+            "world/up/sub",
+            "world/up/gone",
+            "world/work",
+            "other/shop",
+        ] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let root = fs::canonicalize(&root).unwrap();
+        let (base, other) = (root.join("base"), root.join("other"));
+        for file in [
+            "base/.aider.chat.history.md",
+            "base/a/.aider.input.history",
+            "base/a/b/.aider.llm.history",
+            "base/sub/.aider.chat.history.md",
+            "base/sub/.aider.input.history",
+            "base/gone/.aider.chat.history.md",
+            "other/.aider.chat.history.md",
+            "other/shop/.aider.input.history",
+            // The world's own version of one of the base's
+            "world/up/sub/.aider.input.history",
+        ] {
+            fs::write(root.join(file), "").unwrap();
+        }
+        // And one of the base's that the world deleted.
+        sys::make_whiteout(&root.join("world/up/gone/.aider.chat.history.md")).unwrap();
+        let world = World {
+            name: "shop".into(),
+            base: base.clone(),
+            since_ns: 0,
+            state: State::Open,
+            kept_ns: None,
+            dir: root.join("world"),
+        };
+        let shown = [(base.clone(), Mount::World), (other.clone(), Mount::Folder)];
+        let mut found = vec![
+            base.join(".aider.chat.history.md"),
+            base.join("a/.aider.input.history"),
+            base.join("sub/.aider.chat.history.md"),
+            other.join(".aider.chat.history.md"),
+            other.join("shop/.aider.input.history"),
+        ];
+
+        // At the top of the world and of what the key opens, and one level down...
+        assert_eq!(project_records(&world, &shown, &base), found);
+        // ...and in each folder above the one a command starts in.
+        found.insert(2, base.join("a/b/.aider.llm.history"));
+        assert_eq!(project_records(&world, &shown, &base.join("a/b/c")), found);
         fs::remove_dir_all(&root).unwrap();
     }
 

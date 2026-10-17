@@ -96,7 +96,29 @@ The other whole folders are hidden for the same reasons. Some programs keep thei
 - OpenCode's prompt history, stashed prompts and recently opened files, `.local/state/opencode`. Its sessions are in `.local/share/opencode`, hidden with its logins;
 - Gemini CLI's, for each project, `.gemini/tmp`: transcripts, the prompts you typed, shell-mode commands, chats saved with `/chat save`, checkpoints, plans, long tool outputs and its notes on the project; and the snapshots of your projects behind its checkpoints, `.gemini/history`. Its whole folder is hidden with its logins, and these stay hidden even from a key that opens it by name, as Claude Code's do from `--read ~/.claude`;
 - the Copilot CLI's sessions, with each one's events, plan, reports and copies of files before an edit, `.copilot/session-state`; the database of all sessions, `.copilot/session-store.db*`, with the files SQLite keeps beside it; your prompts, `.copilot/command-history-state*`, a folder, or a file in earlier versions; logs, `.copilot/logs`; and sessions from versions before 1.0, `.copilot/history-session-state`;
-- Aider's chat, `.aider.chat.history.md`; the lines you typed, `.aider.input.history`; and, when turned on, the messages to and from the model, `.aider.llm.history`. Aider keeps them in the project, at the top of its git repository, so these hide only the ones from Aider run in the home folder. In a project, they are part of what a world copies and what a key that opens the project shows.
+- Aider's chat, `.aider.chat.history.md`; the lines you typed, `.aider.input.history`; and, when turned on, the messages to and from the model, `.aider.llm.history`. Aider keeps them in the project, at the top of its git repository, so these are the ones from Aider run in the home folder. Those in a project come next.
+
+**Records in a project's folder stay hidden too.** Some agents keep their records in the project rather than in your home folder:
+- Aider's three files above, at the top of the project's git repository, or in the folder it started in when there is none;
+- Crush's `.crush`, with its database of every session's messages and copies of the files it edited, its logs and the output of long commands.
+
+A world over a project, or a key that opens one, hides them where these agents would have written them:
+
+- at the top of the world's folder and of each folder a key opens;
+- in each folder right inside one of those, so a key that opens a folder of projects, such as `--read ~/work`, hides each project's;
+- in the folder the command starts in, and in each folder above it, up to the top of the world.
+
+Deeper ones are not looked for, since searching a whole project would take longer than starting the command. In a world of your home folder, `~/work/shop`'s are hidden only from a command that starts in `~/work/shop` or below.
+
+`.crush` is hidden whole, since SQLite cannot open a database hidden as a file. The project's settings and commands for Crush are hidden with it.
+
+In a world, what is hidden is what the folder held before the world changed it:
+- **What was there.** A hidden file reads empty and writes to it vanish. `arbor diff` and `arbor keep` never see it, so the real file stays as it was.
+- **What a command writes** where there was none is the world's own, like any file it writes. `arbor diff` shows it, `arbor keep` applies it, and the world's next commands see it, so Aider and Crush in a world find what they wrote there on their next run.
+
+A key that names one, such as `--read ~/work/shop/.crush`, opens it. Not hidden:
+- a record made in a project while a command runs;
+- records moved elsewhere, as with Aider's `--chat-history-file` or Crush's `--data-dir`.
 
 **A key that names one opens it on purpose.** `--read ~/.claude/projects/-home-you-work-shop` opens one project's sessions, and its `memory` folder opens Claude's notes on that project. Under a key that opens only `~/.claude`, an agent keeps your settings but finds no past session to resume. Under a key with a home folder of its own, what the agent keeps there stays for its next run, as its logins do. As with the password files, the list names the places programs use by default. Records moved with `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CODEX_SQLITE_HOME`, `XDG_STATE_HOME`, `GEMINI_CLI_HOME` or `COPILOT_HOME`, or with an option such as Aider's `--chat-history-file`, are not hidden. What arbor hides is decided when a command starts, and what is missing then stays missing for it, including the files SQLite keeps beside each database there, which it writes when Codex or Copilot starts after the command. A `*` stands only for the names there when the command starts: a database of a new version, made while it runs, is not hidden from it.
 

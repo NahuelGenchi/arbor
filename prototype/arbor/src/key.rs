@@ -11,7 +11,7 @@
 //! the agent keeps there, can outlive the end it was made with.
 
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{CString, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -205,10 +205,28 @@ pub const RECORDS: [&str; 35] = [
     ".copilot/logs",
     ".copilot/history-session-state",
     // Aider: the chat, the lines you typed, and, when turned on, the messages to and from the model. It keeps them in
-    // the project's folder, so they are found here only where it ran in the home folder.
+    // the project's folder, so they are found here only where it ran in the home folder, and in a project by
+    // `PROJECT_RECORDS`.
     ".aider.chat.history.md",
     ".aider.input.history",
     ".aider.llm.history",
+];
+
+/// What AI agents keep of your sessions in a project's folder rather than the home folder, relative to that folder.
+/// They stay hidden like `RECORDS`, by the same rules, in the folders where an agent would have written them (see
+/// `in_project`), but only those there when the cell starts: keeping the others missing would take a whiteout in
+/// every folder a cell looks in.
+pub const PROJECT_RECORDS: [&str; 4] = [
+    // Aider: the chat, the lines you typed, and, when turned on, the messages to and from the model, at the top of
+    // the project's git repository, or in the folder it started in where there is none
+    ".aider.chat.history.md",
+    ".aider.input.history",
+    ".aider.llm.history",
+    // Crush: its database of every session's messages, with copies of the files it edited, its logs and the output
+    // of long commands, in the nearest of its folders between the one it starts in and the git top, else in a new one
+    // where it starts. SQLite cannot open a database hidden as a file, so the whole folder is hidden, and the
+    // project's settings and commands for Crush with it.
+    ".crush",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -415,7 +433,7 @@ pub fn toolchains() -> Vec<PathBuf> {
 /// The files SQLite keeps beside a database while it is open, which come and go as it runs.
 const BESIDE: [&str; 3] = ["-wal", "-shm", "-journal"];
 
-/// What a cell must not see of the password files and agents' records in the home folder, as `secrets_in` finds them.
+/// What a cell must not see of the password files and agents' records, as `secrets_in` finds them.
 #[derive(Debug, Default, PartialEq)]
 pub struct Hidden {
     /// Those there when the cell starts, each with whether it is a folder: a cell mounts an empty one over each.
@@ -425,21 +443,35 @@ pub struct Hidden {
     pub missing: Vec<PathBuf>,
 }
 
-/// The password files and agents' records of the home folder `home` that a cell would see. A cell sees what lies
+/// The password files and agents' records that a cell would see: those on `SECRETS` and `RECORDS` in the home folder
+/// `home`, and `in_projects`, those on `PROJECT_RECORDS` that a cell found in a project's folder. A cell sees what lies
 /// outside its `hidden` folders, and what lies inside `shown`: its world's folder and what its key opens. Each is
-/// found where it really is, through links, so one linked from elsewhere counts too, and so does one that is missing,
-/// where a program would make it. One that is itself among `shown` was opened on purpose and stays.
-pub fn secrets_in(home: &Path, hidden: &[PathBuf], shown: &[PathBuf]) -> Hidden {
+/// found where it really is, through links, so one linked from elsewhere counts too, and so does one that is missing
+/// from the home folder, where a program would make it. One that is itself among `shown` was opened on purpose and
+/// stays.
+pub fn secrets_in(
+    home: Option<&Path>,
+    hidden: &[PathBuf],
+    shown: &[PathBuf],
+    in_projects: &[PathBuf],
+) -> Hidden {
     let seen = |p: &Path| {
         !hidden.iter().any(|h| paths::contains(h, p))
             || shown.iter().any(|s| s != p && paths::contains(s, p))
     };
     let mut found = Hidden::default();
-    let listed = SECRETS
+    let in_home = home.into_iter().flat_map(|home| {
+        SECRETS
+            .iter()
+            .chain(&RECORDS)
+            .flat_map(move |rel| named(home, rel))
+            .filter_map(move |rel| place(home, &rel))
+    });
+    let in_project = in_projects
         .iter()
-        .chain(&RECORDS)
-        .flat_map(|rel| named(home, rel));
-    for place in listed.filter_map(|rel| place(home, &rel)) {
+        .filter_map(|p| place(Path::new("/"), p))
+        .filter(|place| matches!(place, Place::There(_)));
+    for place in in_home.chain(in_project) {
         match place {
             Place::There(path) => {
                 let named = shown.contains(&path);
@@ -460,6 +492,34 @@ pub fn secrets_in(home: &Path, hidden: &[PathBuf], shown: &[PathBuf]) -> Hidden 
     found.missing.sort();
     found.missing.dedup();
     found
+}
+
+/// The records on `PROJECT_RECORDS` there are in the folder `dir`, and, with `inside`, in each folder right inside it,
+/// folder by folder in name order. A link to a folder is not followed there, but a record that is a link counts.
+pub fn in_project(dir: &Path, inside: bool) -> Vec<PathBuf> {
+    let mut folders = vec![dir.to_path_buf()];
+    if inside {
+        let mut more: Vec<PathBuf> = fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|entry| entry.path())
+            .collect();
+        more.sort();
+        folders.extend(more);
+    }
+    let names: Vec<CString> = PROJECT_RECORDS
+        .iter()
+        .map(|rel| CString::new(*rel).unwrap_or_default())
+        .collect();
+    folders
+        .iter()
+        .flat_map(|folder| {
+            let there = sys::present(folder, &names);
+            there.into_iter().map(|i| folder.join(PROJECT_RECORDS[i]))
+        })
+        .collect()
 }
 
 /// What the list entry `rel` names in the home folder `home`, relative to it: that path, or, when its last part has a
@@ -1413,7 +1473,9 @@ mod tests {
         let (gnupg, ssh) = ((root.join("data/gnupg"), true), (home.join(".ssh"), true));
         let npmrc = (home.join(".npmrc"), false);
         let cargo = (home.join(".cargo/credentials.toml"), false);
-        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown).masks;
+        let found = |shown: &[PathBuf]| {
+            secrets_in(Some(&home), std::slice::from_ref(&home), shown, &[]).masks
+        };
 
         assert_eq!(found(&[]), vec![gnupg.clone()]);
         assert_eq!(
@@ -1448,7 +1510,9 @@ mod tests {
         ] {
             fs::write(codex.join(name), "").unwrap();
         }
-        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown).masks;
+        let found = |shown: &[PathBuf]| {
+            secrets_in(Some(&home), std::slice::from_ref(&home), shown, &[]).masks
+        };
         let db = |name: &str| (codex.join(name), false);
 
         // The databases come in name order, and the settings next to them stay.
@@ -1483,7 +1547,9 @@ mod tests {
         }
         let home = fs::canonicalize(root.join("home")).unwrap();
         let gemini = home.join(".gemini");
-        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown).masks;
+        let found = |shown: &[PathBuf]| {
+            secrets_in(Some(&home), std::slice::from_ref(&home), shown, &[]).masks
+        };
 
         // Inside the home folder, the folder hidden whole covers what is in it...
         assert_eq!(
@@ -1528,7 +1594,8 @@ mod tests {
         // Linked to a file not made yet outside the home folder, and to a folder not made yet inside it.
         std::os::unix::fs::symlink(data.join("claude.json"), home.join(".claude.json")).unwrap();
         std::os::unix::fs::symlink("dots/aws", home.join(".aws")).unwrap();
-        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown);
+        let found =
+            |shown: &[PathBuf]| secrets_in(Some(&home), std::slice::from_ref(&home), shown, &[]);
         let all = found(std::slice::from_ref(&home));
         let missing = |rel: &str| all.missing.contains(&home.join(rel));
 
@@ -1582,6 +1649,76 @@ mod tests {
                 .missing
                 .contains(&home.join(".gemini/tmp"))
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn finds_agents_records_at_the_top_of_a_project_and_in_each_folder_right_inside_it() {
+        let root = std::env::temp_dir().join(format!("arbor-project-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for dir in ["work/shop/.crush/commands", "work/notes/deep", "elsewhere"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let root = fs::canonicalize(&root).unwrap();
+        let (work, elsewhere) = (root.join("work"), root.join("elsewhere"));
+        for file in [
+            "work/.aider.chat.history.md",
+            "work/shop/.aider.input.history",
+            "work/shop/README",
+            "work/notes/deep/.aider.llm.history",
+            "elsewhere/chat.md",
+            "elsewhere/.aider.input.history",
+        ] {
+            fs::write(root.join(file), "").unwrap();
+        }
+        // A record linked to a file elsewhere, one linked to a file not made yet, and a link to a folder.
+        let link = std::os::unix::fs::symlink;
+        link(
+            elsewhere.join("chat.md"),
+            work.join("shop/.aider.chat.history.md"),
+        )
+        .unwrap();
+        link(
+            elsewhere.join("gone.md"),
+            work.join("notes/.aider.chat.history.md"),
+        )
+        .unwrap();
+        link(elsewhere.clone(), work.join("linked")).unwrap();
+
+        // At the top only, or there and one level down, but no deeper, nor through a link to a folder.
+        assert_eq!(
+            in_project(&work, false),
+            [work.join(".aider.chat.history.md")]
+        );
+        let found = in_project(&work, true);
+        assert_eq!(
+            found,
+            [
+                work.join(".aider.chat.history.md"),
+                work.join("notes/.aider.chat.history.md"),
+                work.join("shop/.aider.chat.history.md"),
+                work.join("shop/.aider.input.history"),
+                work.join("shop/.crush"),
+            ]
+        );
+        // Hidden where they really are, Crush's folder whole, and only those there: what a link leads to that is
+        // missing stays out.
+        let hidden = |shown: &[PathBuf]| secrets_in(None, &[], shown, &found);
+        assert_eq!(
+            hidden(std::slice::from_ref(&work)),
+            Hidden {
+                masks: vec![
+                    (work.join(".aider.chat.history.md"), false),
+                    (elsewhere.join("chat.md"), false),
+                    (work.join("shop/.aider.input.history"), false),
+                    (work.join("shop/.crush"), true),
+                ],
+                missing: Vec::new(),
+            }
+        );
+        // One that a key names shows.
+        let named = hidden(&[work.clone(), work.join("shop/.crush")]).masks;
+        assert!(!named.contains(&(work.join("shop/.crush"), true)) && named.len() == 3);
         fs::remove_dir_all(&root).unwrap();
     }
 
