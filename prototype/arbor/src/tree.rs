@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Context, Error, Result};
+use crate::error::{self, Context, Error, Result};
 use crate::world::{self, State, World};
 use crate::{paths, sys};
 
@@ -423,7 +423,10 @@ pub struct Kept {
 
 /// The error for a keep or undo stopped by Ctrl-C, a closed terminal or `kill`.
 fn interrupted(msg: String) -> Error {
-    Error { msg, code: 130 }
+    Error {
+        msg,
+        code: error::STOPPED,
+    }
 }
 
 /// Applies the world to its base. The caller holds the world's lock.

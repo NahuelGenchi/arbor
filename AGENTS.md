@@ -2,7 +2,7 @@
 
 ## The project
 
-Arbor is a proposal for an operating system rebuilt for AI agents and the people who direct them: worlds (copy-on-write snapshots of everything an agent can see), cells (where work runs, started in a fraction of a millisecond), keys (narrow, expiring permissions), an outbox for effects that leave the machine, budgets, and a ledger of every step. The measurement came first: `OPTIMIZATION.md`, a report of where memory, disk, time, energy and agent tokens go on one Linux PC today, and `bench/`, a suite that re-measures the report's **M** numbers so the prototype can be compared row by row. The first prototype, a rootless layer on top of Linux, is being built in `prototype/`: worlds exist (M2); cells and keys, the outbox, ledger and budgets, and the interface do not yet. `README.md` explains the project; the two articles behind it are at https://nahuelgenchi.com/software/arbor/ and https://nahuelgenchi.com/software/arbor-measured/.
+Arbor is a proposal for an operating system rebuilt for AI agents and the people who direct them: worlds (copy-on-write snapshots of everything an agent can see), cells (where work runs, started in a fraction of a millisecond), keys (narrow, expiring permissions), an outbox for effects that leave the machine, budgets, and a ledger of every step. The measurement came first: `OPTIMIZATION.md`, a report of where memory, disk, time, energy and agent tokens go on one Linux PC today, and `bench/`, a suite that re-measures the report's **M** numbers so the prototype can be compared row by row. The first prototype, a rootless layer on top of Linux, is being built in `prototype/`: worlds (M2) and the ledger (M6) exist; cells and keys, the outbox and budgets, and the interface do not yet. `README.md` explains the project; the two articles behind it are at https://nahuelgenchi.com/software/arbor/ and https://nahuelgenchi.com/software/arbor-measured/.
 
 Never describe something as working, built or measured unless a recorded check establishes it. A source check is not a benchmark run, and an estimate is not a measurement.
 
@@ -18,7 +18,7 @@ Never describe something as working, built or measured unless a recorded check e
 | `bench/lib/` | Shared helpers, the M reference values (`reference.py`), the report writer, the machine stamp, and an o200k token counter (`o200k.js`) |
 | `bench/src/` | The static C and Rust programs timed by `runtimes` |
 | `bench/results/` | Run reports, ignored by git |
-| `prototype/` | The first prototype in Rust: one binary, `arbor` (`arbor/src/`: `world`, `tree` for diff/keep/undo, `cell` for `bwrap`), end-to-end tests in `arbor/tests/`, and `check.sh`. The toolchain is pinned in `rust-toolchain.toml` |
+| `prototype/` | The first prototype in Rust: one binary, `arbor` (`arbor/src/`: `world`, `tree` for diff/keep/undo, `cell` for `bwrap`, `ledger`), end-to-end tests in `arbor/tests/`, and `check.sh`. The toolchain is pinned in `rust-toolchain.toml` |
 | `docs/` | Tracking guide and README images |
 | `.github/workflows/` | `checks.yml` runs `bench/check.sh` on every PR; `project-tracking.yml` keeps milestones and labels in order |
 

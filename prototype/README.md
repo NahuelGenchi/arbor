@@ -1,6 +1,6 @@
 # The arbor prototype
 
-The first working piece of arbor, built as a layer on today's Linux that needs no administrator rights. So far it has **worlds**: try any change on an instant copy of a folder, then keep the result or throw it away whole. Cells with keys and limits (M3), and the outbox, ledger and budgets (M6), come next. See the [roadmap](../README.md#where-it-stands).
+The first working piece of arbor, built as a layer on today's Linux that needs no administrator rights. So far it has **worlds**: try any change on an instant copy of a folder, then keep the result or throw it away whole. And it has **the ledger**: a record of every step, checkable. Cells with keys and limits (M3), and the outbox and budgets (M6), come next. See the [roadmap](../README.md#where-it-stands).
 
 ## Try it
 
@@ -21,7 +21,7 @@ arbor undo shop                         # changed your mind? take them back out
 arbor discard shop                      # throw the world away
 ```
 
-`arbor run shop -- npm test` runs one command instead of a shell, and `arbor diff shop --patch` shows the changed lines. `arbor worlds` lists every world.
+`arbor run shop -- npm test` runs one command instead of a shell, and `arbor diff shop --patch` shows the changed lines. `arbor worlds` lists every world, and `arbor ledger` shows what happened.
 
 ## What a command inside a world can do
 
@@ -42,9 +42,15 @@ Every file that keep replaces or deletes is moved into the world's undo folder f
 
 Ctrl-C during a keep or an undo stops it between two changes, never halfway through one. After a stopped keep, `arbor undo` takes back what was applied; after a stopped undo, running it again finishes it. While a command runs in a world, keeping or undoing any world over the same folder waits for it: arbor says the world is busy.
 
+## The ledger
+
+Every step that changes something or runs a command is recorded: `new`, `run`, `shell`, `keep`, `undo` and `discard`, refusals and failures included. `arbor ledger` shows the last 20 (`--last N` for more), each with its time, result and cost. The cost is the wall time and, for a command, the CPU time of all its processes and the peak memory of the largest one.
+
+Each line carries a SHA-256 hash over the line before it and itself, so `arbor ledger --verify` finds a line that was edited or deleted, and prints the head hash. A program running as you could still rewrite the whole file, so note the head hash if you may need to show later that nothing changed. Commands inside a world cannot see the ledger.
+
 ## Where it keeps things
 
-Worlds live in `~/.local/share/arbor/` (`$XDG_DATA_HOME/arbor`, or `$ARBOR_HOME` if set). Each world holds only what it changed, plus, after a keep, the originals it replaced. To remove arbor:
+Worlds and the ledger live in `~/.local/share/arbor/` (`$XDG_DATA_HOME/arbor`, or `$ARBOR_HOME` if set). Each world holds only what it changed, plus, after a keep, the originals it replaced. To remove arbor:
 
 1. Discard your worlds.
 2. Run `cargo uninstall arbor`.
@@ -60,7 +66,8 @@ Ubuntu 24.04 and later stop ordinary programs from creating the Linux namespaces
 | :--- | :--- |
 | `arbor/src/world.rs` | worlds on disk: names, `world.json`, the per-world lock |
 | `arbor/src/tree.rs` | reading a world's changes (whiteouts, opaque folders), keep with its undo journal, and undo |
-| `arbor/src/cell.rs` | running a command in a world through `bwrap` |
+| `arbor/src/cell.rs` | running a command in a world through `bwrap`, and what it cost |
+| `arbor/src/ledger.rs` | the ledger: appends under a lock, the hash chain, `--verify` |
 | `arbor/src/main.rs` | the `arbor` command |
 | `arbor/tests/worlds.rs` | end-to-end tests through the binary and `bwrap` |
 

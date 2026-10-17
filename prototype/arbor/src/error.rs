@@ -6,6 +6,8 @@ use std::{fmt, io};
 pub const USAGE: i32 = 2;
 /// Exit code for a request Arbor refuses on purpose: a busy world, conflicts, a world already kept.
 pub const REFUSED: i32 = 3;
+/// Exit code for a keep or undo stopped by Ctrl-C, a closed terminal or `kill`, as shells report SIGINT.
+pub const STOPPED: i32 = 130;
 
 #[derive(Debug)]
 pub struct Error {
