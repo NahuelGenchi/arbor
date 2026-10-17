@@ -1,9 +1,11 @@
 //! Thin wrappers for the few Linux calls the standard library lacks: locks, atomic renames, extended attributes,
-//! whiteouts, the session keyring and deferred interrupts. Path calls never follow a final symlink.
+//! whiteouts, the session keyring, process and folder watches, and deferred interrupts. Path calls never follow a
+//! final symlink.
 
 use std::ffi::CString;
 use std::fs::File;
 use std::io;
+use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
@@ -165,6 +167,169 @@ pub fn new_session_keyring() -> io::Result<()> {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+/// A descriptor that becomes readable when the process `pid` exits, so a wait can have a deadline.
+pub fn pidfd_open(pid: libc::pid_t) -> io::Result<OwnedFd> {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
+    }
+}
+
+/// A pipe whose ends close on exec: (read, write).
+pub fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    check(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) })?;
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+/// `clone3`'s arguments, as in linux/sched.h.
+#[repr(C)]
+#[derive(Default)]
+struct CloneArgs {
+    flags: u64,
+    pidfd: u64,
+    child_tid: u64,
+    parent_tid: u64,
+    exit_signal: u64,
+    stack: u64,
+    stack_size: u64,
+    tls: u64,
+    set_tid: u64,
+    set_tid_size: u64,
+    cgroup: u64,
+}
+
+const CLONE_PIDFD: u64 = 0x1000;
+const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
+
+/// Which side of a fork this is.
+pub enum Forked {
+    /// The child. `placed` is false when it still has to move itself into the cgroup.
+    Child { placed: bool },
+    /// The parent, with the child's process ID and a descriptor that becomes readable when it exits.
+    Parent { pid: libc::pid_t, exited: OwnedFd },
+}
+
+/// Forks, the child starting inside the cgroup whose folder is open as `cgroup`. Moving a process into a cgroup
+/// afterwards can wait for the kernel to quiesce cgroup changes everywhere (an RCU grace period), which made each
+/// cell start several milliseconds later on a busy desktop; starting it there avoids that wait. Where `clone3` is
+/// missing or filtered (Docker's default profile), a plain fork.
+///
+/// # Safety
+/// As for `fork`: the child may only make async-signal-safe calls, then exec or `_exit`.
+pub unsafe fn fork_into(cgroup: Option<BorrowedFd>) -> io::Result<Forked> {
+    let mut pidfd: libc::c_int = -1;
+    let mut args = CloneArgs {
+        flags: CLONE_PIDFD
+            | if cgroup.is_some() {
+                CLONE_INTO_CGROUP
+            } else {
+                0
+            },
+        pidfd: &raw mut pidfd as u64,
+        exit_signal: libc::SIGCHLD as u64,
+        cgroup: cgroup.map_or(0, |fd| fd.as_raw_fd() as u64),
+        ..CloneArgs::default()
+    };
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_clone3,
+            &raw mut args,
+            std::mem::size_of::<CloneArgs>(),
+        )
+    };
+    match ret {
+        0 => return Ok(Forked::Child { placed: true }),
+        pid if pid > 0 => {
+            return Ok(Forked::Parent {
+                pid: pid as libc::pid_t,
+                exited: unsafe { OwnedFd::from_raw_fd(pidfd) },
+            });
+        }
+        _ => {}
+    }
+    let err = io::Error::last_os_error();
+    if !matches!(
+        err.raw_os_error(),
+        Some(libc::ENOSYS | libc::EPERM | libc::E2BIG)
+    ) {
+        return Err(err);
+    }
+    match unsafe { libc::fork() } {
+        0 => Ok(Forked::Child {
+            placed: cgroup.is_none(),
+        }),
+        -1 => Err(io::Error::last_os_error()),
+        pid => match pidfd_open(pid) {
+            Ok(exited) => Ok(Forked::Parent { pid, exited }),
+            Err(e) => {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                    libc::waitpid(pid, std::ptr::null_mut(), 0);
+                }
+                Err(e)
+            }
+        },
+    }
+}
+
+/// Changes to the files directly inside one folder, through inotify: waiting costs nothing while nothing changes.
+pub struct DirWatch {
+    fd: OwnedFd,
+}
+
+impl DirWatch {
+    pub fn new(dir: &Path) -> io::Result<DirWatch> {
+        let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let p = cpath(dir)?;
+        let mask = libc::IN_MODIFY | libc::IN_CREATE | libc::IN_MOVED_TO;
+        if unsafe { libc::inotify_add_watch(fd.as_raw_fd(), p.as_ptr(), mask) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(DirWatch { fd })
+    }
+
+    /// Waits until something in the folder changes (true), or until `out`, the reader's end, goes away (false).
+    pub fn wait(&self, out: BorrowedFd) -> io::Result<bool> {
+        let mut fds = [
+            libc::pollfd {
+                fd: self.fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: out.as_raw_fd(),
+                events: 0,
+                revents: 0,
+            },
+        ];
+        loop {
+            if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            if fds[1].revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+                return Ok(false);
+            }
+            if fds[0].revents & libc::POLLIN != 0 {
+                // Which file changed does not matter: the caller looks again.
+                let mut buf = [0u8; 4096];
+                unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                return Ok(true);
+            }
+        }
     }
 }
 

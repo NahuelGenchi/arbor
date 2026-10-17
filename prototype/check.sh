@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Source checks for the prototype: formatting, lints and tests. Measures nothing and reads no personal data.
 #   ./check.sh
-# Needs Rust (the toolchain pinned in rust-toolchain.toml). Tests that need bubblewrap's overlay skip with a note
-# where it cannot run, so a pass there means only that the code builds and its pure logic holds.
+# Needs Rust (the toolchain pinned in rust-toolchain.toml). Tests that need bubblewrap's overlay, or a systemd user
+# manager for limits, skip with a note where it is missing, so a pass there proves less. ARBOR_REQUIRE_BWRAP=1 and
+# ARBOR_REQUIRE_CGROUPS=1 turn those skips into failures, as in CI.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"

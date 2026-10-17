@@ -1,94 +1,13 @@
-//! End to end through the `arbor` binary and bubblewrap. Where `bwrap` cannot mount an overlay (no bubblewrap,
-//! or user namespaces blocked), each test prints why and passes without checking anything, unless
-//! `ARBOR_REQUIRE_BWRAP` is set, as in CI, where that is a failure.
+//! Worlds end to end, through the `arbor` binary and bubblewrap (see `common` for when they skip).
+
+mod common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-struct Env {
-    root: PathBuf,
-    home: PathBuf,
-    base: PathBuf,
-}
-
-impl Env {
-    fn new(tag: &str) -> Option<Env> {
-        let root = std::env::temp_dir().join(format!("arbor-it-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let base = root.join("project");
-        fs::create_dir_all(base.join("src")).unwrap();
-        fs::write(base.join("src/a"), "one").unwrap();
-        fs::write(base.join("src/gone"), "bye").unwrap();
-        let env = Env {
-            home: root.join("arbor-home"),
-            base,
-            root,
-        };
-        if let Err(why) = bwrap_overlay_works(&env.root) {
-            if std::env::var_os("ARBOR_REQUIRE_BWRAP").is_some() {
-                panic!("bwrap cannot mount an overlay here, and ARBOR_REQUIRE_BWRAP is set: {why}");
-            }
-            eprintln!("skipped: bwrap cannot mount an overlay here: {why}");
-            return None;
-        }
-        Some(env)
-    }
-
-    fn arbor(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_arbor"))
-            .args(args)
-            .env("ARBOR_HOME", &self.home)
-            .stdin(Stdio::null())
-            .output()
-            .unwrap()
-    }
-
-    fn ok(&self, args: &[&str]) -> String {
-        let out = self.arbor(args);
-        assert!(
-            out.status.success(),
-            "arbor {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).unwrap()
-    }
-
-    fn read(&self, rel: &str) -> Option<String> {
-        fs::read_to_string(self.base.join(rel)).ok()
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        let _ = Command::new("chmod")
-            .arg("-R")
-            .arg("u+rwx")
-            .arg(&self.root)
-            .status();
-        let _ = fs::remove_dir_all(&self.root);
-    }
-}
-
-fn bwrap_overlay_works(scratch: &Path) -> Result<(), String> {
-    let probe = scratch.join("probe");
-    fs::create_dir_all(&probe).unwrap();
-    let out = Command::new("bwrap")
-        .args(["--ro-bind", "/", "/", "--overlay-src"])
-        .arg(&probe)
-        .arg("--tmp-overlay")
-        .arg(&probe)
-        .args(["--unshare-all", "true"])
-        .output()
-        .map_err(|e| format!("cannot run bwrap: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
-}
+use common::Env;
 
 #[test]
 fn a_world_changes_nothing_until_kept() {
@@ -139,31 +58,32 @@ fn a_world_changes_nothing_until_kept() {
     assert_eq!(e.read("src/a").as_deref(), Some("one"));
     assert_eq!(e.ok(&["worlds"]), "");
 
-    // Every step that changed something or ran a command is in the ledger, the refused run included.
-    let ledger = e.ok(&["ledger"]);
-    let rows: Vec<&str> = ledger.lines().skip(1).collect();
+    // Every step that changed something or ran a command is in the ledger, the refused run included; a
+    // command's cell records its start too.
+    let rows = e.ledger_rows();
     let expect = [
         ("new", "ok"),
+        ("start", "running"),
         ("run", "exit 0"),
         ("keep", "ok"),
         ("run", "refused"),
         ("undo", "ok"),
         ("discard", "ok"),
     ];
-    assert_eq!(rows.len(), expect.len(), "{ledger}");
+    assert_eq!(rows.len(), expect.len(), "{rows:#?}");
     for (row, (act, out)) in rows.iter().zip(expect) {
         assert!(
             row.contains(&format!(" {act} ")) && row.contains(&format!(" {out} ")),
-            "{ledger}"
+            "{rows:#?}"
         );
     }
     assert!(
-        rows[2].contains("3 changes (1 added, 1 modified, 1 deleted)"),
-        "{ledger}"
+        rows[3].contains("3 changes (1 added, 1 modified, 1 deleted)"),
+        "{rows:#?}"
     );
     assert!(
         e.ok(&["ledger", "--verify"])
-            .starts_with("ledger ok: 6 steps, head ")
+            .starts_with("ledger ok: 7 steps, head ")
     );
 }
 
@@ -246,10 +166,8 @@ fn keep_waits_for_a_running_command() {
         "--from",
         e.base.join("src").to_str().unwrap(),
     ]);
-    let mut running = Command::new(env!("CARGO_BIN_EXE_arbor"))
-        .args(["run", "demo", "--", "sh", "-c", "touch started && sleep 3"])
-        .env("ARBOR_HOME", &e.home)
-        .stdin(Stdio::null())
+    let mut running = e
+        .command(&["run", "demo", "--", "sh", "-c", "touch started && sleep 3"])
         .spawn()
         .unwrap();
     let marker = e.home.join("worlds/demo/up/started");

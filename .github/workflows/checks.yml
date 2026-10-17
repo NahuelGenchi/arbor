@@ -54,10 +54,21 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
           command -v bwrap && bwrap --version
+      # Memory, CPU and process limits need cgroups from a systemd user manager, and the job runs outside any.
+      # Lingering starts one for the runner's user; arbor then runs itself in a scope under it, as it does from an
+      # SSH login.
+      - name: Start a systemd user manager for the cell-limit tests
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          runtime="/run/user/$(id -u)"
+          for _ in $(seq 100); do [ -S "$runtime/systemd/private" ] && break; sleep 0.1; done
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+          echo "controllers for the user manager: $(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.subtree_control")"
       - name: Install the pinned Rust toolchain
         working-directory: prototype
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rustfmt,clippy
       - name: Run the prototype's source checks
         env:
           ARBOR_REQUIRE_BWRAP: '1'
+          ARBOR_REQUIRE_CGROUPS: '1'
         run: bash prototype/check.sh
