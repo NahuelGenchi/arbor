@@ -67,7 +67,7 @@ ARBOR_LOOK_REF = {'ref_date': '17 Oct 2026', 'ref_load': 2.02}
 # The rows of a large file read in parts came last, from five more runs made the same way, in an A/B with the build
 # before them: the one closest to the median of arbor.look_ms. Their load averages at the start were 0.32, 0.41, 0.49,
 # 0.50 (ref_load) and 0.55. The token rows read the same in all five; the others within 3% of the other build's
-# medians, but for arbor.ask_ms, the difference of two close medians (0.49–0.64 ms here, 0.57–0.80 ms there), and the
+# medians, but for arbor.ask_ms, the difference of two close medians (0.48–0.64 ms here, 0.57–0.80 ms there), and the
 # binary, 0.07 MiB larger. The reference of `arbor look` alone, which now describes outline and lines, is from them.
 ARBOR_OUTLINE_REF = {'ref_date': '17 Oct 2026', 'ref_load': 0.5}
 
