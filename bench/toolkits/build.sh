@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Builds the test programs of issue #8 (README.md) into OUT, one folder per toolkit with its program at
 # OUT/<toolkit>/bin, and prints `built <toolkit>` or `failed <toolkit>: <why>` for each:
-#   toolkits/build.sh OUT [gtk4 qtquick slint iced]     (all four when none is named)
+#   toolkits/build.sh OUT [gtk4 qtquick slint iced flutter]     (all five when none is named)
 # It writes only in OUT. Cargo gets a home of its own there, which reads the registry's index, the crates already
 # downloaded and cargo's config in ~/.cargo through links, offline (`cargo fetch` in slint/ and iced/ downloads them
 # once); its objects, about a gigabyte a program, are removed once the program is built, since OUT is often in memory
-# (tmpfs).
+# (tmpfs). Flutter gets a copy of the program, a HOME and a pub cache there, which reads the packages Flutter pins
+# from $FLUTTER_PUB_CACHE (else $PUB_CACHE, else ~/.pub-cache) through a link; the flutter command is $FLUTTER, else
+# flutter on PATH. It runs without a network (bwrap --unshare-net), so it can download nothing.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT=${1:?usage: build.sh OUT [toolkit...]}
 shift
-[ $# -gt 0 ] || set -- gtk4 qtquick slint iced
+[ $# -gt 0 ] || set -- gtk4 qtquick slint iced flutter
 mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd)" || exit 1
 JOBS=${CARGO_BUILD_JOBS:-8}
 
@@ -64,13 +66,36 @@ build_rust() {  # slint or iced; the toolchain is the one ../rust-toolchain.toml
   rm -rf "$OUT/$1/target"
 }
 
+build_flutter() {
+  local fl=${FLUTTER:-$(command -v flutter)} cache=${FLUTTER_PUB_CACHE:-${PUB_CACHE:-$HOME/.pub-cache}}
+  [ -n "$fl" ] && [ -x "$fl" ] || { failed flutter 'no flutter command: set FLUTTER, or put flutter on PATH'; return; }
+  [ -d "$cache/hosted" ] || { failed flutter "no packages in $cache: run flutter pub get once in toolkits/flutter, or set FLUTTER_PUB_CACHE"; return; }
+  local src="$OUT/flutter/src" home="$OUT/flutter/home" nonet=()
+  command -v bwrap >/dev/null && nonet=(bwrap --dev-bind / / --unshare-net --die-with-parent --)
+  rm -rf "$src" && mkdir -p "$src" "$home/.pub-cache" || return
+  cp -r "$HERE/flutter/pubspec.yaml" "$HERE/flutter/pubspec.lock" "$HERE/flutter/lib" "$HERE/flutter/linux" "$src/"
+  ln -s "$cache/hosted" "$home/.pub-cache/hosted"
+  # A HOME of its own keeps flutter's and dart's settings out of the real one; analytics off, no check for a newer
+  # flutter, and no network.
+  if (cd "$src" && export HOME="$home" XDG_CONFIG_HOME="$home/.config" PUB_CACHE="$home/.pub-cache" \
+        FLUTTER_SUPPRESS_ANALYTICS=true CI=true &&
+        "${nonet[@]}" "$fl" --no-version-check config --no-analytics &&
+        "${nonet[@]}" "$fl" --no-version-check pub get --offline &&
+        "${nonet[@]}" "$fl" --no-version-check build linux --release --no-pub) >"$OUT/flutter/build.log" 2>&1; then
+    ln -sfn src/build/linux/x64/release/bundle/flutter-bench "$OUT/flutter/bin" && echo 'built flutter'
+  else
+    failed flutter "flutter build linux failed: $(last "$OUT/flutter/build.log")"
+  fi
+}
+
 for t in "$@"; do
   mkdir -p "$OUT/$t"
   case $t in
     gtk4) build_gtk4 ;;
     qtquick) build_qtquick ;;
     slint|iced) build_rust "$t" ;;
-    *) failed "$t" 'no such toolkit (gtk4 qtquick slint iced)' ;;
+    flutter) build_flutter ;;
+    *) failed "$t" 'no such toolkit (gtk4 qtquick slint iced flutter)' ;;
   esac
 done
 rm -rf "$OUT/cargo"  # the links, and the crates cargo unpacked

@@ -55,12 +55,15 @@ FRAMES_SPIKE_MIB="${FRAMES_SPIKE_MIB:-}"
 # toolkits/build.sh built them in before (empty: build them into the temp dir); the launches timed for the first frame;
 # the seconds of still screen; the seconds the machine is left to settle after the builds and after each toolkit's
 # loaded run, before the section waits for a 1-minute load average under 1. Their animation runs last FRAMES_S
-# seconds, under the load of FRAMES_CELLS and FRAMES_SPIKE_MIB.
-TOOLKITS="${TOOLKITS:-gtk4 qtquick slint iced}"
+# seconds, under the load of FRAMES_CELLS and FRAMES_SPIKE_MIB. Empty FLUTTER: flutter on PATH; empty FLUTTER_PUB_CACHE:
+# PUB_CACHE, else ~/.pub-cache, where the packages Flutter pins already are (the build is offline).
+TOOLKITS="${TOOLKITS:-gtk4 qtquick slint iced flutter}"
 TOOLKITS_PREBUILT="${TOOLKITS_PREBUILT:-}"
 TOOLKITS_LAUNCHES="${TOOLKITS_LAUNCHES:-5}"
 TOOLKITS_STILL_S="${TOOLKITS_STILL_S:-60}"
 TOOLKITS_SETTLE_S="${TOOLKITS_SETTLE_S:-90}"
+FLUTTER="${FLUTTER:-}"
+FLUTTER_PUB_CACHE="${FLUTTER_PUB_CACHE:-}"
 
 # Where temp files go (removed at exit; tmpfs, as in the M run) and where reports are written.
 BENCH_TMP="${BENCH_TMP:-${TMPDIR:-/tmp}}"

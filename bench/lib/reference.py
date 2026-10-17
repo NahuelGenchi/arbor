@@ -487,7 +487,7 @@ ENTRIES = [
 
 # 10. The toolkits of issue #8 (sections/toolkits.py, run only with ONLY=toolkits): the same test program in each
 # candidate toolkit, measured the same way. The rows are new; they have no reference yet.
-TOOLKITS = (('gtk4', 'GTK 4'), ('qtquick', 'Qt Quick'), ('slint', 'Slint'), ('iced', 'iced'))
+TOOLKITS = (('gtk4', 'GTK 4'), ('qtquick', 'Qt Quick'), ('slint', 'Slint'), ('iced', 'iced'), ('flutter', 'Flutter'))
 TOOLKIT_ROWS = (
     ('first_frame_ms', 'from its start to its first frame on screen', 'ms', {'dp': 0}),
     ('rss_start_mib', 'memory 2.5 s after its start: RSS', 'MiB', {}),
