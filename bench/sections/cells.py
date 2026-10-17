@@ -1,7 +1,9 @@
 """2. Cell start times: unshare (user ns; user+net+pid+mnt), bwrap --unshare-all, docker run (median of 8).
 
-The namespace cells use the start-time method of runtimes.py. docker runs an image that is already present
-(--pull never, --network none, --rm), so nothing is downloaded and no container is left behind.
+The namespace cells use the start-time method of runtimes.py. The unshare cells run only where this process may use
+user namespaces; where AppArmor blocks them (Ubuntu 24.04 and later, from an ordinary terminal) they fail with that
+reason (common.userns_blocked). bwrap still runs there where AppArmor has a profile for it. docker runs an image that
+is already present (--pull never, --network none, --rm), so nothing is downloaded and no container is left behind.
 """
 import os
 import shutil
@@ -10,24 +12,28 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib'))
-from common import emit, emit_blocks, env, fail, median, run, spawn_blocks  # noqa: E402
+from common import (BLOCKED_TOO, emit, emit_blocks, env, fail, median, run, spawn_blocks,  # noqa: E402
+                    userns_blocked)
 
 
 def main():
     true_bin = shutil.which('true') or '/bin/true'
     unshare, bwrap = shutil.which('unshare'), shutil.which('bwrap')
+    blocked = userns_blocked()
     cases = []
-    if unshare:
+    if not unshare or blocked:
+        fail(['cell.unshare_user', 'cell.unshare_4ns'], blocked or 'unshare not found')
+    else:
         cases += [('cell.unshare_user', [unshare, '-Ur', true_bin]),
                   ('cell.unshare_4ns', [unshare, '-Urnpfm', '--mount-proc', true_bin])]
-    else:
-        fail(['cell.unshare_user', 'cell.unshare_4ns'], 'unshare not found')
     if bwrap:
         cases.append(('cell.bwrap', [bwrap, '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
                                      '--unshare-all', '--die-with-parent', true_bin]))
     else:
         fail('cell.bwrap', 'bwrap not found')
     meds, errs = spawn_blocks(cases)
+    if blocked and 'cell.bwrap' in errs:
+        errs['cell.bwrap'] = f"{errs['cell.bwrap']}{BLOCKED_TOO}"
     emit_blocks(meds, errs)
     docker()
 

@@ -105,20 +105,24 @@ class Rows:
 
 def perf_note(rows, e, rec):
     parts = []
+    suite = e['src'] == 'suite'
     blocks = (rec.get('ctx') or {}).get('blocks')
     if blocks and isinstance(e['m'], (int, float)):
         lo, hi = min(blocks), max(blocks)
         rng = f'{fmt(lo, e["unit"], e.get("dp"))}–{fmt(hi, e["unit"], e.get("dp"))}'
+        rng = f'{e.get("blocks_label", "block medians")} {rng}'
         if lo * (1 - TOL) <= e['m'] <= hi * (1 + TOL):
-            parts.append(f'M is within run-to-run noise: block medians {rng}')
+            parts.append(f'{"the reference" if suite else "M"} is within run-to-run noise: {rng}')
         else:
-            parts.append(f'block medians {rng}')
+            parts.append(rng)
     meta = rows.meta
     if meta.get('epp') and meta['epp'] != M_INFO['epp']:
         parts.append(f"CPU energy preference is {meta['epp']} (M: {M_INFO['epp']})")
     now, m = rec.get('value'), e['m']
     if isinstance(now, (int, float)) and isinstance(m, (int, float)) and now < m * (1 - TOL):
-        parts.append(M_PRESSURE)  # load here cannot make a run faster
+        # load here cannot make a run faster
+        parts.append(f"faster than the reference run, which started at a load average of {e.get('ref_load')}" if suite
+                     else M_PRESSURE)
     elif meta.get('load1') is not None:
         parts.append(f"load average {meta['load1']} at start" +
                      (f" (busy: {meta['busy']} of a core)" if meta.get('busy') else ''))
@@ -223,8 +227,10 @@ def note_ctx(e, rec):
         return f"{ctx['files']} files" + (f", {ctx['speedup']}× faster than rg" if ctx.get('speedup') else '')
     if k == 'cell.py_fork_ms' and ctx.get('speedup'):
         return f"{ctx['speedup']}× faster than fresh"
-    if k == 'storage.fork_ms':
+    if k in ('storage.fork_ms', 'storage.fork_bwrap_ms'):
         return f"tree {ctx.get('tree')}; a write in the fork reached the lower tree: {ctx.get('write_reached_lower')}"
+    if k == 'storage.fork_bwrap_overlay_ms' and ctx.get('sandbox_ms'):
+        return f"the same sandbox without the overlay: {ctx['sandbox_ms']:.2f} ms"
     if k == 'heap.lzo' and ctx.get('roundtrip_checked'):
         return f"kernel uses lzo-rle (LZO1X-1 + zero runs); round trips checked {ctx['roundtrip_checked']}"
     if k.startswith('heap.') and ctx.get('mib_per_s'):
@@ -248,6 +254,7 @@ def main(results, meta_path, out):
     table, data = [], []
     counts = {'✅': 0, '⚠️': 0, '🆕': 0, '❌': 0}
     known = {e['key'] for e in ENTRIES}
+    suite_dates = set()
     extra = [dict(key=k, sec=k.split('.')[0], label=k, m=None, unit='', kind='perf', src='run')
              for k in recs if k not in known]
     skipped = os.environ.get('BENCH_SKIPPED', '').split()
@@ -260,7 +267,10 @@ def main(results, meta_path, out):
             note = note_ctx(e, rec)
         counts[icon] += 1
         now = rec.get('value') if rec else None
-        mtxt = fmt(e['m'], e['unit'], e.get('dp')) + ('' if e['src'] == 'opt' or e['m'] is None else ' †')
+        mark = {'run': ' †', 'suite': ' ‡'}.get(e['src'], '') if e['m'] is not None else ''
+        if mark == ' ‡':
+            suite_dates.add(e['ref_date'])
+        mtxt = fmt(e['m'], e['unit'], e.get('dp')) + mark
         cell = lambda s: str(s).replace('|', '\\|').replace('\n', ' ')  # noqa: E731
         table.append(f"| {e['sec']} | {cell(e['label'])} | {cell(mtxt)} | {cell(fmt(now, e['unit'], e.get('dp')))} | "
                      f"{delta} | {icon} | {cell(note)} |")
@@ -280,7 +290,10 @@ def main(results, meta_path, out):
         f"RAM available, {m.get('swap_used_gib', '?')} GiB swap in use at start. Tools: {m.get('tools', '?')}."
         + (f" Sections not run (ONLY/SKIP): {', '.join(skipped)}." if skipped else ''),
         f"**Reference:** M = measured on this PC on {M_INFO['date']} for OPTIMIZATION.md; † = from that run's raw output, "
-        "not quoted in OPTIMIZATION.md. ✅ within ±15% of M (or within the precision M was printed with) · ⚠️ outside, "
+        "not quoted in OPTIMIZATION.md"
+        + (f"; ‡ = not M: the suite's own reference, from its run of {', '.join(sorted(suite_dates))}"
+           if suite_dates else '')
+        + ". ✅ within ±15% of M (or within the precision M was printed with) · ⚠️ outside, "
         "cause in the note · 🆕 no M value · ❌ failed.",
         f"**Result:** {counts['✅']} within ±15%, {counts['⚠️']} outside with the cause noted, {counts['🆕']} new, "
         f"{counts['❌']} failed.",

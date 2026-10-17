@@ -2,7 +2,8 @@
 
 src 'opt' = the number is quoted in OPTIMIZATION.md (some rounded there); 'run' = it appears only in that
 investigation's raw output, kept here so the rows next to the quoted ones have a baseline too. m=None marks a
-metric this suite adds (no M value).
+metric this suite adds (no M value). src 'suite' = not an M value: a row added after the investigation, whose m is
+the suite's own reference from a later run on this PC (ref_date, and ref_load, the load average at its start).
 
 kind decides how a difference beyond the tolerance is explained:
   perf    timing or size on fixed inputs; expected to reproduce
@@ -201,6 +202,14 @@ ENTRIES = [
       why=lambda r: f"7 runs {r.ctx('storage.fork_ms', 'runs_ms')} ms; M was a single run; the time is mostly starting "
                     "mount(8) and date(1), see the syscall row"),
     E('storage.fork_syscall_ms', 'Storage', 'overlay CoW fork, mount(2) syscall only', None, 'ms', 'perf', dp=3),
+    # Through bwrap, which runs where AppArmor blocks unshare (Ubuntu 24.04+): a different method, so its own rows.
+    # Reference: `ONLY="cells storage"` run from an ordinary context (a systemd --user unit), 17 Oct 2026.
+    E('storage.fork_bwrap_ms', 'Storage', 'overlay CoW fork through bwrap, `true` started in it', 1.99, 'ms', 'perf',
+      'suite', ref_date='17 Oct 2026', ref_load=10.76),
+    E('storage.fork_bwrap_overlay_ms', 'Storage', "overlay CoW fork through bwrap, the overlay's share", 0.099, 'ms',
+      'perf', 'suite', dp=3, ref_date='17 Oct 2026', ref_load=10.76, blocks_label='block differences',
+      why=lambda r: f"the difference of two close medians: {r.v('storage.fork_bwrap_ms'):.2f} ms with the overlay, "
+                    f"{r.ctx('storage.fork_bwrap_overlay_ms', 'sandbox_ms'):.2f} ms without"),
     E('storage.git_worktree_ms', 'Storage', '`git worktree add` (baseline)', 79, 'ms', 'perf', 'opt', dp=0,
       why=lambda r: f"runs {r.ctx('storage.git_worktree_ms', 'runs_ms')} ms (M timed one); checkout "
                     f"{r.ctx('storage.git_worktree_ms', 'checkout_mib')} MiB, {r.ctx('storage.git_worktree_ms', 'tracked_files')} "
