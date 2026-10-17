@@ -1,7 +1,7 @@
 /* Shared parts of the Mission Control wireframes in docs/INTERFACE.md, on top of base.css. Made-up data only.
    Contrast meets WCAG 2.2 AA in both themes: the faintest text (--ink-3) is at least 4.7:1 on paper and wash, the
    main button 6.8:1 in light and 8.9:1 in dark, and every status mark and meter fill at least 3:1 against what is
-   behind it, which is why the light theme's amber is darker here than in the README's pictures. */
+   behind it, which is why the light theme's amber is darker here than in base.css. */
 :root {
   --amber: #a86f0c;
   --go: #146845; --on-go: #ffffff;
