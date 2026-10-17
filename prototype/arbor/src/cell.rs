@@ -6,11 +6,11 @@
 //! cleared environment; no network, no new user namespaces and an empty session keyring; and a filter that refuses
 //! the kernel calls sandbox escapes start from (see `seccomp`). Its one way out is a socket to the outbox, where it
 //! asks for effects that a person may release (see `outbox`). A key (see `key`) opens more folders and files and
-//! passes variables in; password files stay hidden even then. A key can give the cell a home folder of its own, kept
-//! between runs, in place of the empty one. A key can also open the network to the hosts it names:
-//! the cell's first process is then arbor itself, which hands the arbor outside a port on the cell's loopback to
-//! answer as a proxy, and becomes the command (see `net`). Where the user's systemd manager allows it, each cell
-//! also runs in its own cgroup (see `cgroup`), with its limits, and its whole cost is read from there. A command
+//! passes variables in; password files and agents' records of your sessions stay hidden even then. A key can give the
+//! cell a home folder of its own, kept between runs, in place of the empty one. A key can also open the network to the
+//! hosts it names: the cell's first process is then arbor itself, which hands the arbor outside a port on the cell's
+//! loopback to answer as a proxy, and becomes the command (see `net`). Where the user's systemd manager allows it, each
+//! cell also runs in its own cgroup (see `cgroup`), with its limits, and its whole cost is read from there. A command
 //! the cell would not find is refused before it starts, in plain words: where it is hidden, and the key option that
 //! opens it (see `View::check`).
 
@@ -165,9 +165,9 @@ enum Mount {
     Folder,
     /// A file a key opens, read-only.
     File,
-    /// A folder of password files, empty.
+    /// A folder of password files or agents' records, empty.
     Secrets,
-    /// A password file, which reads empty.
+    /// A password file or an agent's record, which reads empty.
     Secret,
 }
 
@@ -261,8 +261,9 @@ impl View {
             }
         }
         shown.sort_by_key(|(p, _)| p.components().count());
-        // Password files stay hidden wherever the cell would see them, inside what shows through too, unless the world or
-        // the key is that file or folder itself. What the key opens inside one of them goes on top.
+        // Password files and agents' records stay hidden wherever the cell would see them, inside what shows through
+        // too, unless the world or the key is that file or folder itself. What the key opens inside one of them goes
+        // on top.
         let shown_paths: Vec<PathBuf> = shown.iter().map(|(p, _)| p.clone()).collect();
         let masks = home
             .as_deref()

@@ -58,8 +58,8 @@ Inside a world, `arbor look` reads what the world sees, and `arbor effect [--cos
 network, once you release it. --wait waits for your answer and prints what CMD printed.
 
 The real folder does not change until `arbor keep`. Inside a world the rest of the computer is read-only,
-your home folder is empty (or the key's own, with --home) but for what a key opens, password files stay
-hidden, and there is no network but the hosts a key opens.
+your home folder is empty (or the key's own, with --home) but for what a key opens, password files and
+agents' transcripts stay hidden, and there is no network but the hosts a key opens.
 Read the diff before keeping: kept files such as .git/hooks run later on your computer.
 ";
 

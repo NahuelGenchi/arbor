@@ -104,6 +104,46 @@ pub const SECRETS: [&str; 35] = [
     ".codex/.credentials.json",
 ];
 
+/// What AI agents keep of your sessions, relative to the home folder: the transcripts, with each file read and each
+/// command's output, the prompts you typed, their notes from past sessions, and their copies of files, pastes and
+/// logs. They stay hidden like `SECRETS`, by the same rules. A `*` in an entry's last part stands for any run of
+/// characters, for names that change between versions.
+pub const RECORDS: [&str; 25] = [
+    // Claude Code: transcripts, with each project's notes; your prompts; files as they were before an edit; pastes
+    // and attachments; plans and task lists; debug logs; transcripts packed for feedback, and drafts; `/insights`
+    // reports; background sessions; subagents' notes
+    ".claude/projects",
+    ".claude/history.jsonl",
+    ".claude/file-history",
+    ".claude/paste-cache",
+    ".claude/image-cache",
+    ".claude/uploads",
+    ".claude/plans",
+    ".claude/tasks",
+    ".claude/todos",
+    ".claude/debug",
+    ".claude/feedback-bundles",
+    ".claude/feedback",
+    ".claude/usage-data",
+    ".claude/jobs",
+    ".claude/agent-memory",
+    // Codex: transcripts, archived ones too; the messages you sent; sessions' names; logs; memories of past chats
+    ".codex/sessions",
+    ".codex/archived_sessions",
+    ".codex/history.jsonl",
+    ".codex/session_index.jsonl",
+    ".codex/log",
+    ".codex/memories",
+    ".codex/memories_v2",
+    ".codex/memories_extensions",
+    // Codex's databases, with the threads' history and the queue of your messages, named by version, and the files
+    // SQLite keeps beside them
+    ".codex/*.sqlite*",
+    // OpenCode's prompt history, stashed prompts and recently opened files. Its sessions are in its data folder,
+    // among `SECRETS`.
+    ".local/state/opencode",
+];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Key {
     pub name: String,
@@ -305,16 +345,17 @@ pub fn toolchains() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The password and key files of the home folder `home` that a cell would see, with whether each is a folder. A
-/// cell sees what lies outside its `hidden` folders, and what lies inside `shown`: its world's folder and what its
-/// key opens. Each is found where it really is, so one linked from elsewhere counts too. One that is itself among
-/// `shown` was opened on purpose and stays.
+/// The password files and agents' records of the home folder `home` that a cell would see, with whether each is a
+/// folder. A cell sees what lies outside its `hidden` folders, and what lies inside `shown`: its world's folder and
+/// what its key opens. Each is found where it really is, so one linked from elsewhere counts too. One that is itself
+/// among `shown` was opened on purpose and stays.
 pub fn secrets_in(home: &Path, hidden: &[PathBuf], shown: &[PathBuf]) -> Vec<(PathBuf, bool)> {
     let mut found: Vec<(PathBuf, bool)> = Vec::new();
-    for rel in SECRETS {
-        let Ok(path) = fs::canonicalize(home.join(rel)) else {
-            continue;
-        };
+    let listed = SECRETS
+        .iter()
+        .chain(&RECORDS)
+        .flat_map(|rel| named(home, rel));
+    for path in listed.filter_map(|p| fs::canonicalize(p).ok()) {
         let seen = !hidden.iter().any(|h| paths::contains(h, &path))
             || shown
                 .iter()
@@ -327,6 +368,43 @@ pub fn secrets_in(home: &Path, hidden: &[PathBuf], shown: &[PathBuf]) -> Vec<(Pa
         }
     }
     found
+}
+
+/// What the list entry `rel` names in the home folder `home`: the file or folder at that path, or, when its last part
+/// has a `*`, each one in that folder whose name matches, in name order.
+fn named(home: &Path, rel: &str) -> Vec<PathBuf> {
+    let Some((dir, pattern)) = rel.rsplit_once('/').filter(|(_, name)| name.contains('*')) else {
+        return vec![home.join(rel)];
+    };
+    let dir = home.join(dir);
+    let mut names: Vec<_> = fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name())
+        .filter(|name| name.to_str().is_some_and(|name| matches(pattern, name)))
+        .collect();
+    names.sort();
+    names.iter().map(|name| dir.join(name)).collect()
+}
+
+/// Whether `name` matches `pattern`, in which each `*` stands for any run of characters.
+fn matches(pattern: &str, name: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let Some(mut rest) = name.strip_prefix(parts.next().unwrap_or_default()) else {
+        return false;
+    };
+    let mut parts: Vec<&str> = parts.collect();
+    let Some(last) = parts.pop() else {
+        return rest.is_empty();
+    };
+    for part in parts {
+        let Some(at) = rest.find(part) else {
+            return false;
+        };
+        rest = &rest[at + part.len()..];
+    }
+    rest.ends_with(last)
 }
 
 fn local(ts_ns: u64) -> Option<libc::tm> {
@@ -1192,6 +1270,67 @@ mod tests {
         );
         assert!(Key::load("Bad Name").is_err_and(|e| e.code == crate::error::USAGE));
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn hides_agents_records_too_and_finds_databases_whatever_their_version() {
+        let root = std::env::temp_dir().join(format!("arbor-records-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("home/.claude/projects")).unwrap();
+        fs::create_dir_all(root.join("home/.codex")).unwrap();
+        let home = fs::canonicalize(root.join("home")).unwrap();
+        let codex = home.join(".codex");
+        for name in [
+            "state_5.sqlite",
+            "state_5.sqlite-wal",
+            "logs_9.sqlite",
+            "config.toml",
+        ] {
+            fs::write(codex.join(name), "").unwrap();
+        }
+        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown);
+        let db = |name: &str| (codex.join(name), false);
+
+        // The databases come in name order, and the settings next to them stay.
+        assert_eq!(
+            found(&[home.join(".claude"), codex.clone()]),
+            vec![
+                (home.join(".claude/projects"), true),
+                db("logs_9.sqlite"),
+                db("state_5.sqlite"),
+                db("state_5.sqlite-wal")
+            ]
+        );
+        // One that a key names shows.
+        assert_eq!(
+            found(&[codex.clone(), codex.join("state_5.sqlite")]),
+            vec![db("logs_9.sqlite"), db("state_5.sqlite-wal")]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_star_in_a_listed_name_stands_for_any_run_of_characters() {
+        for (pattern, name) in [
+            ("*.sqlite*", "state_5.sqlite"),
+            ("*.sqlite*", "logs_2.sqlite-wal"),
+            ("a*", "a"),
+            ("*", ""),
+            ("a*b*c", "abc"),
+            ("a*b*c", "a-b-b-c"),
+            ("abc", "abc"),
+        ] {
+            assert!(matches(pattern, name), "{pattern} should match {name}");
+        }
+        for (pattern, name) in [
+            ("*.sqlite*", "config.toml"),
+            ("*.sqlite*", "sqlite"),
+            ("a*a", "a"),
+            ("a*b*c", "acb"),
+            ("abc", "abcd"),
+        ] {
+            assert!(!matches(pattern, name), "{pattern} should not match {name}");
+        }
     }
 
     #[test]
