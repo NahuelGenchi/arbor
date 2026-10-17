@@ -12,8 +12,9 @@ is what OpenCode records as output plus reasoning, which it keeps apart and the 
 B/A is the ratio of the arms' medians for one task. Its 95% interval is a bootstrap: 4,000 times, each arm's sessions
 of the task are drawn again with replacement, and the 2.5th and 97.5th percentiles of the ratio are kept. All tasks is
 the geometric mean of the tasks' ratios, bootstrapped the same way, task by task. P(B<A) is the share of pairs of one
-A and one B session of the task in which B spent less (ties count half). The reference row is the run that
-SESSIONS_REF in lib/reference.py records, for comparing a new run with it.
+A and one B session of the task in which B spent less (ties count half). Tool text is the characters the tools
+returned to the agent in a session. The reference row is the run that SESSIONS_REF in lib/reference.py records, for
+comparing a new run with it.
 """
 import json
 import math
@@ -40,8 +41,10 @@ METRICS = [  # (label, value of a record)
     ('cache read', lambda r: r.get('cache_read', 0)),
     ('output', lambda r: r.get('output', 0) + r.get('reasoning', 0)),
     ('last context', lambda r: r.get('context_last', 0)),
+    ('tool text', lambda r: sum((r.get('tool_chars') or {}).values())),
     ('wall s', lambda r: r.get('wall_s', 0)),
 ]
+RATIOS = ('weighted', 'steps', 'input', 'output', 'tool text')  # the columns of B against A
 
 
 def provider_error(rec):
@@ -52,17 +55,22 @@ def provider_error(rec):
 
 def load(path):
     """(meta, end, the sessions that count, the slots the provider ended): each slot's last final attempt."""
-    meta, end, slots = {}, {}, {}
+    meta, end, slots, counted = {}, {}, {}, False
     for line in open(path):
         r = json.loads(line)
         if r.get('meta'):
             meta = r
         elif r.get('meta_resume'):
             meta.setdefault('resumed', []).append(r)
+            counted = False
         elif r.get('meta_end'):
-            end = r
+            if counted or not end:  # the end of the last part that added a session
+                end = r
         elif r.get('final'):
             slots[r['rep'], r['task'], r['arm']] = r
+            counted = counted or not provider_error(r)
+            if meta.get('resumed'):
+                meta['resumed'][-1]['added'] = meta['resumed'][-1].get('added', 0) + (not provider_error(r))
     recs = sorted(slots.values(), key=lambda r: r['n'])
     return meta, end, [r for r in recs if not provider_error(r)], [r for r in recs if provider_error(r)]
 
@@ -118,7 +126,8 @@ def report(path):
            "remote model's answers vary from run to run, and the model behind the name can change, so a new run will "
            "not repeat these numbers exactly." + ''.join(
                f" The run stopped after session {r['after']} and went on at {r['date'][11:16]} (load average "
-               f"{load_avg(r)}) with `--resume`." for r in meta.get('resumed', [])), '',
+               f"{load_avg(r)}) with `--resume`" + ('.' if r.get('added') else ', which added no session.')
+               for r in meta.get('resumed', [])), '',
            'Median (min–max) per session. Weighted: input 1, cache write 1.25, cache read 0.1, output 5.', '',
            '| task | arm | ok | ' + ' | '.join(m for m, _ in METRICS) + ' | arbor look | read |',
            '| :--- | :-: | :-: |' + ' ---: |' * (len(METRICS) + 2)]
@@ -135,37 +144,31 @@ def report(path):
     if len(arms) == 2:
         a_arm, b_arm = arms if arms[0] == 'A' else arms[::-1]
         out += ['', f'{b_arm} against {a_arm}: the ratio of medians, its 95% bootstrap interval, and '
-                f'P({b_arm}<{a_arm}).', '', '| task | weighted | steps | input | output | ok A | ok B |',
-                '| :--- |' + ' ---: |' * 6]
-        groups = {m: [] for m, _ in METRICS[:5]}
-        for t in tasks + ['all tasks']:
-            if t == 'all tasks':
-                cells = []
-                for m in ('weighted', 'steps', 'input', 'output'):
-                    p, lo, hi = boot(groups[m], rng)
-                    cells.append(f'{p:.2f} ({lo:.2f}–{hi:.2f})')
-                ra = [r for r in recs if r['arm'] == a_arm]
-                rb = [r for r in recs if r['arm'] == b_arm]
-            else:
-                ra = [r for r in recs if r['task'] == t and r['arm'] == a_arm]
-                rb = [r for r in recs if r['task'] == t and r['arm'] == b_arm]
-                if not ra or not rb:
-                    continue
-                cells = []
-                for m, f in METRICS[:5]:
+                f'P({b_arm}<{a_arm}).', '', '| task | ' + ' | '.join(RATIOS) + f' | ok {a_arm} | ok {b_arm} |',
+                '| :--- |' + ' ---: |' * (len(RATIOS) + 2)]
+        groups = {m: [] for m in RATIOS}
+        for t in tasks:
+            ra = [r for r in recs if r['task'] == t and r['arm'] == a_arm]
+            rb = [r for r in recs if r['task'] == t and r['arm'] == b_arm]
+            if not ra or not rb:
+                continue
+            cells = []
+            for m, f in METRICS:
+                if m in RATIOS:
                     a, b = [f(r) for r in ra], [f(r) for r in rb]
                     groups[m].append((a, b))
-                    if m == 'cache read':
-                        continue
                     p, lo, hi = boot([(a, b)], rng)
                     cells.append(f'{p:.2f} ({lo:.2f}–{hi:.2f}), {below(a, b):.2f}')
-            ok = [f"{sum(bool(r.get('success')) for r in rs)}/{len(rs)}" for rs in (ra, rb)]
-            out.append(f'| {t} | ' + ' | '.join(cells) + f' | {ok[0]} | {ok[1]} |')
+            out.append(f'| {t} | ' + ' | '.join(cells) + ' | ' + ' | '.join(
+                f"{sum(bool(r.get('success')) for r in rs)}/{len(rs)}" for rs in (ra, rb)) + ' |')
+        cells = ['{:.2f} ({:.2f}–{:.2f})'.format(*boot(groups[m], rng)) for m, _ in METRICS if m in RATIOS]
+        out.append('| all tasks | ' + ' | '.join(cells) + ' | ' + ' | '.join(
+            f"{sum(bool(r.get('success')) for r in recs if r['arm'] == x)}/{sum(r['arm'] == x for r in recs)}"
+            for x in (a_arm, b_arm)) + ' |')
         ref = getattr(reference, 'SESSIONS_REF', None)
         if ref:
             out.append(f"| *reference, {ref['ref_date']}* | " + ' | '.join(
-                '{:.2f} ({:.2f}–{:.2f})'.format(*ref[m]) for m in ('weighted', 'steps', 'input', 'output')) +
-                f" | {ref['ok'][0]} | {ref['ok'][1]} |")
+                '{:.2f} ({:.2f}–{:.2f})'.format(*ref[m]) for m in RATIOS) + f" | {ref['ok'][0]} | {ref['ok'][1]} |")
     tools = sorted({k for r in recs for k in (r.get('tools') or {})})
     if tools:
         out += ['', 'Tool calls and the characters they returned, median per session.', '',
