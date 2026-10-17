@@ -453,10 +453,14 @@ impl View {
             }
             At::Unsure => return Ok(()),
         };
-        let folders: Vec<String> = places
-            .iter()
-            .map(|p| paths::tilde(p.parent().unwrap_or(p)))
-            .collect();
+        // A link and the file it points to are often in the same folder, as rustup's are.
+        let mut folders: Vec<String> = Vec::new();
+        for p in &places {
+            let folder = paths::tilde(p.parent().unwrap_or(p));
+            if !folders.contains(&folder) {
+                folders.push(folder);
+            }
+        }
         let mut msg = format!("{what} in {}, which the world hides", folders.join(" and "));
         if let Some(k) = key {
             msg += &format!(" and key '{}' does not open", k.name);

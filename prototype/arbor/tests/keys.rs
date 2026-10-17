@@ -69,6 +69,8 @@ fn a_command_the_world_hides_is_named_with_the_key_that_opens_it() {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     };
     script(&home.join(".cargo/bin/hello"), "#!/bin/sh\necho hello\n");
+    // As rustup links cargo to itself.
+    std::os::unix::fs::symlink("hello", home.join(".cargo/bin/linked")).unwrap();
     script(&home.join("bin/own"), "#!/bin/sh\necho own\n");
     // A script in the world whose interpreter the world hides.
     script(&e.base.join("greet"), "#!/usr/bin/env hello\n");
@@ -102,6 +104,11 @@ fn a_command_the_world_hides_is_named_with_the_key_that_opens_it() {
     assert!(
         err.contains("`hello` is in ~/.cargo/bin, which the world hides")
             && err.contains("`arbor key new dev --toolchains`, then add `--key dev`"),
+        "{err}"
+    );
+    let err = refused("linked", None);
+    assert!(
+        err.contains("`linked` is in ~/.cargo/bin, which the world hides"),
         "{err}"
     );
     assert!(refused("own", None).contains("`arbor key new dev --read ~/bin`"));
