@@ -474,7 +474,7 @@ fn ps(p: &mut lexopt::Parser) -> Result<i32> {
         .map(|c| {
             let (cpu, mem) = match &c.cgroup {
                 Some(dir) => (
-                    cpu_time(cgroup::read_usage(dir).cpu_us),
+                    cgroup::read_usage(dir).cpu_us.map_or("-".into(), cpu_time),
                     cgroup::memory_now(dir).map_or("-".into(), cgroup::size),
                 ),
                 None => ("-".into(), "-".into()),

@@ -189,7 +189,7 @@ fn ps_and_watch_follow_a_running_cell() {
     assert_eq!(end["cell"].as_str(), Some(cell.as_str()));
     assert_eq!(e.ok(&["ps"]), "", "a finished cell is still listed");
     if with_cgroup {
-        // Linux keeps a peak process count since 6.x; where it does, bwrap and the shell are in it.
+        // Where the kernel keeps a peak process count (pids.peak), bwrap and the shell are in it.
         assert!(end["cost"]["pids"].as_u64().is_none_or(|p| p >= 2), "{end}");
         let group = user_manager()
             .join("arbor.slice/arbor.service/cells")

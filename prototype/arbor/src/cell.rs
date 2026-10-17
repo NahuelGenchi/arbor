@@ -577,7 +577,10 @@ pub fn run(
         code,
         out,
         warning,
-        cpu_ms: usage.map_or(cpu - cpu_before, |u| u.cpu_us / 1000),
+        // systemd may have removed the cgroup first (`systemctl --user stop arbor`); getrusage still counts.
+        cpu_ms: usage
+            .and_then(|u| u.cpu_us)
+            .map_or(cpu - cpu_before, |us| us / 1000),
         mem_kib: usage
             .and_then(|u| u.mem_peak)
             .map_or(max_rss, |b| b.div_ceil(1024)),

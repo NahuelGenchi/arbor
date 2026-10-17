@@ -358,7 +358,8 @@ pub fn new_id() -> String {
 /// What a cell used, from its cgroup.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Usage {
-    pub cpu_us: u64,
+    /// CPU time in microseconds, while the cgroup is there to read it from.
+    pub cpu_us: Option<u64>,
     /// Peak memory in bytes (Linux 5.19 and later).
     pub mem_peak: Option<u64>,
     /// Peak number of processes and threads, where the kernel keeps it.
@@ -507,7 +508,7 @@ fn number(dir: &Path, file: &str) -> Option<u64> {
 
 pub fn read_usage(dir: &Path) -> Usage {
     Usage {
-        cpu_us: field(dir, "cpu.stat", "usage_usec").unwrap_or(0),
+        cpu_us: field(dir, "cpu.stat", "usage_usec"),
         mem_peak: number(dir, "memory.peak"),
         pids_peak: number(dir, "pids.peak"),
         oom_kills: field(dir, "memory.events", "oom_kill").unwrap_or(0),
