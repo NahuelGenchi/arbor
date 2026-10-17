@@ -1,0 +1,15 @@
+[package]
+name = "slint-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The Mission Control test program of issue #8, in Slint"
+
+[dependencies]
+# Chosen explicitly rather than by default features, so the Qt backend is never picked up where Qt is installed: the
+# winit backend on Wayland, the default FemtoVG renderer (OpenGL), and AccessKit for AT-SPI.
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "accessibility"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
