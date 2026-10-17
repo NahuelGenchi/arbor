@@ -1,6 +1,7 @@
 //! Keys end to end: a cell sees only its world until a key opens more, for a while and within limits, a key's own
-//! home folder keeps what its commands write there from one run to the next, and a key taken back or ended stops
-//! what runs under it. They skip like `common` says.
+//! home folder keeps what its commands write there from one run to the next, a key taken back or ended stops what
+//! runs under it, and a renewed one lasts longer, home folder and running commands included. They skip like `common`
+//! says.
 
 mod common;
 
@@ -573,6 +574,156 @@ fn an_ended_key_keeps_its_home_until_it_is_taken_back() {
             .ends_with("; removed 1 home folder\n")
     );
     assert!(!home.exists());
+}
+
+#[test]
+fn a_renewed_key_keeps_its_home_past_its_first_end() {
+    let Some(e) = Env::new("renew") else { return };
+    new_world(&e);
+    let made = Instant::now();
+    e.ok(&["key", "new", "agent", "--home", "--for", "2s"]);
+    e.ok(&["key", "new", "short", "--within", "agent"]);
+    inside(&e, Some("agent"), "echo kept > ~/.agentrc");
+    std::thread::sleep(
+        (made + Duration::from_millis(2100)).saturating_duration_since(Instant::now()),
+    );
+    let row = |name: &str| {
+        let keys = e.ok(&["keys"]);
+        let row = keys.lines().find(|l| l.starts_with(&format!("{name} ")));
+        row.unwrap().to_string()
+    };
+    let refused = |args: &[&str]| {
+        let out = e.arbor(args);
+        assert_eq!(out.status.code(), Some(3), "{args:?}");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+
+    // Once it has ended, its commands are refused, and arbor says how to renew it.
+    let err = refused(&["run", "demo", "--key", "agent", "--", "true"]);
+    assert!(
+        err.contains("key 'agent' ended at")
+            && err.contains("`arbor key renew agent` moves its end later"),
+        "{err}"
+    );
+    assert!(row("agent").contains(" ended "));
+    // A key made within it cannot outlast it, so it waits for that one.
+    let err = refused(&["key", "renew", "short"]);
+    assert!(err.contains("renew that one first"), "{err}");
+    // Renewed, it opens its home again, with what its commands left there.
+    let said = e.ok(&["key", "renew", "agent", "--for", "1h"]);
+    assert!(
+        said.starts_with("renewed key agent until ") && said.contains(" instead of "),
+        "{said}"
+    );
+    assert_eq!(inside(&e, Some("agent"), "cat ~/.agentrc"), "kept\n");
+    assert!(!row("agent").contains(" ended "));
+    // The key made within it keeps its own end, until it is renewed too, up to the other's end.
+    assert!(row("short").contains(" ended "));
+    refused(&["key", "renew", "short", "--for", "2h"]);
+    e.ok(&["key", "renew", "short"]);
+    assert!(!row("short").contains(" ended "));
+    assert_eq!(inside(&e, Some("short"), "cat ~/.agentrc"), "kept\n");
+
+    // An end sooner than the one it has is refused; mistakes in how renew is called change nothing.
+    let err = refused(&["key", "renew", "agent", "--for", "1m"]);
+    assert!(err.contains("already lasts until"), "{err}");
+    for args in [
+        &["key", "renew", "nosuch"][..],
+        &["key", "renew"],
+        &["key", "renew", "agent", "--for", "1h", "--until", "18:00"],
+        &["key", "renew", "agent", "--read", "/usr"],
+    ] {
+        assert_eq!(e.arbor(args).status.code(), Some(2), "{args:?}");
+    }
+    // The ledger has each renewal, and each refusal, with its key.
+    let rows = e.ledger_rows();
+    let renewals: Vec<(&str, &str)> = rows
+        .iter()
+        .filter(|r| r.contains(" renew "))
+        .map(|r| {
+            let key = ["agent", "short"]
+                .into_iter()
+                .find(|k| r.contains(&format!(" {k} ")))
+                .unwrap_or("?");
+            let out = [" ok ", " refused "]
+                .into_iter()
+                .find(|o| r.contains(o))
+                .unwrap_or("?");
+            (key, out.trim())
+        })
+        .collect();
+    assert_eq!(
+        renewals,
+        [
+            ("short", "refused"),
+            ("agent", "ok"),
+            ("short", "refused"),
+            ("short", "ok"),
+            ("agent", "refused")
+        ],
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.contains(" renew ") && r.contains("key agent until ")),
+        "{rows:#?}"
+    );
+    // Taken back, a renewed key's home goes as any other's.
+    assert!(
+        e.ok(&["key", "take-back", "agent"])
+            .ends_with("; removed 1 home folder\n")
+    );
+    assert!(!e.home.join("homes/agent").exists());
+}
+
+#[test]
+fn a_command_running_under_a_key_renewed_meanwhile_runs_until_the_new_end() {
+    let Some(e) = Env::new("renewrun") else {
+        return;
+    };
+    new_world(&e);
+    e.ok(&["new", "other", "--from", e.base.to_str().unwrap()]);
+    let made = Instant::now();
+    e.ok(&["key", "new", "agent", "--for", "2s"]);
+    // One command that ends on its own after the key's first end, and one that would run on.
+    let start = |world: &str, script: &str| {
+        e.command(&["run", world, "--key", "agent", "--", "sh", "-c", script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let short = start("demo", "touch started; sleep 4; echo done");
+    let long = start("other", "touch started; sleep 30");
+    wait_for(&e.home.join("worlds/demo/up/started"));
+    wait_for(&e.home.join("worlds/other/up/started"));
+    e.ok(&["key", "renew", "agent", "--for", "6s"]);
+
+    let short = short.wait_with_output().unwrap();
+    assert_eq!(
+        (short.status.code(), String::from_utf8_lossy(&short.stdout)),
+        (Some(0), "done\n".into()),
+        "{}",
+        String::from_utf8_lossy(&short.stderr)
+    );
+    // The other stops at the new end: it is the key's end that moved, not its bound.
+    let long = long.wait_with_output().unwrap();
+    let ran = made.elapsed();
+    assert_eq!(long.status.code(), Some(137));
+    assert!(String::from_utf8_lossy(&long.stderr).contains("key 'agent' ended at"));
+    assert!(
+        ran >= Duration::from_secs(6) && ran < Duration::from_secs(20),
+        "{ran:?}"
+    );
+    let rows = e.ledger_rows();
+    let ended = |out: &str| {
+        rows.iter()
+            .any(|r| r.contains(" run ") && r.contains(" agent ") && r.contains(out))
+    };
+    assert!(
+        ended(" exit 0 ") && ended(" killed: key expired "),
+        "{rows:#?}"
+    );
 }
 
 #[test]

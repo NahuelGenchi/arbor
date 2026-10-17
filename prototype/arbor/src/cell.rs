@@ -1016,29 +1016,51 @@ fn spawn(
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Ended {
     TimeLimit,
-    KeyExpired,
+    /// Its key ended, at this time, in nanoseconds since 1970.
+    KeyExpired(u64),
     /// Someone asked: `arbor stop`, a closed terminal or a signal to arbor.
     Stopped,
     KeyTakenBack,
 }
 
-/// Waits for the cell's first process. At the deadline, or when arbor is asked to stop (SIGTERM, SIGHUP), it kills
-/// the whole cell and says why.
+/// Waits for the cell's first process. At its time limit or when its key ends, whichever comes first, or when arbor
+/// is asked to stop (SIGTERM, SIGHUP), it kills the whole cell and says why. The key's end is read again when it
+/// comes, since a renewal may have moved it later meanwhile.
 fn wait(
     pid: libc::pid_t,
     exited: &OwnedFd,
-    deadline: Option<(Instant, Ended)>,
+    time_limit: Option<Instant>,
+    key: Option<&Key>,
     group: Option<&Group>,
     stops: &sys::Interrupts,
 ) -> io::Result<(ExitStatus, Option<Ended>)> {
+    let at = |end_ns: u64| {
+        let left = end_ns.saturating_sub(world::now_ns());
+        (Instant::now() + Duration::from_nanos(left), end_ns)
+    };
+    let mut key_end = key.map(|k| at(k.until_ns));
     let ended = loop {
         if stops.interrupted() {
             break Some(Ended::Stopped);
         }
-        let left = deadline.map(|(at, why)| (at.saturating_duration_since(Instant::now()), why));
+        let deadline = [
+            time_limit.map(|t| (t, Ended::TimeLimit)),
+            key_end.map(|(t, end)| (t, Ended::KeyExpired(end))),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(t, _)| *t);
+        let left = deadline.map(|(t, why)| (t.saturating_duration_since(Instant::now()), why));
         if let Some((left, why)) = left
             && left.is_zero()
         {
+            if let (Ended::KeyExpired(was), Some(k)) = (why, key) {
+                let end = k.ends_at();
+                if end > was {
+                    key_end = Some(at(end));
+                    continue;
+                }
+            }
             break Some(why);
         }
         if stops.poll(exited.as_fd(), left.map(|(left, _)| left))? {
@@ -1082,10 +1104,8 @@ fn outcome(
                 format!("the command reached its time limit ({limit}) and was stopped"),
             );
         }
-        Some(Ended::KeyExpired) => {
-            let at = key
-                .map(|k| key::clock(k.until_ns, world::now_ns()))
-                .unwrap_or_default();
+        Some(Ended::KeyExpired(end)) => {
+            let at = key::clock(end, world::now_ns());
             return said(
                 "killed: key expired",
                 format!("key '{key_name}' ended at {at}, and the command was stopped"),
@@ -1227,17 +1247,7 @@ pub fn run(
     unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) };
     let (cpu_before, _) = sys::children_usage();
     // The cell stops at its time limit or when its key ends, whichever comes first.
-    let now = Instant::now();
-    let deadline = [
-        limits.time.map(|t| (now + t, Ended::TimeLimit)),
-        key.map(|k| {
-            let left = k.until_ns.saturating_sub(world::now_ns());
-            (now + Duration::from_nanos(left), Ended::KeyExpired)
-        }),
-    ]
-    .into_iter()
-    .flatten()
-    .min_by_key(|(at, _)| *at);
+    let time_limit = limits.time.map(|t| Instant::now() + t);
     let mut inherit = vec![filter.as_fd()];
     if let Some((_, inside)) = &pair {
         inherit.push(inside.as_fd());
@@ -1288,7 +1298,7 @@ pub fn run(
             libc::signal(libc::SIGQUIT, libc::SIG_IGN),
         )
     };
-    let waited = wait(pid, &exited, deadline, group.as_ref(), &stops);
+    let waited = wait(pid, &exited, time_limit, key, group.as_ref(), &stops);
     // The adopted init dies with bwrap (--die-with-parent) and takes the cell's last processes with it.
     while unsafe { libc::waitpid(-1, std::ptr::null_mut(), 0) } > 0
         || io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
@@ -1377,12 +1387,20 @@ mod tests {
             "exit 137, out of memory"
         );
         for (ended, out) in [
-            (Ended::KeyExpired, "killed: key expired"),
+            (Ended::KeyExpired(0), "killed: key expired"),
             (Ended::Stopped, "stopped"),
             (Ended::KeyTakenBack, "stopped: key taken back"),
         ] {
             assert_eq!(outcome(137, Some(ended), None, &limits, None).0, out);
         }
+        // A key ends when it last said it would, which a renewal may have moved since the command started.
+        let end = world::now_ns() + 3600 * 1_000_000_000;
+        let (_, warning) = outcome(137, Some(Ended::KeyExpired(end)), None, &limits, None);
+        assert!(
+            warning
+                .unwrap()
+                .contains(&format!("ended at {},", key::clock(end, world::now_ns()))),
+        );
     }
 
     #[test]
