@@ -60,6 +60,10 @@ ARBOR_REF = {'ref_date': '17 Oct 2026', 'ref_load': 1.18}
 # medians. Their load averages at the start were 0.51, 0.62, 1.37, 1.74 (ref_load) and 1.89; in all five, arbor.run_ms
 # read within 3% of its reference and arbor.run_cgroup_ms within 6%.
 ARBOR_NET_REF = {'ref_date': '17 Oct 2026', 'ref_load': 1.74}
+# The `arbor look` rows came after those, from five runs of the section with ARBOR_BIN set to a release build, made the
+# same way in an A/B with the build before them: the one closest to the median of arbor.look_ms. The token rows read
+# the same in all five, and the rows before them within 2% of the other build's, but for keep and undo.
+ARBOR_LOOK_REF = {'ref_date': '17 Oct 2026', 'ref_load': 2.02}
 
 
 def cycles(r, key):
@@ -383,6 +387,28 @@ ENTRIES = [
     E('arbor.serve_pss_mib', 'Prototype', 'idle PSS: `arbor serve`', 0.87, 'MiB', 'pss', 'suite', dp=2, **ARBOR_REF),
     E('arbor.diff100_tokens', 'Tokens', '`arbor diff`, 100 files changed', 700, 'tok', 'input', 'suite', **ARBOR_REF,
       why=lambda r: '`arbor diff` lists the same 100 changes differently than at the reference'),
+    E('arbor.look_files_tokens', 'Tokens', '`arbor look files`: the 100-file listing, names only', 422, 'tok',
+      'config', 'suite', **ARBOR_LOOK_REF,
+      why=lambda r: f"{r.ctx('arbor.look_files_tokens', 'dir')} holds other names than at the reference; `ls -la` of "
+                    f"them: {r.ctx('arbor.look_files_tokens', 'ls_la')} tokens"),
+    E('arbor.look_log_tokens', 'Tokens', '`arbor look log`: the 20 commits of `git log -20`', 579, 'tok', 'input',
+      'suite', **ARBOR_LOOK_REF,
+      why=lambda r: f"another repository or commit; `git log -20` of them: {r.ctx('arbor.look_log_tokens', 'git_log')} "
+                    'tokens'),
+    E('arbor.look_procs_tokens', 'Tokens', '`arbor look procs`: the 30 using the most memory', 325, 'tok', 'state',
+      'suite', **ARBOR_LOOK_REF,
+      why=lambda r: f"the names of whatever runs now; `ps aux` of the same 30: "
+                    f"{r.ctx('arbor.look_procs_tokens', 'ps_aux')} tokens"),
+    E('arbor.look_status_tokens', 'Tokens', '`arbor look status`: 15 changes in a repository', 128, 'tok', 'input',
+      'suite', **ARBOR_LOOK_REF, why=lambda r: '`arbor look status` lists the same 15 changes differently'),
+    E('arbor.git_status_tokens', 'Tokens', '`git status` of the same 15 changes', 244, 'tok', 'input', 'suite',
+      **ARBOR_LOOK_REF, why=lambda r: "this git version's `git status` words the same changes differently"),
+    E('arbor.look_about_tokens', 'Tokens', '`arbor look` alone: all it answers, described', 309, 'tok', 'input',
+      'suite', **ARBOR_LOOK_REF, why=lambda r: 'the binary measured describes `arbor look` in other words'),
+    E('arbor.look_ms', 'Prototype', 'one `arbor look` call: status, log and files', 2.70, 'ms', 'perf', 'suite', dp=2,
+      **ARBOR_LOOK_REF,
+      why=lambda r: placement(r, f"`git status`, `git log -20` and `ls -la` took "
+                                 f"{r.ctx('arbor.look_ms', 'usual_ms'):.2f} ms one after another")),
 
     # 9. The screen
     E('screen.still_cpu_pct', 'Screen', 'still screen, no input: compositor CPU, share of one core', 2.1, '%', 'state',
