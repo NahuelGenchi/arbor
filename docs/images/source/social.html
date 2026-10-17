@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>social</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@400;500;600&display=block" rel="stylesheet">
+<link rel="stylesheet" href="base.css">
+<style>
+  /* GitHub's social preview: 1280×640, opaque; the outer 40 px may be cropped, so nothing important sits there. */
+  html, body { background: var(--paper); }
+  .wrap { position: relative; width: 1280px; height: 640px; overflow: hidden; }
+  .left { position: absolute; left: 96px; top: 96px; width: 640px; }
+  .brand { display: flex; align-items: center; gap: 28px; }
+  .brand img { width: 112px; height: 112px; }
+  .name { font: 500 124px/1 var(--serif); letter-spacing: -.02em; color: var(--ink); }
+  .tag { margin-top: 40px; font: 400 40px/1.25 var(--serif); color: var(--ink-2); text-wrap: balance; }
+  .foot { position: absolute; left: 96px; bottom: 80px; right: 96px; display: flex; justify-content: space-between;
+          border-top: 2px solid var(--rule); padding-top: 22px; font: 500 22px var(--sans); color: var(--ink-3); }
+  .foot b { color: var(--ink); font-weight: 600; }
+  svg { position: absolute; right: 40px; top: 90px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="left">
+    <div class="brand"><img src="../logo.svg" alt=""><div class="name">arbor</div></div>
+    <div class="tag">an operating system built for AI agents, and for the people who direct them</div>
+  </div>
+  <svg width="460" height="380" viewBox="0 0 460 380" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M40 330H380" stroke="var(--quiet)" stroke-width="8"/>
+    <path d="M380 330H436" stroke="var(--green)" stroke-width="8"/>
+    <path d="M70 330C130 330 120 90 190 90H290" stroke="var(--ink-3)" stroke-width="6"/>
+    <path d="M304 90H360" stroke="var(--cut)" stroke-width="5" stroke-dasharray="3 12"/>
+    <path d="M70 330C136 330 122 250 196 250H250" stroke="var(--ink-3)" stroke-width="6"/>
+    <path d="M264 250H310" stroke="var(--cut)" stroke-width="5" stroke-dasharray="3 12"/>
+    <path d="M70 330C134 330 120 170 194 170H310C360 170 334 330 380 330" stroke="var(--green)" stroke-width="8"/>
+    <g stroke="var(--ink-3)" stroke-width="5"><path d="M287 79l22 22M309 79l-22 22"/><path d="M247 239l22 22M269 239l-22 22"/></g>
+    <rect x="256" y="156" width="28" height="28" rx="6" transform="rotate(45 270 170)" fill="var(--amber)"/>
+    <circle cx="70" cy="330" r="13" fill="var(--paper)" stroke="var(--ink-2)" stroke-width="6"/>
+    <circle cx="380" cy="330" r="14" fill="var(--green)"/>
+  </svg>
+  <div class="foot"><span><b>a proposal, measured</b> · worlds, cells, keys, an outbox and a ledger</span><span>github.com/NahuelGenchi/arbor</span></div>
+</div>
+</body>
+</html>

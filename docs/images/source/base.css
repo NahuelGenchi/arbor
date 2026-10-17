@@ -1,0 +1,30 @@
+/* Shared look of the README images: the paper and ink of nahuelgenchi.com, with arbor's own three colours.
+   Every colour pair used for data was run through a colour-blindness check in both themes. */
+:root {
+  --paper: #fcfbf8; --wash: #f4f1ea; --rule: #e6e2d8;
+  --ink: #1c1b18; --ink-2: #4b4841; --ink-3: #6f6b61; --quiet: #cdc7ba;
+  --green: #1d8a5a; --green-ink: #146845; --green-wash: #e3f1e9;
+  --violet: #7a5fd0; --violet-ink: #5a43ad;
+  --amber: #d08a1a; --amber-ink: #8a5a00; --amber-wash: #fbf0dc;
+  --cut: #c9c3b6;
+  --serif: "Newsreader", Georgia, serif;
+  --sans: "Inter", system-ui, sans-serif;
+}
+:root[data-theme="dark"] {
+  --paper: #141917; --wash: #1b221f; --rule: #2a332e;
+  --ink: #ece9e1; --ink-2: #c0bcb1; --ink-3: #8f8b81; --quiet: #3a423d;
+  --green: #2f9e6c; --green-ink: #5cc795; --green-wash: #183326;
+  --violet: #8b77e6; --violet-ink: #a898f0;
+  --amber: #c98500; --amber-ink: #e6ad45; --amber-wash: #2e2512;
+  --cut: #4a524d;
+}
+html, body { margin: 0; background: transparent; }
+body { font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; }
+.card {
+  box-sizing: border-box; background: var(--paper); border: 1px solid var(--rule);
+  border-radius: 20px; overflow: hidden; position: relative;
+}
+.eyebrow { font: 600 12px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.title { font: 500 30px/1.15 var(--serif); letter-spacing: -.01em; color: var(--ink); margin: 10px 0 0; text-wrap: balance; }
+.sub { font: 400 17px/1.45 var(--serif); color: var(--ink-2); margin: 8px 0 0; }
+.num { font-variant-numeric: tabular-nums; }

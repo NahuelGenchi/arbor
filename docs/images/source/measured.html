@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>measured</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@400;500;600&display=block" rel="stylesheet">
+<link rel="stylesheet" href="base.css">
+<script src="theme.js"></script>
+<style>
+  .card { width: 880px; height: 468px; padding: 34px 44px; }
+  .legend { position: absolute; right: 44px; top: 36px; display: flex; gap: 18px; font: 500 13px var(--sans); color: var(--ink-2); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 7px; vertical-align: -1px; }
+  svg { position: absolute; left: 0; top: 0; }
+  .row-l { font: 500 14px var(--sans); fill: var(--ink); }
+  .row-s { font: 400 12.5px var(--sans); fill: var(--ink-3); }
+  .val { font: 500 12.5px var(--sans); fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .fac { font: 600 15px var(--sans); fill: var(--green-ink); font-variant-numeric: tabular-nums; }
+  .tick { font: 400 12px var(--sans); fill: var(--ink-3); }
+  .foot { position: absolute; left: 44px; bottom: 26px; font: 400 12.5px var(--sans); color: var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="eyebrow">measured on one pc, 16 october 2026</div>
+  <div class="title">the same jobs, done the arbor way</div>
+  <div class="legend"><span><i style="background:var(--violet)"></i>today</span><span><i style="background:var(--green)"></i>the arbor way</span></div>
+  <svg id="plot" width="880" height="468" viewBox="0 0 880 468"></svg>
+  <div class="foot">Time in milliseconds; each step of the scale is ten times the last. Code search shows the range over five searches.</div>
+</div>
+<script>
+  // Log-scale dumbbell plot: one row per job, today (violet) and the arbor way (green).
+  const rows = [
+    { label: 'Start a sealed-off space for an agent', sub: 'a Docker container → a Linux namespace', today: [125], arbor: [1.28], factor: '98×' },
+    { label: 'Start a Python sandbox, ready to work', sub: 'a fresh interpreter → a copy of a warm one', today: [46.4], arbor: [0.73], factor: '64×' },
+    { label: 'Search all your code for a word', sub: 'reading every file → an index', today: [37, 174], arbor: [1.4, 5.3], factor: '26–33×' },
+    { label: 'Find a file by name among 2.2 million', sub: 'walking every folder → a live catalog', today: [1425], arbor: [0.32], factor: '4,450×' },
+  ];
+  const NS = 'http://www.w3.org/2000/svg', svg = document.getElementById('plot');
+  const x0 = 352, x1 = 742, lo = Math.log10(0.1), hi = Math.log10(10000);
+  const X = v => x0 + (Math.log10(v) - lo) / (hi - lo) * (x1 - x0);
+  const el = (tag, attrs, text) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    if (text !== undefined) e.textContent = text;
+    svg.appendChild(e); return e;
+  };
+  const fmt = v => v >= 1000 ? v.toLocaleString('en-US') + ' ms' : v + ' ms';
+  const y0 = 150, step = 64, axisY = y0 + step * rows.length - 14;
+  // grid and axis
+  [[0.1, '0.1 ms'], [1, '1 ms'], [10, '10 ms'], [100, '100 ms'], [1000, '1 s'], [10000, '10 s']].forEach(([v, t]) => {
+    el('line', { x1: X(v), x2: X(v), y1: y0 - 22, y2: axisY, stroke: 'var(--rule)', 'stroke-width': 1 });
+    el('text', { x: X(v), y: axisY + 18, class: 'tick', 'text-anchor': 'middle' }, t);
+  });
+  el('text', { x: 836, y: y0 - 30, class: 'tick', 'text-anchor': 'end' }, 'faster');
+  rows.forEach((r, i) => {
+    const y = y0 + i * step;
+    el('text', { x: 44, y: y - 2, class: 'row-l' }, r.label);
+    el('text', { x: 44, y: y + 16, class: 'row-s' }, r.sub);
+    const a = r.arbor, t = r.today;
+    el('line', { x1: X(a[a.length - 1]), x2: X(t[0]), y1: y + 4, y2: y + 4, stroke: 'var(--quiet)', 'stroke-width': 2 });
+    if (t.length > 1) el('line', { x1: X(t[0]), x2: X(t[1]), y1: y + 4, y2: y + 4, stroke: 'var(--violet)', 'stroke-width': 10, 'stroke-linecap': 'round', opacity: .9 });
+    else el('circle', { cx: X(t[0]), cy: y + 4, r: 6, fill: 'var(--violet)' });
+    if (a.length > 1) el('line', { x1: X(a[0]), x2: X(a[1]), y1: y + 4, y2: y + 4, stroke: 'var(--green)', 'stroke-width': 10, 'stroke-linecap': 'round' });
+    else el('circle', { cx: X(a[0]), cy: y + 4, r: 6, fill: 'var(--green)' });
+    el('text', { x: X(t[t.length - 1]) + 12, y: y + 8, class: 'val' }, t.length > 1 ? `${t[0]}–${fmt(t[1])}` : fmt(t[0]));
+    el('text', { x: X(a[0]) - 12, y: y + 8, class: 'val', 'text-anchor': 'end' }, a.length > 1 ? `${a[0]}–${fmt(a[1])}` : fmt(a[0]));
+    el('text', { x: 836, y: y + 9, class: 'fac', 'text-anchor': 'end' }, r.factor);
+  });
+</script>
+</body>
+</html>
