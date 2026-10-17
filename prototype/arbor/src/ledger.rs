@@ -57,13 +57,14 @@ pub struct Step {
     /// Who acted: `you` for the arbor command, `cell` for a command in a world asking for an effect. Agents come
     /// later, in cells of their own.
     pub by: String,
-    /// The key a command ran under, or the key a `key` step made and a `take-back` step took back.
+    /// The key a command ran under, or the key a `key` step made, a `renew` step renewed and a `take-back` step took
+    /// back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// `new`, `start`, `run`, `shell`, `stop`, `keep`, `undo`, `discard`, `key`, `take-back`, `effect`, `release` or
-    /// `refuse`. A command's cell records `start` when it begins, then `run` or `shell` when it ends. An effect is
-    /// asked for (`effect`), then refused, or released: `release` records it running before it starts, then how it
-    /// ended.
+    /// `new`, `start`, `run`, `shell`, `stop`, `keep`, `undo`, `discard`, `key`, `renew`, `take-back`, `effect`,
+    /// `release` or `refuse`. A command's cell records `start` when it begins, then `run` or `shell` when it ends. An
+    /// effect is asked for (`effect`), then refused, or released: `release` records it running before it starts, then
+    /// how it ended.
     pub act: String,
     pub world: String,
     /// The cell a command ran in, as `arbor ps` names it, or the one that asked for an effect.
