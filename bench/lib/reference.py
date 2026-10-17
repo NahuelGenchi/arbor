@@ -122,6 +122,49 @@ def still_why(r, key):
             "of a core" + (f' (busy: {busy})' if busy else '') + f"; load average {r.ctx(key, 'load1')} at its start")
 
 
+def toolkit_note(c, metric):
+    """What a toolkit row's record says beside its value (sections/toolkits.py): c is the row's ctx."""
+    def first(*fields):
+        return next((c[f] for f in fields if c.get(f) is not None), None)
+    if metric == 'first_frame_ms':
+        runs = c.get('launches_ms') or []
+        return (f"launches {min(runs):.0f}–{max(runs):.0f} ms; loaded {c.get('loaded_ms')} ms, connected "
+                f"{c.get('connected_ms')} ms, first frame committed {c.get('committed_ms')} ms after the start; "
+                f"load average {c.get('load1')}") if runs else ''
+    if metric.startswith(('rss_', 'pss_')):
+        gpu = (f"; on the GPU {c.get('gpu_vram_mib')} MiB VRAM, {c.get('gpu_gtt_mib')} MiB GTT"
+               if c.get('gpu_vram_mib') is not None else '')
+        drv = f"; drivers {', '.join(c['drivers'])}" if c.get('drivers') else ''
+        return (f"{c.get('procs')} process{'es' if c.get('procs') != 1 else ''}; PSS {c.get('pss_anon_mib')} MiB "
+                f"anonymous, {c.get('pss_file_mib')} MiB file, {c.get('pss_shmem_mib')} MiB shared" + gpu + drv)
+    if metric.startswith('still_'):
+        gpu = c.get('gpu_ms')
+        drew = ('' if gpu is None else '; it drew nothing (no GPU time)' if not gpu else
+                f'; it drew frames ({gpu:,.0f} ms of GPU time)')
+        return (f"by thread: {c.get('by_thread') or 'none'}{drew}; the compositor used {c.get('compositor_cpu_pct')}% "
+                f"and woke {c.get('compositor_wakeups_s')} times a second; load average {c.get('load1')}")
+    if metric == 'frame_work_p99_ms':
+        return (f"{c['frames']:,} frames: mean {c.get('mean_ms')} ms, median {c.get('median_ms')} ms, the most "
+                f"{c.get('worst_ms')} ms") if c.get('frames') else ''
+    if metric.startswith(('missed_', 'frame_')):
+        if not c.get('frames'):
+            return ''
+        load = (f"; {c['cells']} busy cells and a {c['spike_mib']:,} MiB spike"
+                + (f", {c['missed_during_spike']} missed while it touched its memory"
+                   if c.get('missed_during_spike') is not None else '') if c.get('cells') is not None else '')
+        gpu = f", {c['gpu_ms_per_frame']} ms of GPU time a frame" if c.get('gpu_ms_per_frame') is not None else ''
+        return (f"{c['frames']:,} frames at {c.get('refresh_hz')} Hz, {c.get('missed')} missed, the slowest "
+                f"{c.get('worst_ms')} ms; {first('cpu_pct')}% of a core in all{gpu}; by thread: "
+                f"{c.get('threads')}{load}; load average {c.get('load1')}")
+    if metric == 'atspi_objects':
+        if not c.get('registered'):
+            return 'not on the accessibility bus'
+        seen = [w for w, ok in (('the heading', c.get('heading')), ('the card', c.get('card'))) if ok]
+        return (f"{c.get('toolkit')}; readable: {', '.join(seen) or 'neither the heading nor the card'}, "
+                f"{c.get('row_titles')} row titles and {c.get('row_words')} rows' words of 300; roles: {c.get('roles')}")
+    return ''
+
+
 def frames_why(r, key):
     """How the test window's frames went, and what ran beside them."""
     c = lambda f: r.ctx(key, f)  # noqa: E731
@@ -441,3 +484,31 @@ ENTRIES = [
     E('screen.frame_p99_load_ms', 'Screen', 'test window: slowest 1% of frame times, under that load', 33.4, 'ms',
       'state', 'suite', dp=1, **SCREEN_REF, why=lambda r: frames_why(r, 'screen.frame_p99_load_ms')),
 ]
+
+# 10. The toolkits of issue #8 (sections/toolkits.py, run only with ONLY=toolkits): the same test program in each
+# candidate toolkit, measured the same way. The rows are new; they have no reference yet.
+TOOLKITS = (('gtk4', 'GTK 4'), ('qtquick', 'Qt Quick'), ('slint', 'Slint'), ('iced', 'iced'))
+TOOLKIT_ROWS = (
+    ('first_frame_ms', 'from its start to its first frame on screen', 'ms', {'dp': 0}),
+    ('rss_start_mib', 'memory 2.5 s after its start: RSS', 'MiB', {}),
+    ('pss_start_mib', 'memory 2.5 s after its start: PSS', 'MiB', {}),
+    ('still_cpu_pct', 'still screen, no input: CPU, share of one core', '%', {'dp': 2}),
+    ('still_wakeups_s', 'still screen, no input: wakeups', '/s', {'dp': 1}),
+    ('rss_idle_mib', 'memory after a minute of still screen: RSS', 'MiB', {}),
+    ('pss_idle_mib', 'memory after a minute of still screen: PSS', 'MiB', {}),
+    ('missed_idle_pct', 'animation: frames missed, machine idle', '%', MISSED),
+    ('frame_p99_idle_ms', 'animation: slowest 1% of frame times, machine idle', 'ms', {'dp': 1}),
+    ('frame_work_p99_ms', 'animation: work per frame (CPU time), slowest 1%', 'ms', {'dp': 2}),
+    ('missed_load_pct', 'animation: frames missed, a busy cell per CPU thread and a memory spike', '%', MISSED),
+    ('frame_p99_load_ms', 'animation: slowest 1% of frame times, under that load', 'ms', {'dp': 1}),
+    ('atspi_objects', 'objects on the accessibility bus (AT-SPI)', '', {}),
+)
+
+
+def toolkit_why(r, key):
+    return toolkit_note((r.recs.get(key) or {}).get('ctx') or {}, key.rsplit('.', 1)[1])
+
+
+ENTRIES += [E(f'ui.{t}.{metric}', 'Toolkits', f'{name}: {label}', None, unit, 'state', 'suite', **kw,
+              why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
+            for t, name in TOOLKITS for metric, label, unit, kw in TOOLKIT_ROWS]

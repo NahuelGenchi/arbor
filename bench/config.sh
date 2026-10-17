@@ -51,6 +51,16 @@ FRAMES_S="${FRAMES_S:-20}"
 FRAMES_CELLS="${FRAMES_CELLS:-}"
 FRAMES_SPIKE_MIB="${FRAMES_SPIKE_MIB:-}"
 
+# 10. The toolkits of issue #8, measured only with ONLY=toolkits: which ones, in this order; a folder that
+# toolkits/build.sh built them in before (empty: build them into the temp dir); the launches timed for the first frame;
+# the seconds of still screen; the seconds the machine is left to settle after the builds and after each toolkit's
+# loaded run. Their animation runs last FRAMES_S seconds, under the load of FRAMES_CELLS and FRAMES_SPIKE_MIB.
+TOOLKITS="${TOOLKITS:-gtk4 qtquick slint iced}"
+TOOLKITS_PREBUILT="${TOOLKITS_PREBUILT:-}"
+TOOLKITS_LAUNCHES="${TOOLKITS_LAUNCHES:-5}"
+TOOLKITS_STILL_S="${TOOLKITS_STILL_S:-60}"
+TOOLKITS_SETTLE_S="${TOOLKITS_SETTLE_S:-90}"
+
 # Where temp files go (removed at exit; tmpfs, as in the M run) and where reports are written.
 BENCH_TMP="${BENCH_TMP:-${TMPDIR:-/tmp}}"
 RESULTS_DIR="${RESULTS_DIR:-$BENCH_DIR/results}"

@@ -82,7 +82,8 @@ def main():
         'PROJECTS_DIR', 'NAME_SEARCH_ROOT', 'NAME_QUERY', 'CODE_ROOT', 'CODE_QUERIES', 'DEDUP_ROOT', 'FORK_TREE',
         'GIT_LOG_REPO', 'GIT_LOG_REF', 'TRANSCRIPTS_DIR', 'HEAP_JSONL', 'HEAP_JSONL_BYTES', 'O200K_FILE',
         'DOCKER_IMAGE', 'LISTING_DIR', 'INITRD', 'ARBOR_BIN', 'SCREEN_STILL_S', 'FRAMES_S', 'FRAMES_CELLS',
-        'FRAMES_SPIKE_MIB') if os.environ.get(k)}
+        'FRAMES_SPIKE_MIB', 'TOOLKITS', 'TOOLKITS_PREBUILT', 'TOOLKITS_LAUNCHES', 'TOOLKITS_STILL_S',
+        'TOOLKITS_SETTLE_S') if os.environ.get(k)}
     tools = {'python': version(['python3', '--version']), 'node': version(['node', '--version']),
              'rustc': version(['rustc', '--version']), 'gcc': version(['gcc', '--version']),
              'rg': version(['rg', '--version']), 'docker': version(['docker', '--version']),
