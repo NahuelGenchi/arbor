@@ -5,10 +5,10 @@
   <p>
     Every computer you have used was built for one person at a keyboard.<br>
     Agents are now some of the busiest users our machines have.<br>
-    arbor is a plan to rebuild the computer around them, measured on a real PC before a single part is built.
+    arbor is a plan to rebuild the computer around them, measured on a real PC first, and its first piece runs on today's Linux.
   </p>
   <p>
-    <img src="https://img.shields.io/badge/status-proposal%2C%20measured-9f6811?style=flat-square" alt="Status: a proposal, measured">
+    <img src="https://img.shields.io/badge/status-proposal%2C%20measured%2C%20first%20prototype-9f6811?style=flat-square" alt="Status: a proposal, measured, with a first prototype">
     <img src="https://img.shields.io/badge/measured-16%20Oct%202026-1b8355?style=flat-square" alt="Measured on 16 October 2026">
     <img src="https://img.shields.io/badge/first%20step-a%20layer%20on%20Linux-4b4841?style=flat-square&logo=linux&logoColor=white" alt="First step: a layer on top of Linux">
     <a href="https://github.com/NahuelGenchi/arbor/actions/workflows/checks.yml"><img src="https://img.shields.io/github/actions/workflow/status/NahuelGenchi/arbor/checks.yml?branch=main&style=flat-square&label=checks&color=4b4841" alt="Checks on main"></a>
@@ -19,7 +19,7 @@
     <a href="#what-you-get">What you get</a> &nbsp;·&nbsp;
     <a href="#one-task-start-to-finish">One task</a> &nbsp;·&nbsp;
     <a href="#measured-not-guessed">Measured</a> &nbsp;·&nbsp;
-    <a href="#measure-your-own-pc">Try it</a> &nbsp;·&nbsp;
+    <a href="#try-the-prototype">Try it</a> &nbsp;·&nbsp;
     <a href="#where-it-stands">Roadmap</a>
   </p>
 </div>
@@ -32,7 +32,7 @@
 </p>
 
 > [!NOTE]
-> **arbor does not exist yet.** This repository holds what comes before building it: a report of where memory, disk, time, energy and money go on a computer that agents use every day, and the tools to measure it again. The numbers on this page were measured on one PC, except the few marked as estimates and the imagined example of how a task would go.
+> **arbor is not built yet.** This repository holds what comes first: a report of where memory, disk, time, energy and money go on a computer that agents use every day, the tools to measure it again, and a first prototype that runs on today's Linux. The numbers on this page were measured on one PC, except the few marked as estimates and the imagined example of how a task would go.
 
 ## In one minute
 
@@ -155,9 +155,44 @@ All measured on the PC above, except the boot time after the change, which is an
 
 The full report, with every source and the things arbor should refuse to do even where they look faster, is in **[OPTIMIZATION.md](OPTIMIZATION.md)**.
 
+## Try the prototype
+
+The first piece of arbor runs on today's Linux, with no administrator rights. It is one program, `arbor`, and it already has worlds, sealed commands, keys, limits, the outbox and the ledger: try a change on an instant copy of a folder, keep it or throw it away whole, and let nothing leave the machine until you say yes.
+
+You need Linux with [bubblewrap](https://github.com/containers/bubblewrap) 0.10 or later (on Ubuntu 26.04, `sudo apt install bubblewrap`) and [Rust](https://rustup.rs). Then, in a copy of this repository:
+
+```sh
+cargo install --locked --path prototype/arbor
+```
+
+And with any folder you work in:
+
+```sh
+arbor new shop --from ~/projects/shop   # an instant copy: nothing is copied until something changes
+arbor shell shop                        # work inside it, sealed off; the real folder does not change
+arbor diff shop                         # what changed
+arbor keep shop                         # put the changes in the real folder; arbor undo takes them back
+```
+
+`arbor run shop -- npm test` runs one command instead of a shell. Inside a world your home folder is empty, so tools installed there, such as `~/.nvm`, need a key that opens them: `arbor key new dev --toolchains`, then `arbor run shop --key dev -- npm test`.
+
+How fast it is on the PC above. Every number here is **M**: the suite's [`arbor` section](bench/README.md#sections) measured it on 17 October 2026, and the last column names its row in [`bench/lib/reference.py`](bench/lib/reference.py).
+
+| the job | the prototype | suite row |
+| :--- | ---: | :--- |
+| Make a world: an instant copy of a folder | 2.0 ms | `arbor.new_ms` |
+| Start a command in it, sealed off | 5.1 ms | `arbor.run_cgroup_ms` |
+| From inside, ask for something only you can allow, such as a `git push` | 0.6 ms | `arbor.ask_ms` |
+| Run it once you say yes, with a receipt | 1.5 ms | `arbor.release_ms` |
+| Put 1,000 new files in the real folder, or take them back out | 6.2 ms, 4.1 ms | `arbor.keep_ms`, `arbor.undo_ms` |
+| Tell an agent what changed in 100 files | 700 tokens | `arbor.diff100_tokens` |
+| Memory of the one background service it keeps running | 2.7 MiB | `arbor.serve_rss_mib` |
+
+A sealed command starts about 24 times faster than the Docker container above (125 ms), though not yet in the 1.28 ms of a plain Linux namespace: the prototype also mounts the world over the folder, sets up the command's limits, filters the kernel calls it may make, and records each step in the ledger. What a command in a world can and cannot do, and how keys, limits, the outbox and the ledger work, is in **[prototype/README.md](prototype/README.md)**.
+
 ## Measure your own PC
 
-The measurements are a suite of scripts you can run on a Linux PC. It needs no administrator rights, only reads your files, writes nothing but a temporary folder and its own report, and takes about two and a half minutes:
+The measurements are a suite of scripts you can run on a Linux PC. It needs no administrator rights, only reads your files, writes nothing but a temporary folder and its own report, and takes about two and a half minutes. With Rust set up for the prototype, it also builds the prototype in that temporary folder and measures it the same way, in about 11 seconds more; if the prototype's background service is not running, it starts it for those rows and stops it again:
 
 ```sh
 git clone https://github.com/NahuelGenchi/arbor.git
@@ -175,12 +210,12 @@ It writes a report to `bench/results/` with every number next to the one measure
 arbor is planned in steps. The first prototype is a layer on top of Linux, so today's programs keep working inside it; the whole of it, with new hardware, is a project of about ten years. Each step is a milestone:
 
 - 🟢 **[M0 · Project foundation](https://github.com/NahuelGenchi/arbor/milestone/1)** — this repository, its documents and how work is tracked
-- 🟢 **[M1 · Measurements](https://github.com/NahuelGenchi/arbor/milestone/2)** — the report and the suite; the baseline of 16 October 2026 is done
-- ⚪ **[M2 · Worlds and storage](https://github.com/NahuelGenchi/arbor/milestone/3)** — instant copies of everything, each piece of content stored once, finding anything at once
-- ⚪ **[M3 · Cells](https://github.com/NahuelGenchi/arbor/milestone/4)** — sealed rooms that start in a fraction of a millisecond, and the keys that open them
+- 🟢 **[M1 · Measurements](https://github.com/NahuelGenchi/arbor/milestone/2)** — the report and the suite; the baseline of 16 October 2026 is done, and the suite measures the prototype too
+- 🟢 **[M2 · Worlds and storage](https://github.com/NahuelGenchi/arbor/milestone/3)** — instant copies of everything, each piece of content stored once, finding anything at once. *In the prototype: worlds of a folder, kept or undone whole*
+- 🟢 **[M3 · Cells](https://github.com/NahuelGenchi/arbor/milestone/4)** — sealed rooms that start in a fraction of a millisecond, and the keys that open them. *In the prototype: sealed commands with limits, keys, and a filter on kernel calls*
 - ⚪ **[M4 · Agent layer](https://github.com/NahuelGenchi/arbor/milestone/5)** — agents that reread less: tools described on demand, short typed answers, one shared service
 - ⚪ **[M5 · Lean system](https://github.com/NahuelGenchi/arbor/milestone/6)** — memory, starting up and energy: no swapping to disk, no waiting at boot, nothing that polls
-- ⚪ **[M6 · Outbox and ledger](https://github.com/NahuelGenchi/arbor/milestone/7)** — effects that wait for a yes, budgets, and the record of every step
+- 🟢 **[M6 · Outbox and ledger](https://github.com/NahuelGenchi/arbor/milestone/7)** — effects that wait for a yes, budgets, and the record of every step. *In the prototype: the outbox, budgets in money, and the ledger*
 
 <sub>🟢 in progress &nbsp;·&nbsp; ⚪ planned</sub>
 
@@ -204,7 +239,8 @@ arbor is planned in steps. The first prototype is a layer on top of Linux, so to
 | path | what it is |
 | :--- | :--- |
 | [`OPTIMIZATION.md`](OPTIMIZATION.md) | The report: the waste measured today, the top 10 changes for the prototype, and every source |
-| [`bench/`](bench/) | The suite that measures it all again, section by section |
+| [`bench/`](bench/) | The suite that measures it all again, section by section, and the prototype the same way |
+| [`prototype/`](prototype/) | The first prototype, on today's Linux: one program, `arbor`, with worlds, sealed commands, keys, limits, the outbox and the ledger |
 | [`docs/INTERFACE.md`](docs/INTERFACE.md) | The design brief for Mission Control, the screen where people will direct agents. No interface exists yet: this is the plan for one |
 | [`docs/images/`](docs/images/) | The pictures on this page, and the pages they are drawn from |
 
