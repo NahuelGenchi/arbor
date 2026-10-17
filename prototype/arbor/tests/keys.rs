@@ -1,8 +1,8 @@
 //! Keys end to end: a cell sees only its world until a key opens more, for a while and within limits, password files
-//! and agents' records of your sessions stay hidden even then, also when their programs replace them while a command
-//! runs, a key's own home folder keeps what its commands write
-//! there from one run to the next, a key taken back or ended stops what runs under it, and a renewed one lasts
-//! longer, home folder and running commands included. They skip like `common` says.
+//! and agents' records of your sessions stay hidden even then, also when their programs replace or make them while a
+//! command runs, a key's own home folder keeps what its commands write there from one run to the next, a key taken
+//! back or ended stops what runs under it, and a renewed one lasts longer, home folder and running commands included.
+//! They skip like `common` says.
 
 mod common;
 
@@ -527,12 +527,14 @@ impl Drop for Outside {
 }
 
 /// What a command in `world`, under `key` if given, reads in each of `files`, as `reads` does, then again after
-/// `change` has run outside the cell while the command waits.
+/// `change` has run outside the cell while the command waits. Where `look_first` is false, it reads them only after,
+/// so that it has never looked for one before it was made.
 fn reads_across(
     e: &Env,
     world: &str,
     key: Option<&str>,
     files: &[String],
+    look_first: bool,
     change: impl FnOnce(),
 ) -> (Vec<String>, Vec<String>) {
     let show = files
@@ -540,7 +542,12 @@ fn reads_across(
         .map(|f| format!("cat {f} 2>/dev/null || printf -; echo"))
         .collect::<Vec<_>>()
         .join("; ");
-    let script = format!("{show}; read go; {show}");
+    // What it reads first says it runs. A command that does not look first says so with an empty line.
+    let script = if look_first {
+        format!("{show}; read go; {show}")
+    } else {
+        format!("echo; read go; {show}")
+    };
     let mut args = vec!["run", world];
     if let Some(k) = key {
         args.extend(["--key", k]);
@@ -563,7 +570,7 @@ fn reads_across(
             })
             .collect()
     };
-    let before = lines(files.len());
+    let before = lines(if look_first { files.len() } else { 1 });
     change();
     // A command that ended early has closed its end; its error is shown below.
     let _ = writeln!(cell.stdin.take().unwrap(), "go");
@@ -644,7 +651,7 @@ fn a_hidden_file_stays_hidden_when_its_program_replaces_it_while_a_command_runs(
     ] {
         let mut hidden = through_home.to_vec();
         hidden.extend(["", "-", "other"]);
-        let (before, after) = reads_across(&e, world, key, &files, change);
+        let (before, after) = reads_across(&e, world, key, &files, true, change);
         assert_eq!(before, hidden, "{world} {key:?}, before");
         assert_eq!(after, hidden, "{world} {key:?}, after");
     }
@@ -673,6 +680,93 @@ fn a_hidden_file_stays_hidden_when_its_program_replaces_it_while_a_command_runs(
     );
     assert_eq!(e.ok(&["run", "near", "--", "cat", "a"]), "two\n");
     assert_eq!(fs::read_to_string(out.join("shop/a")).unwrap(), "one");
+}
+
+#[test]
+fn a_hidden_file_made_while_a_command_runs_stays_hidden() {
+    let Some(e) = Env::new("made") else {
+        return;
+    };
+    new_world(&e);
+    let home = &e.user_home;
+    let h = home.to_str().unwrap();
+    // Folders that are there, a database whose SQLite files beside it are not yet, and a login linked from the home
+    // folder to a file not yet made in a folder a cell sees as the computer's.
+    let outside = Outside::new("made");
+    let out = &outside.0;
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    fs::create_dir_all(home.join(".config")).unwrap();
+    put(home, &[".codex/state_5.sqlite"], "record");
+    std::os::unix::fs::symlink(out.join("claude.json"), home.join(".claude.json")).unwrap();
+    // A program outside makes them while the command runs: logins and records, in folders that are there and in
+    // folders it makes, and, next to them, files that are on no list.
+    let made = [
+        (".claude/.credentials.json", "login"),
+        (".claude/history.jsonl", "record"),
+        (".claude/projects/-home-you-shop/0c1d.jsonl", "record"),
+        (".ssh/id_ed25519", "login"),
+        (".config/gh/hosts.yml", "login"),
+        (".netrc", "login"),
+        (".codex/state_5.sqlite-wal", "record"),
+        (".claude/settings.json", "other"),
+        ("notes", "other"),
+    ];
+    let files: Vec<String> = made
+        .iter()
+        .map(|(f, _)| format!("~/{f}"))
+        .chain(["~/.codex/state_5.sqlite", "~/.claude.json"].map(String::from))
+        .chain(
+            ["claude.json", "notes"]
+                .iter()
+                .map(|f| out.join(f).display().to_string()),
+        )
+        .collect();
+    let clear = || {
+        for (f, _) in &made {
+            let _ = fs::remove_file(home.join(f));
+        }
+        for dir in [".claude/projects", ".ssh", ".config/gh"] {
+            let _ = fs::remove_dir_all(home.join(dir));
+        }
+        for f in ["claude.json", "notes"] {
+            let _ = fs::remove_file(out.join(f));
+        }
+    };
+    let change = || {
+        for (f, text) in made {
+            put(home, &[f], text);
+        }
+        put(out, &["claude.json"], "login");
+        put(out, &["notes"], "other");
+    };
+    e.ok(&["key", "new", "claude", "--read", &format!("{h}/.claude")]);
+    e.ok(&["key", "new", "all", "--read", h]);
+    e.ok(&["new", "home", "--from", h]);
+
+    // In a folder a key opens, under a key that opens the whole home folder, and in a world of the home folder, a
+    // command that looks only after they are made finds none of them, at their real places neither, while it finds
+    // the files next to them that no list names.
+    let hidden = ["-"; 7];
+    for (world, key, rest) in [
+        (
+            "demo",
+            Some("claude"),
+            ["other", "-", "-", "-", "-", "other"],
+        ),
+        (
+            "demo",
+            Some("all"),
+            ["other", "other", "", "-", "-", "other"],
+        ),
+        ("home", None, ["other", "other", "", "-", "-", "other"]),
+    ] {
+        clear();
+        let (_, after) = reads_across(&e, world, key, &files, false, change);
+        let expected: Vec<&str> = hidden.iter().chain(&rest).copied().collect();
+        assert_eq!(after, expected, "{world} {key:?}");
+    }
+    // Nothing of what hid them is left in the world.
+    assert_eq!(e.ok(&["diff", "home"]), "no changes\n");
 }
 
 #[test]

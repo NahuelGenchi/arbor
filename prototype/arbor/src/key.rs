@@ -11,10 +11,11 @@
 //! the agent keeps there, can outlive the end it was made with.
 
 use std::env;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -57,7 +58,8 @@ pub const TOOLCHAINS: [&str; 19] = [
 ];
 
 /// Password and key files and folders, relative to the home folder. They stay hidden in a cell even when its world
-/// or its key includes the folder they are in, unless that world or key is the file or folder itself.
+/// or its key includes the folder they are in, unless that world or key is the file or folder itself. One missing
+/// when the cell starts stays missing in it.
 pub const SECRETS: [&str; 67] = [
     // Keys and passwords
     ".ssh",
@@ -410,47 +412,140 @@ pub fn toolchains() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The password files and agents' records of the home folder `home` that a cell would see, with whether each is a
-/// folder. A cell sees what lies outside its `hidden` folders, and what lies inside `shown`: its world's folder and
-/// what its key opens. Each is found where it really is, so one linked from elsewhere counts too. One that is itself
-/// among `shown` was opened on purpose and stays.
-pub fn secrets_in(home: &Path, hidden: &[PathBuf], shown: &[PathBuf]) -> Vec<(PathBuf, bool)> {
-    let mut found: Vec<(PathBuf, bool)> = Vec::new();
+/// The files SQLite keeps beside a database while it is open, which come and go as it runs.
+const BESIDE: [&str; 3] = ["-wal", "-shm", "-journal"];
+
+/// What a cell must not see of the password files and agents' records in the home folder, as `secrets_in` finds them.
+#[derive(Debug, Default, PartialEq)]
+pub struct Hidden {
+    /// Those there when the cell starts, each with whether it is a folder: a cell mounts an empty one over each.
+    pub masks: Vec<(PathBuf, bool)>,
+    /// Of those missing, the first part of each one's way that is missing, in name order: a cell keeps each missing,
+    /// even if a program outside makes it while the cell runs (see `cell`).
+    pub missing: Vec<PathBuf>,
+}
+
+/// The password files and agents' records of the home folder `home` that a cell would see. A cell sees what lies
+/// outside its `hidden` folders, and what lies inside `shown`: its world's folder and what its key opens. Each is
+/// found where it really is, through links, so one linked from elsewhere counts too, and so does one that is missing,
+/// where a program would make it. One that is itself among `shown` was opened on purpose and stays.
+pub fn secrets_in(home: &Path, hidden: &[PathBuf], shown: &[PathBuf]) -> Hidden {
+    let seen = |p: &Path| {
+        !hidden.iter().any(|h| paths::contains(h, p))
+            || shown.iter().any(|s| s != p && paths::contains(s, p))
+    };
+    let mut found = Hidden::default();
     let listed = SECRETS
         .iter()
         .chain(&RECORDS)
         .flat_map(|rel| named(home, rel));
-    for path in listed.filter_map(|p| fs::canonicalize(p).ok()) {
-        let seen = !hidden.iter().any(|h| paths::contains(h, &path))
-            || shown
-                .iter()
-                .any(|s| s != &path && paths::contains(s, &path));
-        let named = shown.contains(&path);
-        let covered = found.iter().any(|(f, _)| paths::contains(f, &path));
-        if seen && !named && !covered {
-            let dir = path.is_dir();
-            found.push((path, dir));
+    for place in listed.filter_map(|rel| place(home, &rel)) {
+        match place {
+            Place::There(path) => {
+                let named = shown.contains(&path);
+                let covered = found.masks.iter().any(|(f, _)| paths::contains(f, &path));
+                if seen(&path) && !named && !covered {
+                    let dir = path.is_dir();
+                    found.masks.push((path, dir));
+                }
+            }
+            Place::Missing(part) if seen(&part) => found.missing.push(part),
+            Place::Missing(_) => {}
         }
     }
+    let masks = &found.masks;
+    found
+        .missing
+        .retain(|p| !masks.iter().any(|(m, _)| paths::contains(m, p)));
+    found.missing.sort();
+    found.missing.dedup();
     found
 }
 
-/// What the list entry `rel` names in the home folder `home`: the file or folder at that path, or, when its last part
-/// has a `*`, each one in that folder whose name matches, in name order.
+/// What the list entry `rel` names in the home folder `home`, relative to it: that path, or, when its last part has a
+/// `*`, each file or folder in that folder whose name matches, in name order, with the files SQLite would keep beside
+/// each file among them. Where that folder is missing, the entry stands for what may be made there.
 fn named(home: &Path, rel: &str) -> Vec<PathBuf> {
     let Some((dir, pattern)) = rel.rsplit_once('/').filter(|(_, name)| name.contains('*')) else {
-        return vec![home.join(rel)];
+        return vec![rel.into()];
     };
-    let dir = home.join(dir);
-    let mut names: Vec<_> = fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.file_name())
-        .filter(|name| name.to_str().is_some_and(|name| matches(pattern, name)))
-        .collect();
+    let entries = match fs::read_dir(home.join(dir)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return vec![rel.into()],
+        Err(_) => return Vec::new(),
+    };
+    let mut names: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !matches(pattern, &name) {
+            continue;
+        }
+        if entry.file_type().is_ok_and(|t| !t.is_dir()) && !BESIDE.iter().any(|b| name.ends_with(b))
+        {
+            let beside = BESIDE.iter().map(|b| format!("{name}{b}"));
+            names.extend(beside.filter(|b| matches(pattern, b)));
+        }
+        names.push(name);
+    }
     names.sort();
-    names.iter().map(|name| dir.join(name)).collect()
+    names.dedup();
+    names.iter().map(|name| Path::new(dir).join(name)).collect()
+}
+
+/// Where a listed path is.
+#[derive(Debug, PartialEq)]
+enum Place {
+    /// There, at this path, resolved.
+    There(PathBuf),
+    /// Missing: this is the first part of its way that is, at its real place.
+    Missing(PathBuf),
+}
+
+/// Where `rel`, a path in the home folder `home`, resolved, leads, following links as a program would. None where it
+/// leads nowhere: past a file, round links, or into a folder arbor may not read.
+fn place(home: &Path, rel: &Path) -> Option<Place> {
+    let mut at = home.to_path_buf();
+    // The parts still to follow, the next one last.
+    let mut todo: Vec<OsString> = Vec::new();
+    follow(&mut todo, &mut at, rel);
+    let mut links = 0;
+    while let Some(part) = todo.pop() {
+        if part == ".." {
+            at.pop();
+            continue;
+        }
+        let next = at.join(&part);
+        match fs::symlink_metadata(&next) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                links += 1;
+                if links > 40 {
+                    return None;
+                }
+                follow(&mut todo, &mut at, &fs::read_link(&next).ok()?);
+            }
+            Ok(meta) if meta.is_dir() || todo.is_empty() => at = next,
+            Ok(_) => return None,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Some(Place::Missing(next)),
+            Err(_) => return None,
+        }
+    }
+    Some(Place::There(at))
+}
+
+/// Puts the parts of `path` on `todo`, to be followed from `at` before the rest, or from `/` when it is absolute.
+fn follow(todo: &mut Vec<OsString>, at: &mut PathBuf, path: &Path) {
+    if path.has_root() {
+        *at = PathBuf::from("/");
+    }
+    let start = todo.len();
+    todo.extend(path.components().filter_map(|part| match part {
+        Component::Normal(name) => Some(name.to_os_string()),
+        Component::ParentDir => Some("..".into()),
+        _ => None,
+    }));
+    todo[start..].reverse();
 }
 
 /// Whether `name` matches `pattern`, in which each `*` stands for any run of characters.
@@ -1318,7 +1413,7 @@ mod tests {
         let (gnupg, ssh) = ((root.join("data/gnupg"), true), (home.join(".ssh"), true));
         let npmrc = (home.join(".npmrc"), false);
         let cargo = (home.join(".cargo/credentials.toml"), false);
-        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown);
+        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown).masks;
 
         assert_eq!(found(&[]), vec![gnupg.clone()]);
         assert_eq!(
@@ -1353,7 +1448,7 @@ mod tests {
         ] {
             fs::write(codex.join(name), "").unwrap();
         }
-        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown);
+        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown).masks;
         let db = |name: &str| (codex.join(name), false);
 
         // The databases come in name order, and the settings next to them stay.
@@ -1388,7 +1483,7 @@ mod tests {
         }
         let home = fs::canonicalize(root.join("home")).unwrap();
         let gemini = home.join(".gemini");
-        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown);
+        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown).masks;
 
         // Inside the home folder, the folder hidden whole covers what is in it...
         assert_eq!(
@@ -1403,6 +1498,89 @@ mod tests {
                 (gemini.join("tmp"), true),
                 (gemini.join("history"), true)
             ]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_missing_one_is_found_where_a_program_would_make_it() {
+        let root = std::env::temp_dir().join(format!("arbor-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for dir in [
+            "home/.config",
+            "home/.claude",
+            "home/.codex",
+            "home/.gemini",
+            "home/dots",
+            "data",
+        ] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let root = fs::canonicalize(&root).unwrap();
+        let (home, data) = (root.join("home"), root.join("data"));
+        for file in [
+            ".codex/state_5.sqlite",
+            ".codex/state_5.sqlite-wal",
+            ".cline",
+        ] {
+            fs::write(home.join(file), "").unwrap();
+        }
+        // Linked to a file not made yet outside the home folder, and to a folder not made yet inside it.
+        std::os::unix::fs::symlink(data.join("claude.json"), home.join(".claude.json")).unwrap();
+        std::os::unix::fs::symlink("dots/aws", home.join(".aws")).unwrap();
+        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown);
+        let all = found(std::slice::from_ref(&home));
+        let missing = |rel: &str| all.missing.contains(&home.join(rel));
+
+        // The first part of each one's way that is missing: a file, a folder in a folder that is there, a folder
+        // whose files are listed, once for all of them, and the files SQLite keeps beside a database that is there.
+        for rel in [
+            ".netrc",
+            ".ssh",
+            ".config/gh",
+            ".claude/.credentials.json",
+            ".claude/projects",
+            ".kimi-code",
+            ".copilot",
+            ".codex/state_5.sqlite-shm",
+            ".codex/state_5.sqlite-journal",
+            // Through links, where they lead
+            "dots/aws",
+        ] {
+            assert!(missing(rel), "{rel}");
+        }
+        assert!(all.missing.contains(&data.join("claude.json")));
+        // Not what is there, nor the way to it, nor past a file, nor inside a folder hidden whole.
+        for rel in [
+            ".config",
+            ".kimi-code/credentials",
+            ".aws",
+            ".claude.json",
+            ".codex/state_5.sqlite-wal",
+            ".codex/state_5.sqlite-wal-wal",
+            ".cline/data",
+            ".gemini/tmp",
+        ] {
+            assert!(!missing(rel), "{rel}");
+        }
+        assert_eq!(
+            all.missing
+                .iter()
+                .filter(|p| p.ends_with(".kimi-code"))
+                .count(),
+            1
+        );
+        assert!(
+            all.masks
+                .contains(&(home.join(".codex/state_5.sqlite-wal"), false))
+        );
+        // A cell that sees only the computer's own folders sees only the one linked out...
+        assert_eq!(found(&[]).missing, [data.join("claude.json")]);
+        // ...and one under a key that opens a folder hidden whole by name sees what may be made in it among the rest.
+        assert!(
+            found(&[home.clone(), home.join(".gemini")])
+                .missing
+                .contains(&home.join(".gemini/tmp"))
         );
         fs::remove_dir_all(&root).unwrap();
     }

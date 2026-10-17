@@ -1,15 +1,15 @@
 //! Thin wrappers for the few Linux calls the standard library lacks: locks, atomic renames, extended attributes,
-//! whiteouts, the session keyring, process and folder watches, threads that leave signals to the main one, and
-//! deferred interrupts. Path calls never follow a final symlink.
+//! whiteouts, private temporary folders, the session keyring, process and folder watches, threads that leave signals
+//! to the main one, and deferred interrupts. Path calls never follow a final symlink.
 
-use std::ffi::CString;
+use std::ffi::{CString, OsString};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -146,6 +146,17 @@ pub fn remove_xattr(path: &Path, name: &str) -> io::Result<()> {
 pub fn make_whiteout(path: &Path) -> io::Result<()> {
     let p = cpath(path)?;
     check(unsafe { libc::mknod(p.as_ptr(), libc::S_IFCHR, libc::makedev(0, 0)) })
+}
+
+/// Makes a new folder that only its owner may enter, named `prefix` and six random characters, and returns its path.
+pub fn make_temp_dir(prefix: &Path) -> io::Result<PathBuf> {
+    let mut template = prefix.as_os_str().as_bytes().to_vec();
+    template.extend_from_slice(b"XXXXXX\0");
+    if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    template.pop();
+    Ok(PathBuf::from(OsString::from_vec(template)))
 }
 
 /// True for an overlayfs whiteout: a character device numbered 0:0.
