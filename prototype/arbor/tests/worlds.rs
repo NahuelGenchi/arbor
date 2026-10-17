@@ -139,12 +139,7 @@ fn a_cell_refuses_kernel_calls() {
     let Some(e) = Env::new("filter") else { return };
     let python = "/usr/bin/python3";
     if !Path::new(python).exists() {
-        assert!(
-            std::env::var_os("ARBOR_REQUIRE_BWRAP").is_none(),
-            "this test needs {python}"
-        );
-        eprintln!("skipped: this test needs {python}");
-        return;
+        return common::skip(&format!("this test needs {python}"));
     }
     e.ok(&["new", "demo", "--from", e.base.to_str().unwrap()]);
     // Each call and the error it must get inside a cell. Outside one, the kernel itself answers each refused call
@@ -209,7 +204,7 @@ fn a_cell_refuses_kernel_calls() {
         assert_eq!(stopped.status.code(), Some(128 + libc::SIGSYS));
         assert!(stopped.stdout.is_empty());
     } else {
-        eprintln!("skipped the 32-bit call: this computer does not take them");
+        common::skip("this computer does not take 32-bit calls");
     }
 }
 
