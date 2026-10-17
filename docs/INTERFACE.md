@@ -27,15 +27,15 @@ It is for people only. Agents never read the screen: they read arbor's typed sta
 
 ## Words on screen
 
-| arbor's term | on screen | what a person needs to know |
-| :--- | :--- | :--- |
-| world | a **try** | a copy of your files that an agent works on, kept or thrown away whole |
-| cell | a **room** | where an agent's work runs, sealed off from everything else |
-| key | a **key** | what an agent may open, until when, and how much it may spend |
-| outbox item | a **decision**, while it waits | something that will leave the machine: a deployment, an email, a payment |
-| ledger | **history** | every step every agent took, in order |
-| budget | a **budget** | money, time, memory and your attention |
-| *(none yet)* | a **task** | what you asked for; it can hold many tries, rooms and agents |
+Mission Control uses everyday words, with arbor's own terms one click down:
+
+- a **try** (a world): a copy of your files that an agent works on, kept or thrown away whole
+- a **room** (a cell): where an agent's work runs, sealed off from everything else
+- a **key**: what an agent may open, until when, and how much it may spend
+- a **decision** (an outbox item, while it waits): something that will leave the machine, such as a deployment, an email or a payment
+- **history** (the ledger): every step every agent took, in order
+- a **budget**: money, time, memory and your attention
+- a **task** (no object of its own yet): what you asked for, which can hold many tries, rooms and agents
 
 ## The views
 
