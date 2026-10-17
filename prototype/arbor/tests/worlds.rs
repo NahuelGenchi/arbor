@@ -1,5 +1,6 @@
 //! End to end through the `arbor` binary and bubblewrap. Where `bwrap` cannot mount an overlay (no bubblewrap,
-//! or user namespaces blocked), each test prints why and passes without checking anything.
+//! or user namespaces blocked), each test prints why and passes without checking anything, unless
+//! `ARBOR_REQUIRE_BWRAP` is set, as in CI, where that is a failure.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,8 +26,11 @@ impl Env {
             base,
             root,
         };
-        if !bwrap_overlay_works(&env.root) {
-            eprintln!("skipped: bwrap cannot mount an overlay here");
+        if let Err(why) = bwrap_overlay_works(&env.root) {
+            if std::env::var_os("ARBOR_REQUIRE_BWRAP").is_some() {
+                panic!("bwrap cannot mount an overlay here, and ARBOR_REQUIRE_BWRAP is set: {why}");
+            }
+            eprintln!("skipped: bwrap cannot mount an overlay here: {why}");
             return None;
         }
         Some(env)
@@ -67,18 +71,22 @@ impl Drop for Env {
     }
 }
 
-fn bwrap_overlay_works(scratch: &Path) -> bool {
+fn bwrap_overlay_works(scratch: &Path) -> Result<(), String> {
     let probe = scratch.join("probe");
     fs::create_dir_all(&probe).unwrap();
-    Command::new("bwrap")
+    let out = Command::new("bwrap")
         .args(["--ro-bind", "/", "/", "--overlay-src"])
         .arg(&probe)
         .arg("--tmp-overlay")
         .arg(&probe)
         .args(["--unshare-all", "true"])
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+        .output()
+        .map_err(|e| format!("cannot run bwrap: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
 }
 
 #[test]
