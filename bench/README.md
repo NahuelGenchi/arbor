@@ -35,7 +35,7 @@ sits.
 | `NAME_SEARCH_ROOT`, `NAME_QUERY` | `$HOME`, `invoice` | name search |
 | `CODE_ROOT`, `CODE_QUERIES` | `$PROJECTS_DIR`, the five M queries (`\|`-separated) | code search |
 | `DEDUP_ROOT` | `$PROJECTS_DIR` | duplicate bytes |
-| `FORK_TREE` | largest directory directly under `$PROJECTS_DIR` | overlay fork |
+| `FORK_TREE` | largest directory directly under `$PROJECTS_DIR` | overlay forks |
 | `TRANSCRIPTS_DIR` | `$HOME/.claude/projects` | token accounting, heap input |
 | `HEAP_JSONL`, `HEAP_JSONL_BYTES` | the transcript of exactly the M input's size, else the 3rd largest | heap |
 | `O200K_FILE` | the o200k_base.tiktoken shipped with VS Code's Copilot extension | token counts |
@@ -50,20 +50,32 @@ heap test loads the transcript of M's exact byte size.
 
 ## What it needs and what it touches
 
-- **No root.** Namespaces are unprivileged user namespaces; the overlay is mounted inside `unshare -Urm`, so it
-  exists only in a private mount namespace and vanishes with it.
+- **No root.** Namespaces are unprivileged user namespaces. The overlay is mounted inside `unshare -Urm`, or by bwrap
+  in its sandbox, so it exists only in a private mount namespace and vanishes with it.
 - **Temp files** live in one `mktemp -d` directory under `$BENCH_TMP` (tmpfs, as in the M run) and are removed on
   exit, also on Ctrl-C or a section timeout. Docker runs with `--rm --pull never --network none`. Python runs with
-  `-I -B`, so no `__pycache__` appears in `bench/`. The only files left behind are the reports in `results/`.
+  `-I -B`, so no `__pycache__` appears in `bench/`. The bwrap fork keeps its writes in a tmpfs inside its sandbox.
+  The only files left behind are the reports in `results/`.
 - **Reads, never writes:** `$HOME` (names only), the projects folder (text files for the code index, all files for
   hashing; files of 256 KiB and up are read with `O_DIRECT` so the scan does not flush the page cache), the
   transcripts (only aggregates leave the process), `/boot/initrd.img`, `/proc` and `/sys`.
 - **Tools:** Python 3.14+ (`compression.zstd`), node, gcc with static glibc (`libc6-dev`), rustc (optional,
-  `~/.cargo/bin` is searched), rg, bwrap, unshare, docker (the user in the `docker` group, the image present),
-  zstd, systemd-analyze, git,
-  liblzo2 and liblz4 (for the heap compressors). A missing tool fails only its rows, with the reason in the note.
-- **Kernel settings it relies on:** unprivileged user namespaces allowed; Yama `ptrace_scope` at most 1 (the heap
-  test reads its own child's memory).
+  `~/.cargo/bin` is searched), rg, bwrap (0.11 or later for the overlay), unshare, docker (the user in the `docker`
+  group, the image present), zstd, systemd-analyze, git, liblzo2 and liblz4 (for the heap compressors). A missing
+  tool fails only its rows, with the reason in the note.
+- **User namespaces.** `cell.unshare_user`, `cell.unshare_4ns`, `storage.fork_ms` and `storage.fork_syscall_ms` run
+  `unshare` from the suite's own process. `cell.bwrap`, `storage.fork_bwrap_ms` and `storage.fork_bwrap_overlay_ms`
+  go through bwrap. Ubuntu 24.04 and later set `kernel.apparmor_restrict_unprivileged_userns = 1`: a process whose
+  AppArmor profile does not allow user namespaces, such as a shell in an ordinary terminal, can still create one, but
+  AppArmor confines it there to the `unprivileged_userns` profile, which denies the capabilities `unshare -Ur` needs.
+  The suite checks this before timing: the four `unshare` rows then fail with a note that names the restriction, and
+  the rest of their sections still runs. bwrap is not affected where AppArmor has a profile for it that allows user
+  namespaces (`/etc/apparmor.d/bwrap-userns-restrict`, enabled by default from Ubuntu 25.04), so from an ordinary
+  terminal the bwrap rows still measure a cell and a fork. Where bwrap has no such profile, its rows fail too, and
+  their note says that this process may not use user namespaces. The M values of the `unshare` rows come from a run
+  that could use them, so compare those rows only between runs with the same access. The suite never changes
+  AppArmor.
+- **Kernel settings it relies on:** Yama `ptrace_scope` at most 1 (the heap test reads its own child's memory).
 
 ## Sections
 
@@ -78,7 +90,7 @@ heap test loads the transcript of M's exact byte size.
 | `heap` | per-4 KiB-page compressibility of an agent heap: zstd-3, zstd-1, LZO1X-1, LZ4, deflate-1; same-filled pages | node parses a 121 MiB transcript; its anonymous memory is read through `/proc/<pid>/mem` and each page compressed alone, as zram does. Read twice: with the file text still referenced (the state M caught) and after a memory-reducing GC (the live objects an idle agent holds) |
 | `transcripts` | cost shares (input 1, cache write 1.25, cache read 0.1, output 5), opening context, context per call, step cost, read-only follow-up steps, tool-result tokens, errors, repeat reads, image tokens | one pass over every transcript, reproducing the four counting rules behind the M values (see the header of `sections/transcripts.js`); o200k tokens |
 | `formats` | o200k tokens of one 100-file listing printed eight ways; `git log` with and without projection; `ps`, `ip`, `df` full vs only the asked fields | tokenizer in `lib/o200k.js`: the tiktoken regex and byte-pair merges over `o200k_base.tiktoken` |
-| `storage` | duplicate bytes in the projects folder, counted once per inode and split by path class; time to fork the largest project with an overlay CoW mount; `git worktree add` as the baseline | `find -printf` for inodes and sizes, BLAKE2b over size-collision groups on all cores; mount timed as in M (`mount(8)` bracketed by `date`) and as the bare `mount(2)` syscall; a write into the fork is checked not to reach the lower tree |
+| `storage` | duplicate bytes in the projects folder, counted once per inode and split by path class; time to fork the largest project with an overlay CoW mount, inside `unshare -Urm` and through bwrap; `git worktree add` as the baseline | `find -printf` for inodes and sizes, BLAKE2b over size-collision groups on all cores; mount timed as in M (`mount(8)` bracketed by `date`) and as the bare `mount(2)` syscall; through bwrap: `true` started in a sandbox with the overlay over the tree's own path (`--overlay-src` and `--tmp-overlay`), against the same sandbox without it, with the start-time method in 5 interleaved blocks; a write into either fork is checked not to reach the lower tree |
 
 ## Reading the report
 
@@ -91,6 +103,10 @@ Each row shows the M value, the value now, the difference and a status:
 
 **†** marks an M value that comes from the M run's raw output rather than from the text of OPTIMIZATION.md (rows
 next to the quoted ones, kept so they have a baseline too).
+
+**‡** marks a reference that is not an M value: the row was added after the M investigation (the bwrap fork), and its
+reference comes from the suite's own run on the date in the report header (see `lib/reference.py`). It is compared
+the same way.
 
 The note on a ⚠️ row depends on what kind of number it is:
 
