@@ -4,7 +4,7 @@
 //! world until a set time, including the network to the hosts they name; the outbox, where what a command in a
 //! world asks to do outside it waits for a person, who releases it to run once or refuses it, within a key's budget;
 //! the ledger, a record of every step and what it cost; and `arbor look`, which answers an agent's reads as short
-//! tables, several in one call.
+//! tables, several in one call, down to a source file's outline and the lines it asks for.
 
 pub mod cell;
 pub mod cgroup;
@@ -14,6 +14,7 @@ pub mod ledger;
 pub mod look;
 pub mod net;
 pub mod outbox;
+pub mod outline;
 pub mod paths;
 pub mod seccomp;
 pub mod sys;
