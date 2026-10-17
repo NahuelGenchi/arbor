@@ -205,6 +205,7 @@ arbor is planned in steps. The first prototype is a layer on top of Linux, so to
 | :--- | :--- |
 | [`OPTIMIZATION.md`](OPTIMIZATION.md) | The report: the waste measured today, the top 10 changes for the prototype, and every source |
 | [`bench/`](bench/) | The suite that measures it all again, section by section |
+| [`docs/INTERFACE.md`](docs/INTERFACE.md) | The design brief for Mission Control, the screen where people will direct agents. No interface exists yet: this is the plan for one |
 | [`docs/images/`](docs/images/) | The pictures on this page, and the pages they are drawn from |
 
 Work is tracked from issue to branch to milestone to pull request; see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/TRACKING.md](docs/TRACKING.md).
