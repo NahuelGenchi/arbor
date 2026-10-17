@@ -47,17 +47,17 @@ OPTIONS: --key KEY opens what the key opens. LIMITS stop a command that takes to
 
 GRANTS: --read PATH (a folder or file), --toolchains (~/.cargo, ~/.npm, ~/.pyenv and the like),
 --env VAR (passes a variable in), --net HOST (a host it may reach over https: api.example.com,
-*.example.com, HOST:PORT), --world W (only that world), LIMITS, --spend AMOUNT (what its effects may
-cost in all: 5, 2.50), --for DURATION or --until HH:MM (8h if neither), --within KEY (a narrower key,
-made from another).
+*.example.com, HOST:PORT), --home (a home folder of its own, kept between runs), --world W (only that
+world), LIMITS, --spend AMOUNT (what its effects may cost in all: 5, 2.50), --for DURATION or
+--until HH:MM (8h if neither), --within KEY (a narrower key, made from another).
 
 Inside a world, `arbor look` reads what the world sees, and `arbor effect [--cost AMOUNT] [--why TEXT]
 [--input FILE] [--wait] -- CMD...` asks for CMD to run outside: in the real folder, as you, with the
 network, once you release it. --wait waits for your answer and prints what CMD printed.
 
 The real folder does not change until `arbor keep`. Inside a world the rest of the computer is read-only,
-your home folder is empty but for what a key opens, password files stay hidden, and there is no network
-but the hosts a key opens.
+your home folder is empty (or the key's own, with --home) but for what a key opens, password files stay
+hidden, and there is no network but the hosts a key opens.
 Read the diff before keeping: kept files such as .git/hooks run later on your computer.
 ";
 
@@ -733,6 +733,7 @@ fn key_new(p: &mut lexopt::Parser) -> Result<i32> {
             Long("toolchains") => spec.toolchains = true,
             Long("env") => spec.env.push(p.value()?.string()?),
             Long("net") => spec.net.push(p.value()?.string()?),
+            Long("home") => spec.home = true,
             Long("within") => spec.within = Some(p.value()?.string()?),
             Long("for") => {
                 let life = cgroup::parse_duration(&p.value()?.string()?)?;
@@ -779,7 +780,8 @@ fn take_back(p: &mut lexopt::Parser) -> Result<i32> {
     let mut refused = Vec::new();
     let res = recorded("take-back", "-", |note| {
         note.key = Some(name.clone());
-        let gone = key::take_back(&name)?;
+        let keys = key::take_back(&name)?;
+        let gone: Vec<String> = keys.iter().map(|k| k.name.clone()).collect();
         // A cell that started under one of them before it went is stopped; one starting now sees it gone.
         let mut stopped = 0;
         for c in cell::running()? {
@@ -792,6 +794,14 @@ fn take_back(p: &mut lexopt::Parser) -> Result<i32> {
             |e| e.keys.iter().any(|k| gone.contains(&k.name)),
             &format!("key {} was taken back", gone[0]),
         );
+        // Nothing runs under them any more, so their own home folders go with them.
+        let mut homes = 0;
+        for k in &keys {
+            match k.remove_home() {
+                Ok(removed) => homes += usize::from(removed),
+                Err(e) => eprintln!("arbor: warning: {e}"),
+            }
+        }
         let mut what = format!("key {}", gone[0]);
         match &gone[1..] {
             [] => {}
@@ -801,6 +811,9 @@ fn take_back(p: &mut lexopt::Parser) -> Result<i32> {
         what += &format!("; stopped {}", count(stopped, "command"));
         if !refused.is_empty() {
             what += &format!("; refused {}", count(refused.len(), "effect"));
+        }
+        if homes > 0 {
+            what += &format!("; removed {}", count(homes, "home folder"));
         }
         println!("took back {what}");
         note.what = what;
@@ -821,6 +834,16 @@ fn keys(p: &mut lexopt::Parser) -> Result<i32> {
     }
     let now = world::now_ns();
     let or_dash = |s: String| if s.is_empty() { "-".into() } else { s };
+    // A key's own home folder shows what it takes on disk, and one it shares, whose it is.
+    let home = |k: &Key| match &k.home {
+        None => "-".into(),
+        Some(owner) if !k.owns_home() => format!("of {owner}"),
+        Some(_) => k
+            .home_dir()
+            .ok()
+            .flatten()
+            .map_or("-".into(), |dir| cgroup::size(key::disk_usage(&dir))),
+    };
     let effects = Outbox::open()?.list()?;
     let rows: Vec<Vec<String>> = all
         .iter()
@@ -845,13 +868,14 @@ fn keys(p: &mut lexopt::Parser) -> Result<i32> {
                 spend,
                 or_dash(k.env.join(", ")),
                 or_dash(k.hosts()),
+                home(k),
                 or_dash(k.reads()),
             ]
         })
         .collect();
     table::print(
         &[
-            "name", "until", "within", "opens", "limits", "spend", "env", "net", "reads",
+            "name", "until", "within", "opens", "limits", "spend", "env", "net", "home", "reads",
         ],
         &rows,
     )?;
