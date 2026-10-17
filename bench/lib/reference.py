@@ -64,11 +64,24 @@ ARBOR_NET_REF = {'ref_date': '17 Oct 2026', 'ref_load': 1.74}
 # same way in an A/B with the build before them: the one closest to the median of arbor.look_ms. The token rows read
 # the same in all five, and the rows before them within 2% of the other build's, but for keep and undo.
 ARBOR_LOOK_REF = {'ref_date': '17 Oct 2026', 'ref_load': 2.02}
+# The rows of a large file read in parts came last, from five more runs made the same way, in an A/B with the build
+# before them: the one closest to the median of arbor.look_ms. Their load averages at the start were 0.32, 0.41, 0.49,
+# 0.50 (ref_load) and 0.55. The token rows read the same in all five; the others within 3% of the other build's
+# medians, but for arbor.ask_ms, the difference of two close medians (0.49–0.64 ms here, 0.57–0.80 ms there), and the
+# binary, 0.07 MiB larger. The reference of `arbor look` alone, which now describes outline and lines, is from them.
+ARBOR_OUTLINE_REF = {'ref_date': '17 Oct 2026', 'ref_load': 0.5}
 
 
 def cycles(r, key):
     runs = r.ctx(key, 'runs_ms')
     return f'its {len(runs)} cycles took {min(runs):.1f}–{max(runs):.1f} ms' if runs else ''
+
+
+def parts(r):
+    """The rows of a file read in parts move with the reader in the binary measured, or with the files it reads."""
+    files, ref = r.ctx('arbor.outline_pct', 'files') or {}, r.ctx('arbor.outline_pct', 'ref')
+    return (f'the binary measured outlines files differently, or reads others: the {len(files)} largest code files of '
+            f'commit {ref}')
 
 
 def hops(r):
@@ -403,12 +416,16 @@ ENTRIES = [
       'suite', **ARBOR_LOOK_REF, why=lambda r: '`arbor look status` lists the same 15 changes differently'),
     E('arbor.git_status_tokens', 'Tokens', '`git status` of the same 15 changes', 244, 'tok', 'input', 'suite',
       **ARBOR_LOOK_REF, why=lambda r: "this git version's `git status` words the same changes differently"),
-    E('arbor.look_about_tokens', 'Tokens', '`arbor look` alone: all it answers, described', 309, 'tok', 'input',
-      'suite', **ARBOR_LOOK_REF, why=lambda r: 'the binary measured describes `arbor look` in other words'),
+    E('arbor.look_about_tokens', 'Tokens', '`arbor look` alone: all it answers, described', 413, 'tok', 'input',
+      'suite', **ARBOR_OUTLINE_REF, why=lambda r: 'the binary measured describes `arbor look` in other words'),
     E('arbor.look_ms', 'Prototype', 'one `arbor look` call: status, log and files', 2.70, 'ms', 'perf', 'suite', dp=2,
       **ARBOR_LOOK_REF,
       why=lambda r: placement(r, f"`git status`, `git log -20` and `ls -la` took "
                                  f"{r.ctx('arbor.look_ms', 'usual_ms'):.2f} ms one after another")),
+    E('arbor.outline_pct', 'Tokens', "a large code file's outline, `arbor look outline`: share of the file's tokens",
+      4.2, '%', 'input', 'suite', **ARBOR_OUTLINE_REF, why=parts),
+    E('arbor.outline_read_pct', 'Tokens', "that outline and two of its functions, `arbor look lines`: share of the "
+      "file's tokens", 8.48, '%', 'input', 'suite', **ARBOR_OUTLINE_REF, why=parts),
 
     # 9. The screen
     E('screen.still_cpu_pct', 'Screen', 'still screen, no input: compositor CPU, share of one core', 2.1, '%', 'state',

@@ -540,7 +540,7 @@ def look_rows(arbor):
 
 
 def outline_rows(arbor):
-    """A large file read in parts: its outline, then two of its functions, each as a share of the whole file's tokens."""
+    """A large file read in parts: its outline, then two of its functions, each as a share of the file's tokens."""
     git = shutil.which('git')
     if not git:
         raise RuntimeError('git is needed')
