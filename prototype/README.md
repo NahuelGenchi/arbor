@@ -98,6 +98,12 @@ The other whole folders are hidden for the same reasons. Some programs keep thei
 - the Copilot CLI's sessions, with each one's events, plan, reports and copies of files before an edit, `.copilot/session-state`; the database of all sessions, `.copilot/session-store.db*`, with the files SQLite keeps beside it; your prompts, `.copilot/command-history-state*`, a folder, or a file in earlier versions; logs, `.copilot/logs`; and sessions from versions before 1.0, `.copilot/history-session-state`;
 - Aider's chat, `.aider.chat.history.md`; the lines you typed, `.aider.input.history`; and, when turned on, the messages to and from the model, `.aider.llm.history`. Aider keeps them in the project, at the top of its git repository, so these are the ones from Aider run in the home folder. Those in a project come next.
 
+**An agent's database is missing instead.** SQLite cannot work with a database hidden as a file: it reads empty and the first write fails. In a world, the journal SQLite leaves beside it would also reach your database through `arbor keep` and empty it. So Codex's and the Copilot CLI's databases, with the files SQLite keeps beside each, look missing, in a folder that throws away what a command writes there. The agent makes a new database, which lasts until the command ends:
+
+- **In a folder a key opens**, such as `--read ~/.codex`, writes vanish already, and everything else there shows as before.
+- **In a world of a folder that holds `~/.codex` or `~/.copilot`**, such as a world of your home folder, that folder throws away what a command writes in it, settings included. `arbor diff` and `arbor keep` never see it, and your databases stay as they were. What the world changed in that folder before does not show there.
+- **Under a key with a home folder of its own**, the agent's database there stays for its next run.
+
 **Records in a project's folder stay hidden too.** Some agents keep their records in the project rather than in your home folder:
 - Aider's three files above, at the top of the project's git repository, or in the folder it started in when there is none;
 - Crush's `.crush`, with its database of every session's messages and copies of the files it edited, its logs and the output of long commands.
