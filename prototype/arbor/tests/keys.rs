@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{Env, cgroups, new_world, wait_for};
@@ -136,8 +136,9 @@ const NEXT_TO_LOGINS: [&str; 13] = [
 ];
 
 /// Where AI agents keep their records of your sessions, in the home folder, each with what a command reads there
-/// while it is hidden: nothing from a hidden file, and `-` in a hidden folder, which looks empty. Codex's databases
-/// have made-up version numbers, since the list takes any. Aider's are in the home folder, as when it runs there.
+/// while it is hidden: nothing from a hidden file, and `-` in a hidden folder, which looks empty, and where an agent's
+/// database was, which is missing. Codex's databases have made-up version numbers, since the list takes any. Aider's
+/// are in the home folder, as when it runs there.
 const AGENT_RECORDS: [(&str, &str); 41] = [
     (".claude/projects/-home-you-work-shop/0c1d.jsonl", "-"),
     (".claude/projects/-home-you-work-shop/memory/MEMORY.md", "-"),
@@ -163,16 +164,16 @@ const AGENT_RECORDS: [(&str, &str); 41] = [
     (".codex/memories/memory_summary.md", "-"),
     (".codex/memories_v2/memory.md", "-"),
     (".codex/memories_extensions/memory.md", "-"),
-    (".codex/state_7.sqlite", ""),
-    (".codex/state_7.sqlite-wal", ""),
-    (".codex/thread_history_3.sqlite", ""),
+    (".codex/state_7.sqlite", "-"),
+    (".codex/state_7.sqlite-wal", "-"),
+    (".codex/thread_history_3.sqlite", "-"),
     (".local/state/opencode/prompt-history.jsonl", "-"),
     (".gemini/tmp/shop/chats/session-0c1d.jsonl", "-"),
     (".gemini/tmp/shop/logs.json", "-"),
     (".gemini/history/shop/.git/HEAD", "-"),
     (".copilot/session-state/0c1d/events.jsonl", "-"),
-    (".copilot/session-store.db", ""),
-    (".copilot/session-store.db-wal", ""),
+    (".copilot/session-store.db", "-"),
+    (".copilot/session-store.db-wal", "-"),
     (".copilot/command-history-state/history.json", "-"),
     (".copilot/command-history-state.json", ""),
     (".copilot/logs/process-1-2.log", "-"),
@@ -412,7 +413,8 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
     let key = |name: &str, opens: &[&str]| key_opening(&e, name, opens);
     let records = AGENT_RECORDS.map(|(f, _)| f);
     let every: Vec<&str> = records.iter().chain(&NEXT_TO_RECORDS).copied().collect();
-    // The hidden folders look empty and the hidden files read empty, while the settings next to them show.
+    // The hidden folders look empty, the hidden files read empty and the databases are missing, while the settings
+    // next to them show.
     let hidden: Vec<&str> = AGENT_RECORDS
         .iter()
         .map(|(_, seen)| *seen)
@@ -503,7 +505,201 @@ fn agents_records_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_th
     ];
     assert_eq!(
         reads(&e, "demo", Some("within"), &files),
-        ["other", "record", "-", "record", "", "other", "record", "-"]
+        [
+            "other", "record", "-", "record", "-", "other", "record", "-"
+        ]
+    );
+}
+
+/// Where AI agents keep their records of your sessions in a project's folder, as Aider and Crush do, each with what a
+/// command reads there while it is hidden: nothing from a hidden file, and `-` in Crush's folder, which looks empty
+/// with the settings and commands in it.
+const PROJECT_RECORDS: [(&str, &str); 6] = [
+    (".aider.chat.history.md", ""),
+    (".aider.input.history", ""),
+    (".aider.llm.history", ""),
+    (".crush/crush.db", "-"),
+    (".crush/logs/crush.log", "-"),
+    (".crush/commands/review.md", "-"),
+];
+
+/// Writes a made-up record, `record`, where each agent keeps one in the folder `dir`, and `other` in a file next to
+/// them, and returns their paths, the records first.
+fn made_up_project(dir: &Path) -> Vec<PathBuf> {
+    let files: Vec<PathBuf> = PROJECT_RECORDS
+        .iter()
+        .map(|(f, _)| dir.join(f))
+        .chain([dir.join("notes.md")])
+        .collect();
+    for (i, f) in files.iter().enumerate() {
+        fs::create_dir_all(f.parent().unwrap()).unwrap();
+        fs::write(
+            f,
+            if i < PROJECT_RECORDS.len() {
+                "record"
+            } else {
+                "other"
+            },
+        )
+        .unwrap();
+    }
+    files
+}
+
+/// What `made_up_project` wrote reads as while the records are hidden.
+fn hidden_in_project() -> Vec<String> {
+    PROJECT_RECORDS
+        .iter()
+        .map(|(_, seen)| seen.to_string())
+        .chain(["other".to_string()])
+        .collect()
+}
+
+/// What `made_up_project` wrote reads as while it shows.
+fn shown_in_project() -> Vec<String> {
+    let mut seen = vec!["record".to_string(); PROJECT_RECORDS.len()];
+    seen.push("other".into());
+    seen
+}
+
+/// What a command in `world`, under `key` if given, started from `dir`, reads in each of `files`, as `reads` does.
+fn reads_at(e: &Env, world: &str, key: Option<&str>, dir: &Path, files: &[PathBuf]) -> Vec<String> {
+    let script = files
+        .iter()
+        .map(|f| format!("cat '{}' 2>/dev/null || printf -; echo", f.display()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut args = vec!["run", world];
+    if let Some(k) = key {
+        args.extend(["--key", k]);
+    }
+    args.extend(["--", "sh", "-c", &script]);
+    let out = e.command(&args).current_dir(dir).output().unwrap();
+    assert!(
+        out.status.success(),
+        "arbor {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn agents_records_in_a_project_stay_hidden_in_its_world_and_what_a_command_writes_is_its_own() {
+    let Some(e) = Env::new("projectrecords") else {
+        return;
+    };
+    let base = &e.base;
+    // At the top of the project, in a folder right inside it, and in one two levels down.
+    let top = made_up_project(base);
+    let app = made_up_project(&base.join("app"));
+    let api = made_up_project(&base.join("docs/api"));
+    fs::create_dir_all(base.join("docs/api/v1")).unwrap();
+    new_world(&e);
+    let all: Vec<PathBuf> = [&top, &app, &api].into_iter().flatten().cloned().collect();
+    let (hidden, shown) = (hidden_in_project(), shown_in_project());
+
+    // From the top, those at the top and one level down are hidden, but not deeper ones...
+    assert_eq!(
+        reads_at(&e, "demo", None, base, &all),
+        [hidden.clone(), hidden.clone(), shown.clone()].concat()
+    );
+    // ...unless the command starts below them.
+    assert_eq!(
+        reads_at(&e, "demo", None, &base.join("docs/api/v1"), &all),
+        [hidden.clone(), hidden.clone(), hidden.clone()].concat()
+    );
+
+    // Writes to them vanish and leave nothing in the world, and the real files stay as they were.
+    let records = |files: &[PathBuf]| files[..PROJECT_RECORDS.len()].to_vec();
+    let writes = [records(&top), records(&app)]
+        .concat()
+        .iter()
+        .map(|f| {
+            format!(
+                "mkdir -p '{0}' && echo x >> '{1}'",
+                f.parent().unwrap().display(),
+                f.display()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" && ");
+    e.ok(&["run", "demo", "--", "sh", "-c", &writes]);
+    assert_eq!(e.ok(&["diff", "demo"]), "no changes\n");
+    for f in [records(&top), records(&app)].concat() {
+        assert_eq!(fs::read_to_string(&f).unwrap(), "record", "{}", f.display());
+    }
+
+    // A record a command writes where the project had none is the world's own: it shows among the world's changes,
+    // and to the world's next command.
+    inside(&e, None, "echo mine > docs/.aider.chat.history.md");
+    assert_eq!(e.ok(&["diff", "demo"]), "A docs/.aider.chat.history.md\n");
+    assert_eq!(
+        inside(&e, None, "cat docs/.aider.chat.history.md"),
+        "mine\n"
+    );
+
+    // A key that names one in the world opens it.
+    let named = base.join(".aider.input.history");
+    e.ok(&["key", "new", "named", "--read", named.to_str().unwrap()]);
+    assert_eq!(
+        reads_at(&e, "demo", Some("named"), base, &[named, top[0].clone()]),
+        ["record", ""]
+    );
+}
+
+#[test]
+fn agents_records_in_projects_a_key_opens_stay_hidden_unless_it_names_them() {
+    let Some(e) = Env::new("keyprojects") else {
+        return;
+    };
+    new_world(&e);
+    // A folder of projects: records at its top, in a project in it, and in a folder inside that project.
+    let work = e.user_home.join("work");
+    let top = made_up_project(&work);
+    let shop = made_up_project(&work.join("shop"));
+    let deep = made_up_project(&work.join("shop/deep"));
+    let all: Vec<PathBuf> = [&top, &shop, &deep]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+    let (hidden, shown) = (hidden_in_project(), shown_in_project());
+    let w = work.to_str().unwrap();
+
+    // A key that opens it hides those at its top and in each project in it.
+    e.ok(&["key", "new", "work", "--read", w]);
+    assert_eq!(
+        reads_at(&e, "demo", Some("work"), &e.base, &all),
+        [hidden.clone(), hidden.clone(), shown.clone()].concat()
+    );
+    // A key that opens one project hides those at its top and one level down.
+    let s = format!("{w}/shop");
+    e.ok(&["key", "new", "shop", "--read", &s]);
+    assert_eq!(
+        reads_at(
+            &e,
+            "demo",
+            Some("shop"),
+            &e.base,
+            &[shop.clone(), deep.clone()].concat()
+        ),
+        [hidden.clone(), hidden.clone()].concat()
+    );
+    // A key that names a record, or Crush's folder, opens it, also inside a folder it opens.
+    let (input, crush) = (
+        format!("{w}/shop/.aider.input.history"),
+        format!("{w}/shop/.crush"),
+    );
+    e.ok(&[
+        "key", "new", "named", "--read", w, "--read", &input, "--read", &crush,
+    ]);
+    assert_eq!(
+        reads_at(&e, "demo", Some("named"), &e.base, &shop),
+        ["", "record", "", "record", "record", "record", "other"]
     );
 }
 
@@ -756,9 +952,9 @@ fn a_hidden_file_made_while_a_command_runs_stays_hidden() {
         (
             "demo",
             Some("all"),
-            ["other", "other", "", "-", "-", "other"],
+            ["other", "other", "-", "-", "-", "other"],
         ),
-        ("home", None, ["other", "other", "", "-", "-", "other"]),
+        ("home", None, ["other", "other", "-", "-", "-", "other"]),
     ] {
         clear();
         let (_, after) = reads_across(&e, world, key, &files, false, change);
@@ -767,6 +963,123 @@ fn a_hidden_file_made_while_a_command_runs_stays_hidden() {
     }
     // Nothing of what hid them is left in the world.
     assert_eq!(e.ok(&["diff", "home"]), "no changes\n");
+}
+
+/// Makes a made-up SQLite database at the path given, with a table of 50 rows, as an agent makes its own: `open` in
+/// WAL mode, left as a running program leaves it, with its `-wal` and `-shm` files; `closed` in WAL mode, closed, so
+/// without them; or `delete`, with a rollback journal.
+const MAKE_DATABASE: &str = r#"
+import os, sqlite3, sys
+path, mode = sys.argv[1], sys.argv[2]
+c = sqlite3.connect(path)
+c.execute("pragma journal_mode=" + ("delete" if mode == "delete" else "wal"))
+c.execute("pragma wal_autocheckpoint=0")
+c.execute("create table thread(title)")
+c.executemany("insert into thread values (?)", [("made up",)] * 50)
+c.commit()
+if mode == "open":
+    os._exit(0)
+c.close()
+"#;
+
+/// What an agent does with each database given after `how`, in a cell: prints how many tables it finds, then writes
+/// to it in WAL mode and prints how many rows it reads back. With `killed`, it then stops dead, as an agent does when
+/// its key ends, and leaves the files SQLite keeps beside them.
+const USE_DATABASES: &str = r#"
+import os, sqlite3, sys
+dbs = [sqlite3.connect(path) for path in sys.argv[2:]]
+for c in dbs:
+    tables = c.execute("select count(*) from sqlite_master").fetchone()[0]
+    c.execute("pragma journal_mode=wal")
+    c.execute("create table if not exists cell(x)")
+    c.execute("insert into cell values (1)")
+    c.commit()
+    print(tables, c.execute("select count(*) from cell").fetchone()[0])
+if sys.argv[1] == "killed":
+    os._exit(0)
+for c in dbs:
+    c.close()
+"#;
+
+#[test]
+fn an_agent_s_hidden_database_is_missing_so_it_makes_its_own_and_yours_stays_as_it_was() {
+    let Some(e) = Env::new("databases") else {
+        return;
+    };
+    let python = "/usr/bin/python3";
+    if !Path::new(python).exists() {
+        return common::skip(&format!("this test needs {python}"));
+    }
+    new_world(&e);
+    let home = &e.user_home;
+    let h = home.to_str().unwrap();
+    // Codex's databases, one open and one closed, and the Copilot CLI's, with their settings next to them.
+    put(
+        home,
+        &[".codex/config.toml", ".copilot/settings.json"],
+        "other",
+    );
+    let databases = [
+        (".codex/state_5.sqlite", "open"),
+        (".codex/logs_2.sqlite", "closed"),
+        (".copilot/session-store.db", "delete"),
+    ];
+    for (db, mode) in databases {
+        let path = home.join(db);
+        let args = ["-I", "-c", MAKE_DATABASE, path.to_str().unwrap(), mode];
+        assert!(Command::new(python).args(args).status().unwrap().success());
+    }
+    // Every file in the agents' folders, with what it holds.
+    let agents = || -> Vec<(PathBuf, Vec<u8>)> {
+        let mut all: Vec<_> = [".codex", ".copilot"]
+            .iter()
+            .flat_map(|dir| fs::read_dir(home.join(dir)).unwrap())
+            .map(|entry| entry.unwrap().path())
+            .map(|path| (path.clone(), fs::read(&path).unwrap()))
+            .collect();
+        all.sort();
+        all
+    };
+    let yours = agents();
+    assert!(yours.iter().any(|(p, _)| p.ends_with("state_5.sqlite-shm")));
+    assert_eq!(yours.len(), 7);
+    key_opening(&e, "agents", &[".codex", ".copilot"]);
+    e.ok(&["new", "home", "--from", h]);
+    let paths: Vec<String> = databases
+        .iter()
+        .map(|(db, _)| home.join(db).display().to_string())
+        .collect();
+    let agent = |world: &str, key: Option<&str>, how: &str| {
+        let mut args = vec!["run", world];
+        if let Some(k) = key {
+            args.extend(["--key", k]);
+        }
+        args.extend(["--", python, "-I", "-c", USE_DATABASES, how]);
+        args.extend(paths.iter().map(String::as_str));
+        e.ok(&args)
+    };
+
+    // Under a key that opens the agents' folders, and in a world of the home folder, run after run, an agent finds
+    // no database where yours are, makes its own, and reads back what it wrote, while the settings next to them show.
+    for (world, key) in [("demo", Some("agents")), ("home", None), ("home", None)] {
+        assert_eq!(agent(world, key, "closes"), "0 1\n".repeat(3), "{world}");
+        let settings = [".codex/config.toml", ".copilot/settings.json"];
+        assert_eq!(reads(&e, world, key, &settings), ["other", "other"]);
+    }
+    // In the world, what an agent leaves there when it stops dead, and what it writes next to them, vanish with the
+    // command: none of it reaches the world's changes, so keeping them leaves your databases as they were.
+    agent("home", None, "killed");
+    e.ok(&[
+        "run",
+        "home",
+        "--",
+        "sh",
+        "-c",
+        "echo x >> ~/.codex/config.toml && echo x > ~/.copilot/new",
+    ]);
+    assert_eq!(e.ok(&["diff", "home"]), "no changes\n");
+    e.ok(&["keep", "home"]);
+    assert_eq!(agents(), yours);
 }
 
 #[test]
