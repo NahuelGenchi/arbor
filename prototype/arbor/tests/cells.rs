@@ -37,12 +37,13 @@ fn a_fork_loop_stops_at_the_process_limit() {
         return;
     }
     new_world(&e);
-    let forks = "i=0; while [ $i -lt 40 ]; do sleep 5 & i=$((i+1)); done; wait";
+    let forks = "i=0; while [ $i -lt 40 ]; do sleep 30 & i=$((i+1)); done; wait";
     let started = Instant::now();
     let out = e.arbor(&["run", "demo", "--pids", "8", "--", "sh", "-c", forks]);
     assert_ne!(out.status.code(), Some(0), "every fork succeeded");
-    // The sleeps that did start die with the cell instead of running on.
-    assert!(started.elapsed() < Duration::from_secs(4));
+    // The sleeps that did start die with the cell instead of running on. The bound leaves room for a slow start of
+    // `arbor serve`, which the first cells of a test run wait for.
+    assert!(started.elapsed() < Duration::from_secs(20));
     let rows = e.ledger_rows();
     assert!(
         rows.last().unwrap().contains(", process limit hit "),
