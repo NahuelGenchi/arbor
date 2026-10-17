@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use arbor::seccomp;
 use common::Env;
 
 #[test]
@@ -147,8 +148,8 @@ fn a_cell_refuses_kernel_calls() {
     }
     e.ok(&["new", "demo", "--from", e.base.to_str().unwrap()]);
     // Each call and the error it must get inside a cell. Outside one, the kernel itself answers each refused call
-    // differently, so these errors come from the filter.
-    let calls = [
+    // here differently, so these errors come from the filter.
+    let mut calls = vec![
         (format!("{}", libc::SYS_getpid), 0),
         (format!("{},0,-3,0", libc::SYS_keyctl), libc::EPERM),
         (format!("{},0", libc::SYS_unshare), libc::EPERM),
@@ -178,6 +179,13 @@ fn a_cell_refuses_kernel_calls() {
             libc::ENOTTY,
         ),
     ];
+    // Then every call the filter refuses, with arguments of 0.
+    for (list, errno) in [
+        (seccomp::REFUSED, libc::EPERM),
+        (seccomp::ABSENT, libc::ENOSYS),
+    ] {
+        calls.extend(list.iter().map(|nr| (format!("{nr},0,0,0,0,0,0"), errno)));
+    }
     let mut args = vec!["run", "demo", "--", python, "-c", CALLS];
     args.extend(calls.iter().map(|(call, _)| call.as_str()));
     let out = e.ok(&args);

@@ -21,7 +21,7 @@ const ARCH: u32 = 0xC000_0000 | 183;
 compile_error!("cells filter kernel calls on x86_64 and aarch64 only");
 
 /// Calls refused with "operation not permitted".
-const REFUSED: &[c_long] = &[
+pub const REFUSED: &[c_long] = &[
     // The kernel keyrings, where a login session keeps secrets.
     libc::SYS_add_key,
     libc::SYS_keyctl,
@@ -56,7 +56,7 @@ const REFUSED: &[c_long] = &[
 
 /// Calls refused with "function not implemented", so that programs fall back to the older ones: io_uring, and the
 /// newer mount calls.
-const ABSENT: &[c_long] = &[
+pub const ABSENT: &[c_long] = &[
     libc::SYS_io_uring_setup,
     libc::SYS_io_uring_enter,
     libc::SYS_io_uring_register,
@@ -71,7 +71,7 @@ const ABSENT: &[c_long] = &[
 
 /// The `ioctl` requests refused with "operation not permitted": typing into the terminal (`TIOCSTI`, CVE-2017-5226)
 /// and pasting into a Linux console (`TIOCLINUX`, CVE-2023-28100). A cell run at a terminal shares the person's.
-const TERMINAL: [u32; 2] = [libc::TIOCSTI as u32, libc::TIOCLINUX as u32];
+pub const TERMINAL: [u32; 2] = [libc::TIOCSTI as u32, libc::TIOCLINUX as u32];
 
 /// Where `struct seccomp_data` holds the call number and the architecture.
 const NR: u32 = 0;
