@@ -8,10 +8,10 @@
     arbor is a plan to rebuild the computer around them, measured on a real PC before a single part is built.
   </p>
   <p>
-    <img src="https://img.shields.io/badge/status-proposal%2C%20measured-d08a1a?style=flat-square" alt="Status: a proposal, measured">
-    <img src="https://img.shields.io/badge/measured-16%20Oct%202026-1d8a5a?style=flat-square" alt="Measured on 16 October 2026">
+    <img src="https://img.shields.io/badge/status-proposal%2C%20measured-9f6811?style=flat-square" alt="Status: a proposal, measured">
+    <img src="https://img.shields.io/badge/measured-16%20Oct%202026-1b8355?style=flat-square" alt="Measured on 16 October 2026">
     <img src="https://img.shields.io/badge/first%20step-a%20layer%20on%20Linux-4b4841?style=flat-square&logo=linux&logoColor=white" alt="First step: a layer on top of Linux">
-    <a href="https://github.com/NahuelGenchi/arbor/actions/workflows/checks.yml"><img src="https://img.shields.io/github/actions/workflow/status/NahuelGenchi/arbor/checks.yml?branch=main&style=flat-square&label=checks" alt="Checks on main"></a>
+    <a href="https://github.com/NahuelGenchi/arbor/actions/workflows/checks.yml"><img src="https://img.shields.io/github/actions/workflow/status/NahuelGenchi/arbor/checks.yml?branch=main&style=flat-square&label=checks&color=4b4841" alt="Checks on main"></a>
     <a href="https://nahuelgenchi.com/software/arbor/"><img src="https://img.shields.io/badge/read-the%20proposal-7a5fd0?style=flat-square" alt="Read the proposal"></a>
   </p>
   <p>

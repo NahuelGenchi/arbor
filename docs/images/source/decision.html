@@ -7,9 +7,9 @@
 <link rel="stylesheet" href="base.css">
 <script src="theme.js"></script>
 <style>
-  /* The button and light amber of mission.css, for WCAG 2.2 AA: white on --go is 6.8:1 in light, --on-go on --go
-     8.9:1 in dark, and the waiting dot 3.8:1 against its pill, where base.css's light amber gives 2.5:1. */
-  :root { --amber: #a86f0c; --go: #146845; --on-go: #ffffff; }
+  /* The button of mission.css, for WCAG 2.2 AA: white on --go is 6.8:1 in light, --on-go on --go 8.9:1 in dark.
+     The waiting dot takes base.css's amber: 3.8:1 against its pill in light, 4.9:1 in dark. */
+  :root { --go: #146845; --on-go: #ffffff; }
   :root[data-theme="dark"] { --go: #5cc795; --on-go: #0f1512; }
   .card { width: 880px; height: 404px; display: flex; gap: 40px; padding: 38px 44px; }
   .text { width: 318px; flex: none; }
