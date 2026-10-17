@@ -74,13 +74,18 @@ fn a_command_the_world_hides_is_named_with_the_key_that_opens_it() {
     script(&home.join("bin/own"), "#!/bin/sh\necho own\n");
     // A script in the world whose interpreter the world hides.
     script(&e.base.join("greet"), "#!/usr/bin/env hello\n");
-    let path = ["", ".cargo/bin", ".npm-global/bin", "bin"]
-        .iter()
-        .map(|d| home.join(d).display().to_string())
-        .skip(1)
-        .chain(["/usr/bin".into(), "/bin".into()])
-        .collect::<Vec<_>>()
-        .join(":");
+    // arbor itself finds bubblewrap on this PATH too, and CI builds it into /usr/local/bin.
+    let bwrap = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .find(|d| d.join("bwrap").is_file())
+        .expect("Env::new ran bwrap from PATH");
+    let mut dirs = [".cargo/bin", ".npm-global/bin", "bin"]
+        .map(|d| home.join(d))
+        .to_vec();
+    dirs.extend(["/usr/bin", "/bin"].map(std::path::PathBuf::from));
+    if !dirs.contains(&bwrap) {
+        dirs.push(bwrap);
+    }
+    let path = std::env::join_paths(dirs).unwrap();
     let run = |args: &[&str]| {
         let out = e.command(args).env("PATH", &path).output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
