@@ -1,6 +1,6 @@
 # The arbor prototype
 
-The first working piece of arbor, built as a layer on today's Linux that needs no administrator rights. So far it has **worlds**: try any change on an instant copy of a folder, then keep the result or throw it away whole. A command in a world runs **sealed**: it sees the world and little else of yours, and no network, until a **key** opens more, for a while, such as the hosts it may reach. It has **limits** on the memory, CPU, processes and time a command may take. What a command in a world needs done outside it, such as a `git push`, waits in **the outbox** until you release it, which runs it once, or refuse it, and a key can cap what those **effects** cost. And it has **the ledger**: a record of every step and what it cost, checkable. See the [roadmap](../README.md#where-it-stands).
+The first working piece of arbor, built as a layer on today's Linux that needs no administrator rights. So far it has **worlds**: try any change on an instant copy of a folder, then keep the result or throw it away whole. A command in a world runs **sealed**: it sees the world and little else of yours, and no network, until a **key** opens more, for a while, such as the hosts it may reach. It has **limits** on the memory, CPU, processes and time a command may take. What a command in a world needs done outside it, such as a `git push`, waits in **the outbox** until you release it, which runs it once, or refuse it, and a key can cap what those **effects** cost. And it has **the ledger**: a record of every step and what it cost, checkable. For agents, **`arbor look`** answers the reads they make most as short tables, several in one call. See the [roadmap](../README.md#where-it-stands).
 
 ## Try it
 
@@ -37,7 +37,7 @@ arbor: `cargo` is in ~/.cargo/bin, which the world hides. A key opens it: `arbor
 - **Open more only with a key**, for a while: see [Keys](#keys). Password files stay hidden even then.
 - **No network, unless a key opens hosts.** A world has a network of its own with nothing in it. A key made with `--net` opens the hosts it names, over HTTPS only: see [The network](#the-network). What needs more can wait for you in [the outbox](#the-outbox).
 - **No way out through the computer's services.** `/run`, where Docker, D-Bus, systemd and your session keep their sockets, holds only `/run/arbor` inside a world: the socket that asks the outbox, and the `arbor` command that asks through it. Arbor's own folder, with the other worlds, the keys, the outbox and the ledger, is empty.
-- **Ask for an effect**, and only ask: `arbor effect -- CMD` asks for `CMD` to run outside the world once you say yes. It is the one arbor command that works inside a world.
+- **Ask for an effect**, and only ask: `arbor effect -- CMD` asks for `CMD` to run outside the world once you say yes. It is one of the two arbor commands that work inside a world; the other, [`arbor look`](#reads-for-an-agent), only reads.
 - **Fewer ways into the kernel.** A filter turns away the requests to the Linux kernel that real work rarely needs and that escapes from a sandbox usually start with: the kernel's keyrings, where some logins keep secrets; mounting, and namespaces of a command's own; BPF, perf and io_uring; and a few more. io_uring and the newer mount calls are reported as missing, which tells programs to use the older calls. The filter also keeps a command from typing into your terminal, so a shell in a world keeps job control (Ctrl-Z, `fg`). Debuggers and `strace` still work on the world's own programs. 32-bit programs cannot run in a world: they stop at their first request, with exit code 159 (*Bad system call*).
 
 Not yet: the rest of the computer can still be **read** from inside a world, such as `/etc`, the hardware details under `/sys`, and folders outside `/home`, `/media` and `/mnt`. A world runs one command at a time.
@@ -124,6 +124,49 @@ arbor shell shop --key agent
 
 Inside, the agent changes only the world, reaches only its API, and asks for anything else through [the outbox](#the-outbox); `arbor diff shop` shows what it changed. An agent may try other hosts too, such as its maker's telemetry: arbor names each one it refused, so you can decide whether to open it. What it keeps in its home folder, such as Claude Code's `~/.claude` and `~/.claude.json`, is still there the next time it runs under the key, in [the key's own home folder](#a-keys-own-home-folder), and goes when the key is taken back. Every world the key opens shares that folder, so a key for each project, made with `--world`, keeps them apart.
 
+## Reads for an agent
+
+At every step an agent's model reads its whole conversation again, so a read that takes one step instead of three, and prints only what was asked, saves twice. `arbor look` answers the reads an agent makes most as short tables, several in one call:
+
+```console
+$ arbor look status + log -n 3 + files src
+# status: on main, 1 ahead of origin/main
+path	change
+notes.txt	untracked
+src/cart.rs	modified
+# log -n 3: first 3, and more
+hash	subject
+4f1c2ab	fix: round the total once
+9e07d13	feat: a cart that keeps its items
+51b8a6e	docs: how to run the shop
+# files src
+name
+cart.rs
+lib.rs
+pay/
+```
+
+It answers four queries:
+
+- `files [DIR]`: what a folder holds, by name; a folder's name ends in `/`.
+- `status`: what changed in the git repository, by path from its top folder.
+- `log [REV] [PATH]...`: commits, newest first, of a branch or a range, or those that changed a path.
+- `procs [TEXT]`: processes, the ones that use the most memory first; with TEXT, those whose command holds it.
+
+Each gives a few fields unless asked for others: `-f name,size,modified`, or `-f all`. `-n` asks for more or fewer rows, and `-n 0` for all of them. `arbor look` alone describes every query and field, so an agent needs no tool description in its prompt, only to know that `arbor look` is there. How the answers are written:
+
+- **A title line first.** Each answer starts with `# QUERY`, which says what was cut (`first 100 of 2345`) and, for `status`, the branch.
+- **Failures.** A query that fails says why on its title line, and the others still answer; arbor then exits 1. A mistake in how a query is asked stops them all before any runs.
+- **Tabs between the columns**, which cost fewer tokens than aligned columns.
+- **One unit each:** sizes and memory are bytes, times `YYYY-MM-DDTHH:MM` in local time, modes octal.
+- **Characters spelled out.** Characters a terminal would act on, such as a tab or an escape in a file name, are spelled out (`\t`, `\e`).
+
+It only reads:
+
+- **git writes nothing.** `status` and `log` run git so that it writes nothing, not even its index, and no word of a query reaches git as an option.
+- **No ledger step,** as for `arbor worlds`.
+- **Inside a world it sees what the world sees:** the world's folder, and the world's own processes.
+
 ## The outbox
 
 A command in a world reaches no network but the hosts its key opens, and nothing it does reaches your real files until you keep the world. When the work needs something done outside, such as pushing a branch, sending an email or paying for a service, the command asks for it:
@@ -207,9 +250,10 @@ Ubuntu 24.04 and later stop ordinary programs from creating the Linux namespaces
 | `arbor/src/outbox.rs` | the outbox: effects on disk, the socket a cell asks through and the threads that answer it, release (once, with a receipt), refusal, and budgets |
 | `arbor/src/ledger.rs` | the ledger: appends under a lock, the hash chain, `--verify`, and following it for `watch` |
 | `arbor/src/table.rs` | the short tables arbor prints, and text from a world shown so that it cannot act on the terminal |
+| `arbor/src/look.rs` | `arbor look`: its queries and their fields, the tab-separated answers, git run as a reader, and processes read from `/proc` |
 | `arbor/src/net.rs` | the network a key opens: hosts and how they match, the port a cell's first process opens and hands out, and the proxy that answers it (`CONNECT` only), with the tally the ledger records |
 | `arbor/src/sys.rs` | the Linux calls the standard library lacks, such as `clone3` into a cgroup, inotify and `poll`, passing a descriptor over a socket, and threads that leave signals to the main one |
 | `arbor/src/main.rs` | the `arbor` command |
-| `arbor/tests/` | end-to-end tests through the binary and `bwrap`, each with its own throwaway home folder: `worlds.rs` (worlds, what a sealed cell sees, the kernel calls it refuses), `cells.rs` (limits, `ps`, `watch`), `keys.rs` (what a key opens, password files, a key's own home folder, `stop`, take-back), `outbox.rs` (asking, release once with a receipt, refusal, budgets, `--wait`, what a world's words can do to a terminal), `net.rs` (the hosts a key opens, reached through the proxy from a cell, and what it refuses) |
+| `arbor/tests/` | end-to-end tests through the binary and `bwrap`, each with its own throwaway home folder: `worlds.rs` (worlds, what a sealed cell sees, the kernel calls it refuses), `cells.rs` (limits, `ps`, `watch`), `keys.rs` (what a key opens, password files, a key's own home folder, `stop`, take-back), `outbox.rs` (asking, release once with a receipt, refusal, budgets, `--wait`, what a world's words can do to a terminal), `net.rs` (the hosts a key opens, reached through the proxy from a cell, and what it refuses), `look.rs` (reads answered as tables, on a throwaway folder and repository, and inside a world) |
 
 `./check.sh` runs `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test` with the toolchain pinned in `rust-toolchain.toml`. Tests that need `bwrap` print `skipped` and pass where it cannot mount an overlay, and tests of `--mem`, `--cpu` and `--pids` do the same where there is no systemd user session, so a green run there proves less. CI builds bubblewrap 0.11.1 from a pinned commit (its Ubuntu 24.04 runner ships 0.9), starts a user session for the runner, and sets `ARBOR_REQUIRE_BWRAP=1` and `ARBOR_REQUIRE_CGROUPS=1`, which turn those skips into failures.

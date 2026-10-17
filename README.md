@@ -157,7 +157,7 @@ The full report, with every source and the things arbor should refuse to do even
 
 ## Try the prototype
 
-The first piece of arbor runs on today's Linux, with no administrator rights. It is one program, `arbor`, and it already has worlds, sealed commands, keys, limits, a network open only to the hosts a key names, the outbox and the ledger: try a change on an instant copy of a folder, keep it or throw it away whole, and let nothing leave the machine until you say yes.
+The first piece of arbor runs on today's Linux, with no administrator rights. It is one program, `arbor`, and it already has worlds, sealed commands, keys, limits, a network open only to the hosts a key names, the outbox, the ledger and short answers for agents: try a change on an instant copy of a folder, keep it or throw it away whole, and let nothing leave the machine until you say yes.
 
 You need Linux with [bubblewrap](https://github.com/containers/bubblewrap) 0.10 or later (on Ubuntu 26.04, `sudo apt install bubblewrap`) and [Rust](https://rustup.rs). Then, in a copy of this repository:
 
@@ -178,7 +178,9 @@ arbor keep shop                         # put the changes in the real folder; ar
 
 A world has no network either, until a key names the hosts it may reach over HTTPS. That lets an agent work in a world of its own: after `arbor key new agent --toolchains --read ~/.local/share/claude --env ANTHROPIC_API_KEY --net api.anthropic.com --home`, Claude Code started in `arbor shell shop --key agent` reaches its API and nothing else, keeps its settings from one run to the next in a home folder of the key's own, and what it changes waits in the world until you keep it.
 
-How fast it is on the PC above. Every number here is **M**: the suite's [`arbor` section](bench/README.md#sections) measured it on 17 October 2026, and the last column names its row in [`bench/lib/reference.py`](bench/lib/reference.py).
+An agent asks for what it reads with `arbor look`: several reads in one call, each a short table of only the fields it wants. `arbor look status + log -n 5 + files src` answers what changed, the last five commits and what a folder holds in one step instead of three, and `arbor look` alone describes all it answers, so the agent's prompt needs no tool description for it.
+
+How fast it is on the PC above. Every number here is **M**: the suite's [`arbor` section](bench/README.md#sections) measured it on 17 October 2026, except the output of `ls -la`, `git log -20` and `ps aux` in brackets, which the report measured the day before, and the last column names its row in [`bench/lib/reference.py`](bench/lib/reference.py).
 
 | the job | the prototype | suite row |
 | :--- | ---: | :--- |
@@ -190,13 +192,19 @@ How fast it is on the PC above. Every number here is **M**: the suite's [`arbor`
 | Run it once you say yes, with a receipt | 1.5 ms | `arbor.release_ms` |
 | Put 1,000 new files in the real folder, or take them back out | 6.2 ms, 4.1 ms | `arbor.keep_ms`, `arbor.undo_ms` |
 | Tell an agent what changed in 100 files | 700 tokens | `arbor.diff100_tokens` |
+| Show an agent what a folder of 100 files holds (`ls -la`: 2,776 tokens) | 422 tokens | `arbor.look_files_tokens` (`fmt.ls_human`) |
+| Show an agent the last 20 commits (`git log -20`: 18,928 tokens) | 579 tokens | `arbor.look_log_tokens` (`fmt.git_log`) |
+| Show an agent the 30 programs using the most memory (`ps aux`: 9,900 tokens) | 325 tokens | `arbor.look_procs_tokens` (`fmt.ps_aux`) |
+| Show an agent 15 changes in a repository (`git status`: 244 tokens) | 128 tokens | `arbor.look_status_tokens`, `arbor.git_status_tokens` |
+| Answer what changed, the last commits and a folder's files in one call | 2.7 ms | `arbor.look_ms` |
+| Describe to an agent all that `arbor look` answers | 309 tokens | `arbor.look_about_tokens` |
 | Memory of the one background service it keeps running | 2.7 MiB | `arbor.serve_rss_mib` |
 
-A sealed command starts about 24 times faster than the Docker container above (125 ms), though not yet in the 1.28 ms of a plain Linux namespace: the prototype also mounts the world over the folder, sets up the command's limits, filters the kernel calls it may make, and records each step in the ledger. Opening the network to one host adds 0.6 ms to the start, and passing through arbor 0.12 ms to each connection. What a command in a world can and cannot do, and how keys, the network, limits, the outbox and the ledger work, is in **[prototype/README.md](prototype/README.md)**.
+A sealed command starts about 24 times faster than the Docker container above (125 ms), though not yet in the 1.28 ms of a plain Linux namespace: the prototype also mounts the world over the folder, sets up the command's limits, filters the kernel calls it may make, and records each step in the ledger. Opening the network to one host adds 0.6 ms to the start, and passing through arbor 0.12 ms to each connection. `arbor look` answers in 3–15% of the tokens of `ls -la`, `git log -20` and `ps aux`, and in about half those of `git status`, which is already short. Asking for three reads at once saves more: two of the steps that make an agent reread its whole conversation, which cost about 42,000 input-token equivalents each on the PC above (**M**). What a command in a world can and cannot do, and how keys, the network, limits, the outbox, the ledger and `arbor look` work, is in **[prototype/README.md](prototype/README.md)**.
 
 ## Measure your own PC
 
-The measurements are a suite of scripts you can run on a Linux PC. It needs no administrator rights, only reads your files, writes nothing but a temporary folder and its own report, and takes about two and a half minutes. With Rust set up for the prototype, it also builds the prototype in that temporary folder and measures it the same way, in about 13 seconds more; if the prototype's background service is not running, it starts it for those rows and stops it again. Last, on a Wayland desktop, it spends about two minutes on the screen: for one minute nothing should touch the PC, then a small window of its own animates, first on a quiet PC and then with every core busy and most of the free memory taken:
+The measurements are a suite of scripts you can run on a Linux PC. It needs no administrator rights, only reads your files, writes nothing but a temporary folder and its own report, and takes about two and a half minutes. With Rust set up for the prototype, it also builds the prototype in that temporary folder and measures it the same way, in about 15 seconds more; if the prototype's background service is not running, it starts it for those rows and stops it again. Last, on a Wayland desktop, it spends about two minutes on the screen: for one minute nothing should touch the PC, then a small window of its own animates, first on a quiet PC and then with every core busy and most of the free memory taken:
 
 ```sh
 git clone https://github.com/NahuelGenchi/arbor.git
@@ -217,7 +225,7 @@ arbor is planned in steps. The first prototype is a layer on top of Linux, so to
 - 🟢 **[M1 · Measurements](https://github.com/NahuelGenchi/arbor/milestone/2)** — the report and the suite; the baseline of 16 October 2026 is done, and the suite measures the prototype too
 - 🟢 **[M2 · Worlds and storage](https://github.com/NahuelGenchi/arbor/milestone/3)** — instant copies of everything, each piece of content stored once, finding anything at once. *In the prototype: worlds of a folder, kept or undone whole*
 - 🟢 **[M3 · Cells](https://github.com/NahuelGenchi/arbor/milestone/4)** — sealed rooms that start in a fraction of a millisecond, and the keys that open them. *In the prototype: sealed commands with limits, keys, a filter on kernel calls, and a network open only to the hosts a key names*
-- ⚪ **[M4 · Agent layer](https://github.com/NahuelGenchi/arbor/milestone/5)** — agents that reread less: tools described on demand, short typed answers, one shared service
+- 🟢 **[M4 · Agent layer](https://github.com/NahuelGenchi/arbor/milestone/5)** — agents that reread less: tools described on demand, short typed answers, one shared service. *In the prototype: `arbor look`, several reads in one call, each a short table*
 - ⚪ **[M5 · Lean system](https://github.com/NahuelGenchi/arbor/milestone/6)** — memory, starting up and energy: no swapping to disk, no waiting at boot, nothing that polls
 - 🟢 **[M6 · Outbox and ledger](https://github.com/NahuelGenchi/arbor/milestone/7)** — effects that wait for a yes, budgets, and the record of every step. *In the prototype: the outbox, budgets in money, and the ledger*
 
@@ -244,7 +252,7 @@ arbor is planned in steps. The first prototype is a layer on top of Linux, so to
 | :--- | :--- |
 | [`OPTIMIZATION.md`](OPTIMIZATION.md) | The report: the waste measured today, the top 10 changes for the prototype, and every source |
 | [`bench/`](bench/) | The suite that measures it all again, section by section, and the prototype the same way |
-| [`prototype/`](prototype/) | The first prototype, on today's Linux: one program, `arbor`, with worlds, sealed commands, keys, limits, a network open only to the hosts a key names, the outbox and the ledger |
+| [`prototype/`](prototype/) | The first prototype, on today's Linux: one program, `arbor`, with worlds, sealed commands, keys, limits, a network open only to the hosts a key names, the outbox, the ledger and short answers for agents |
 | [`docs/INTERFACE.md`](docs/INTERFACE.md) | The design brief for Mission Control, the screen where people will direct agents. No interface exists yet: this is the plan for one |
 | [`docs/images/`](docs/images/) | The pictures on this page, and the pages they are drawn from |
 

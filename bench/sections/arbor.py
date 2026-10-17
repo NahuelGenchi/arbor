@@ -32,6 +32,18 @@ has no network address, the two rows fail and key net names a host that no comma
 Other rows: `arbor new` (20 runs after 3 warm-ups), keep and undo of a world that added 1,000 files (median of 11
 cycles), the idle RSS and PSS of `arbor serve` when it runs the binary measured, the size of the binary, and the o200k
 tokens of `arbor diff` when 100 files changed.
+`arbor look`, in o200k tokens, on the inputs of the formats section, each answer counted next to the usual command's
+output at the same moment (in its ctx):
+  arbor.look_files_tokens   `arbor look files $LISTING_DIR -n 100`: the names of the 100-file listing (fmt.*)
+  arbor.look_log_tokens     `arbor look log $GIT_LOG_REF` in $GIT_LOG_REPO: 20 commits, as fmt.git_log
+  arbor.look_procs_tokens   `arbor look procs`: the 30 processes using the most memory, as fmt.ps_*
+  arbor.look_status_tokens  `arbor look status` in a repository the section makes, with 15 changes of every kind
+  arbor.git_status_tokens   `git status` of the same changes
+  arbor.look_about_tokens   `arbor look` alone: the whole description of what it answers
+  arbor.look_ms             one call that answers `status + log + files` in that repository, timed as the cells
+                            are; the three usual commands (git status, git log -20, ls -la), timed the same way,
+                            are in its ctx
+git runs there with none of this computer's settings, and every command with the locale of the formats section.
 Nothing is pinned to a CPU, as in the rest of the suite. On a CPU with P- and E-cores, rows timed on one arbor process
 at a time (new, keep, undo) move with the kind of core the scheduler puts it on.
 """
@@ -47,8 +59,8 @@ import threading
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib'))
-from common import (BENCH_DIR, WORK, emit, emit_blocks, env, fail, median, run, same_program,  # noqa: E402
-                    smaps_rollup)
+from common import (BENCH_DIR, WORK, emit, emit_blocks, env, fail, git_target, median, run,  # noqa: E402
+                    same_program, smaps_rollup)
 
 A = os.path.join(WORK, 'arbor')
 ERR = os.path.join(A, 'stderr')
@@ -56,6 +68,9 @@ NULL = os.open(os.devnull, os.O_RDWR)
 ROWS = ['arbor.binary_mib', 'arbor.new_ms', 'arbor.run_ms', 'arbor.run_cgroup_ms', 'arbor.run_net_ms', 'arbor.ask_ms',
         'arbor.release_ms', 'arbor.tunnel_ms', 'arbor.tunnel_direct_ms', 'arbor.serve_rss_mib', 'arbor.serve_pss_mib',
         'arbor.keep_ms', 'arbor.undo_ms', 'arbor.diff100_tokens']
+LOOK = ['arbor.look_files_tokens', 'arbor.look_log_tokens', 'arbor.look_procs_tokens', 'arbor.look_status_tokens',
+        'arbor.git_status_tokens', 'arbor.look_about_tokens', 'arbor.look_ms']
+ROWS += LOOK
 TUNNEL = ['arbor.tunnel_ms', 'arbor.tunnel_direct_ms']
 FILES = 1000
 CYCLES = 11
@@ -315,6 +330,10 @@ def main():
         diff_tokens(arbor)
     except Exception as e:
         fail('arbor.diff100_tokens', e)
+    try:
+        look_rows(arbor)
+    except Exception as e:
+        fail(LOOK, e)
 
 
 def timed(arbor, binary, cases, fs, started, missing):
@@ -398,6 +417,111 @@ def diff_tokens(arbor):
     if r.returncode != 0:
         raise RuntimeError('o200k counter failed: ' + last_line(r.stderr))
     emit('arbor.diff100_tokens', int(r.stdout.decode().strip()), {'bytes': len(listing.encode())})
+
+
+def tokens(texts):
+    """o200k tokens of each text in a {key: text} dict."""
+    node = shutil.which('node')
+    if not node:
+        raise RuntimeError('node not found')
+    path = os.path.join(A, 'texts.json')
+    with open(path, 'w') as f:
+        json.dump(texts, f)
+    r = run([node, os.path.join(BENCH_DIR, 'lib', 'o200k.js'), '--json', path], timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError('o200k counter failed: ' + last_line(r.stderr))
+    return json.loads(r.stdout)
+
+
+def printed(argv, environ, cwd=None, head=None):
+    """What a command prints, or its first `head` lines; raises with its error if it fails."""
+    r = run(argv, env=environ, cwd=cwd, stdin=subprocess.DEVNULL)
+    if r.returncode != 0:
+        raise RuntimeError(f'`{" ".join(argv)}` exited with {r.returncode}: {last_line(r.stderr)}')
+    out = r.stdout.decode(errors='replace')
+    return ''.join(out.splitlines(keepends=True)[:head]) if head else out
+
+
+def changes(git, environ):
+    """A repository with 15 changes of every kind git status shows: modified, staged, partly staged, deleted, renamed,
+    added and untracked."""
+    files = {f'src/part_{i:02}.rs': f'pub fn part_{i}() -> u32 {{\n    {i}\n}}\n' for i in range(12)}
+    files.update({'README.md': '# Demo\n\nA project.\n', 'docs/guide.md': '# Guide\n\nRead me.\n',
+                  'tests/basic.rs': '#[test]\nfn basic() {}\n'})
+    repo = folder('look', files)
+    g = lambda *args: printed([git, *args], environ, cwd=repo)  # noqa: E731
+    g('init', '-q', '-b', 'main')
+    g('add', '.')
+    g('-c', 'user.name=Ana', '-c', 'user.email=ana@example.com', 'commit', '-q', '-m', 'A project')
+    for i in range(6):
+        with open(os.path.join(repo, f'src/part_{i:02}.rs'), 'a') as f:
+            f.write('// changed\n')
+    for rel in ('src/part_06.rs', 'README.md'):
+        with open(os.path.join(repo, rel), 'a') as f:
+            f.write('More.\n')
+        g('add', rel)
+    with open(os.path.join(repo, 'README.md'), 'a') as f:
+        f.write('And more.\n')
+    os.remove(os.path.join(repo, 'src/part_07.rs'))
+    g('rm', '-q', 'src/part_08.rs')
+    g('mv', 'docs/guide.md', 'docs/manual.md')
+    folder('look', {'src/part_12.rs': 'pub fn part_12() {}\n', 'tests/more.rs': '#[test]\nfn more() {}\n',
+                    'notes.txt': 'to do\n', 'scratch/a.txt': 'a\n', 'scratch/b.txt': 'b\n'})
+    g('add', 'src/part_12.rs', 'tests/more.rs')
+    return repo
+
+
+def look_rows(arbor):
+    """`arbor look`'s answers next to the usual commands' output, and the time of one call that answers three reads."""
+    git, ls, ps = (shutil.which(c) for c in ('git', 'ls', 'ps'))
+    if not (git and ls and ps):
+        raise RuntimeError('git, ls and ps are needed')
+    loc = dict(arbor.sealed, LC_ALL=env('FORMATS_LOCALE', 'en_US.UTF-8'))
+    own = dict(loc, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+    look = lambda *args, environ=loc, cwd=None: printed(arbor.argv('look', *args), environ, cwd)  # noqa: E731
+    d = env('LISTING_DIR', '/usr/bin')
+    texts = {'files': look('files', d, '-n', '100'), 'files_ls': printed([ls, '-la', d], loc, head=101),
+             'about': look()}
+    repo, ref = git_target()
+    if repo:
+        texts['log'] = look('log', ref, cwd=repo)
+        texts['log_git'] = printed([git, '-C', repo, 'log', '-20', ref], loc)
+    # One moment for the three, as the processes change.
+    texts['procs'] = look('procs')
+    texts['procs_aux'] = printed([ps, 'aux', '--sort=-rss'], loc, head=31)
+    texts['procs_fields'] = printed([ps, '-eo', 'pid,rss,comm', '--sort=-rss'], loc, head=31)
+    status_repo = changes(git, own)
+    texts['status'] = look('status', environ=own, cwd=status_repo)
+    texts['status_git'] = printed([git, 'status'], own, cwd=status_repo)
+    if len(texts['status'].splitlines()) != 17:
+        raise RuntimeError(f'`arbor look status` answered {texts["status"]!r}, not 15 changes')
+    n = tokens(texts)
+    emit('arbor.look_files_tokens', n['files'], {'ls_la': n['files_ls'], 'dir': d})
+    if repo:
+        emit('arbor.look_log_tokens', n['log'], {'git_log': n['log_git'], 'repo': os.path.basename(repo),
+                                                 'ref': ref[:12]})
+    else:
+        fail('arbor.look_log_tokens', 'no git repository found (set GIT_LOG_REPO)')
+    emit('arbor.look_procs_tokens', n['procs'], {'ps_aux': n['procs_aux'], 'ps_fields': n['procs_fields']})
+    emit('arbor.look_status_tokens', n['status'], {'changes': 15})
+    emit('arbor.git_status_tokens', n['status_git'], {'changes': 15})
+    emit('arbor.look_about_tokens', n['about'])
+
+    # The time: posix_spawn starts each command in this process's folder.
+    here = os.getcwd()
+    os.chdir(status_repo)
+    try:
+        meds, errs = blocks([('arbor.look_ms', lambda b: arbor.argv('look', 'status', '+', 'log', '+', 'files'), own),
+                             ('git_status_ms', lambda b: [git, 'status'], own),
+                             ('git_log_ms', lambda b: [git, 'log', '-20'], own),
+                             ('ls_ms', lambda b: [ls, '-la'], own)])
+    finally:
+        os.chdir(here)
+    if errs:
+        raise next(iter(errs.values()))
+    usual = {k: round(statistics.median(meds[k]), 4) for k in ('git_status_ms', 'git_log_ms', 'ls_ms')}
+    emit('arbor.look_ms', statistics.median(meds['arbor.look_ms']),
+         dict(usual, usual_ms=round(sum(usual.values()), 4), blocks=[round(x, 4) for x in meds['arbor.look_ms']]))
 
 
 if __name__ == '__main__':

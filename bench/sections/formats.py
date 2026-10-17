@@ -15,7 +15,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib'))
-from common import BENCH_DIR, WORK, emit, env, fail  # noqa: E402
+from common import BENCH_DIR, WORK, emit, env, fail, git_target  # noqa: E402
 
 LOC = dict(os.environ, LC_ALL=env('FORMATS_LOCALE', 'en_US.UTF-8'))
 
@@ -63,27 +63,6 @@ def md(rows):
 def toon(rows, name='files'):
     ks = list(rows[0])
     return f'{name}[{len(rows)}]{{{",".join(ks)}}}:\n' + '\n'.join('  ' + ','.join(str(r[k]) for k in ks) for r in rows)
-
-
-def git_target():
-    """(repo, ref): $GIT_LOG_REPO if set, else the repo under $PROJECTS_DIR that holds $GIT_LOG_REF,
-    else the most recently committed repo there at HEAD."""
-    ref, repo = env('GIT_LOG_REF', 'HEAD'), env('GIT_LOG_REPO')
-    if repo:
-        return repo, ref
-    root = env('PROJECTS_DIR')
-    if not root or not os.path.isdir(root):
-        return None, ref
-    repos = [os.path.join(root, d) for d in sorted(os.listdir(root)) if os.path.isdir(os.path.join(root, d, '.git'))]
-    for r in repos:
-        if subprocess.run(['git', '-C', r, 'cat-file', '-e', f'{ref}^{{commit}}'], capture_output=True).returncode == 0:
-            return r, ref
-    latest = []
-    for r in repos:
-        t = subprocess.run(['git', '-C', r, 'log', '-1', '--format=%ct'], capture_output=True, text=True).stdout.strip()
-        if t:
-            latest.append((int(t), r))
-    return (max(latest)[1], 'HEAD') if latest else (None, ref)
 
 
 def main():
