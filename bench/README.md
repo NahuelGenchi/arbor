@@ -223,12 +223,13 @@ of 10 rounds took about 48 minutes (**M**).
 - **What it counts**, from OpenCode's own database in the key's home, read-only and from the session tables only: each
   model call (a step) with its input, cache-read, cache-write, output and reasoning tokens, the tools called and what
   they returned, and the last answer. `sessions/summary.py` reports the medians and spread per task and arm, the
-  suite's weighted cost (input 1, cache write 1.25, cache read 0.1, output 5, where output includes reasoning), and B
-  against A as a ratio of medians with a bootstrap 95% interval.
+  suite's weighted cost (input 1, cache write 1.25, cache read 0.1, output 5, where output includes reasoning), and
+  each arm against A, and each later arm against an earlier one, as a ratio of medians with a bootstrap 95% interval.
 - **Every session the agent ends counts**, failed or not, since a failed session is paid for too, and one that runs out
   of time (`AB_TIMEOUT`, 900 s) counts as failed. A session that the provider ends, as the free model's rate limit does
-  after heavy use, runs again, twice at most; a slot whose every attempt the provider ended is left out of the report,
-  named, and runs again on `--resume`.
+  after heavy use, runs again, twice at most. When the provider ends every attempt, the run stops, and `--resume` goes
+  on later; a slot whose every attempt the provider ended is left out of the report, named, and runs again on
+  `--resume`.
 
 `AB_GAP` waits that many seconds after each session: the free model's rate limit ends sessions after about 120 in an
 hour, and lasts more than 20 minutes.

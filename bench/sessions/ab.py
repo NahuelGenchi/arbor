@@ -25,8 +25,9 @@ each model call (a step) with its input, cache-read, cache-write, output and rea
 the commands it ran in the shell and the queries it gave the `arbor look` tool, and its last answer. The task's check
 then decides success, from that answer or from the files left in the world. A session that OpenCode ends with an
 error of the provider's, such as the free model's rate limit, runs again, at most twice; the attempts stay in the
-records. `--resume` runs again, later, a session whose every attempt the provider ended, as well as those a stopped
-run did not reach. Then the key is taken back, which deletes its home, and the world is thrown away.
+records. When the provider ends every attempt, the run stops, since the rate limit lasts a while: `--resume` goes on
+later, running again that session, any other whose every attempt the provider ended, and those the run did not
+reach. Then the key is taken back, which deletes its home, and the world is thrown away.
 
 The run stops if a step names another model or records a cost other than 0, or if MODEL is not one of the free ones
 (its name ends in `-free`). arbor runs with ARBOR_HOME in the temp folder, so none of the person's worlds, keys or
@@ -353,6 +354,9 @@ def main():
                         time.sleep(GAP)
                         if not again:
                             break
+                    if summary.provider_error(rec):
+                        sys.exit(f'ab.py: the provider ended every attempt of session {n} '
+                                 f'({(rec.get("errors") or ["?"])[0][:100]}); go on later with --resume {out}')
         meta_end = {'meta_end': True, 'date': datetime.datetime.now().isoformat(timespec='seconds'),
                     'load': os.getloadavg()}
         with open(out, 'a') as f:
