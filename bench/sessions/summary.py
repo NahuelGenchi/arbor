@@ -11,13 +11,18 @@ records as output plus reasoning, which it keeps apart and the provider bills as
 B/A is the ratio of the arms' medians for one task. Its 95% interval is a bootstrap: 4,000 times, each arm's sessions
 of the task are drawn again with replacement, and the 2.5th and 97.5th percentiles of the ratio are kept. All tasks is
 the geometric mean of the tasks' ratios, bootstrapped the same way, task by task. P(B<A) is the share of pairs of one
-A and one B session of the task in which B spent less (ties count half).
+A and one B session of the task in which B spent less (ties count half). The reference row is the run that
+SESSIONS_REF in lib/reference.py records, for comparing a new run with it.
 """
 import json
 import math
+import os
 import random
 import statistics
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'lib'))
+import reference  # noqa: E402
 
 DRAWS = 4000
 
@@ -44,6 +49,8 @@ def load(path):
         r = json.loads(line)
         if r.get('meta'):
             meta = r
+        elif r.get('meta_resume'):
+            meta.setdefault('resumed', []).append(r)
         elif r.get('meta_end'):
             end = r
         elif r.get('final'):
@@ -100,7 +107,9 @@ def report(path):
            f"({meta.get('reps')} per task and arm). Load average {load_avg(meta)} at the start "
            f"({meta.get('date', '?')[11:16]}), {load_avg(end)} at the end ({end.get('date', '?')[11:16]}). A free "
            "remote model's answers vary from run to run, and the model behind the name can change, so a new run will "
-           "not repeat these numbers exactly.", '',
+           "not repeat these numbers exactly." + ''.join(
+               f" The run stopped after session {r['after']} and went on at {r['date'][11:16]} (load average "
+               f"{load_avg(r)}) with `--resume`." for r in meta.get('resumed', [])), '',
            'Median (min–max) per session. Weighted: input 1, cache write 1.25, cache read 0.1, output 5.', '',
            '| task | arm | ok | ' + ' | '.join(m for m, _ in METRICS) + ' | arbor look | read |',
            '| :--- | :-: | :-: |' + ' ---: |' * (len(METRICS) + 2)]
@@ -143,6 +152,11 @@ def report(path):
                     cells.append(f'{p:.2f} ({lo:.2f}–{hi:.2f}), {below(a, b):.2f}')
             ok = [f"{sum(bool(r.get('success')) for r in rs)}/{len(rs)}" for rs in (ra, rb)]
             out.append(f'| {t} | ' + ' | '.join(cells) + f' | {ok[0]} | {ok[1]} |')
+        ref = getattr(reference, 'SESSIONS_REF', None)
+        if ref:
+            out.append(f"| *reference, {ref['ref_date']}* | " + ' | '.join(
+                '{:.2f} ({:.2f}–{:.2f})'.format(*ref[m]) for m in ('weighted', 'steps', 'input', 'output')) +
+                f" | {ref['ok'][0]} | {ref['ok'][1]} |")
     tools = sorted({k for r in recs for k in (r.get('tools') or {})})
     if tools:
         out += ['', 'Tool calls and the characters they returned, median per session.', '',

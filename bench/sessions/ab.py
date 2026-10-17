@@ -38,6 +38,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -239,8 +240,10 @@ def session(arbor, work, task, arm, n):
     CHILD = None
     rec['wall_s'] = round(time.monotonic() - t0, 1)
     rec['exit'] = p.returncode
-    refused = [ln for ln in err.decode(errors='replace').splitlines() if 'does not open' in ln]
-    rec['refused_hosts'] = sorted({ln.split('does not open ')[1].split(',')[0] for ln in refused})
+    # arbor's own line naming the hosts the key kept out; OpenCode's lines on stderr may quote other text of arbor's
+    said = re.findall(rf"^arbor: key '{key}' does not open (.+?), so the command could not reach",
+                      err.decode(errors='replace'), re.M)
+    rec['refused_hosts'] = sorted({h for line in said for h in re.split(r', | and ', line)})
     db = os.path.join(work, 'home', 'homes', key, '.local', 'share', 'opencode', 'opencode.db')
     rec.update(count(db, folder) if os.path.exists(db) else {'steps': 0, 'errors': ['no database']})
     ok, why = T.TASKS[task]['check'](rec.get('answer', ''), World(arbor))
@@ -272,8 +275,19 @@ def main():
     ap.add_argument('--reps', type=int, default=5)
     ap.add_argument('--tasks', default=','.join(T.TASKS))
     ap.add_argument('--arms', default='A,B')
+    ap.add_argument('--resume', metavar='JSONL', help="an earlier run's records: its sessions are kept, and the run "
+                    'goes on with its settings from the first session it did not finish')
     a = ap.parse_args()
-    names, arms = a.tasks.split(','), a.arms.split(',')
+    names, arms, done, n = a.tasks.split(','), a.arms.split(','), set(), 0
+    if a.resume:
+        with open(a.resume) as f:
+            old = [json.loads(line) for line in f]
+        meta = next(r for r in old if r.get('meta'))
+        if (meta['commit'], meta['model']) != (T.COMMIT, MODEL):
+            sys.exit(f'ab.py: {a.resume} ran on another commit or model')
+        names, arms, a.reps = meta['tasks'], meta['arms'], meta['reps']
+        done = {(r['rep'], r['task'], r['arm']) for r in old if r.get('final')}
+        n = max((r.get('n', 0) for r in old), default=0)
     if not MODEL.endswith('-free'):
         sys.exit(f'ab.py: {MODEL} is not one of the free models; this A/B spends nothing')
     if any(t not in T.TASKS for t in names) or any(x not in T.ARMS for x in arms):
@@ -283,7 +297,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(130))
     os.makedirs(RESULTS, exist_ok=True)
     stamp = f"sessions_{datetime.datetime.now():%Y-%m-%d_%H%M}_{socket.gethostname().split('.')[0]}"
-    out = os.path.join(RESULTS, stamp + '.jsonl')
+    out = a.resume or os.path.join(RESULTS, stamp + '.jsonl')
     try:
         arbor = Arbor(build(work), os.path.join(work, 'home'))
         for arm in arms:
@@ -293,12 +307,15 @@ def main():
                 'opencode': version, 'commit': T.COMMIT, 'reps': a.reps, 'tasks': names, 'arms': arms,
                 'timeout_s': TIMEOUT, 'load': os.getloadavg(),
                 'arbor': 'ARBOR_BIN' if os.environ.get('ARBOR_BIN') else summary.arbor_commit(ROOT)}
-        with open(out, 'w') as f:
+        if a.resume:
+            meta = {'meta_resume': True, 'after': n, **{k: meta[k] for k in ('date', 'opencode', 'load', 'arbor')}}
+        with open(out, 'a' if a.resume else 'w') as f:
             f.write(json.dumps(meta) + '\n')
-        n = 0
         for rep in range(a.reps):
             for i, task in enumerate(names):
                 for arm in (arms if (rep + i) % 2 == 0 else arms[::-1]):
+                    if (rep, task, arm) in done:
+                        continue
                     for attempt in range(RETRIES + 1):
                         n += 1
                         rec = session(arbor, work, task, arm, n)
