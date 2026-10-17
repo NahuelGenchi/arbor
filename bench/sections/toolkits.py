@@ -28,12 +28,13 @@ Each program takes one argument: `still` shows the window with its 300 rows, cha
                           CPU clock at each commit), the slowest 1%; the note gives the mean
   ui.T.missed_load_pct, ui.T.frame_p99_load_ms
                           the same with a busy cell per CPU thread and a memory spike, the screen section's load
-  ui.T.atspi_objects      the accessible objects it shows on the accessibility bus (AT-SPI) 2.5 s after it started; the
-                          note says whether its heading, its card and the words of its rows can be read there. The
-                          program runs in a D-Bus session of its own, in which only the accessibility bus can be
-                          started, with accessibility turned on there, its settings in memory and a runtime folder of
-                          its own (the accessibility bus puts its socket in $XDG_RUNTIME_DIR/at-spi, where the
-                          desktop's own is), so the desktop's accessibility bus and setting are never touched
+  ui.T.atspi_objects      the accessible objects it shows on the accessibility bus (AT-SPI) 8 s after it started, once
+                          its card has arrived and its rows have stopped changing; the note says whether its heading,
+                          its card and the words of its rows can be read there. The program runs in a D-Bus session
+                          of its own, in which only the accessibility bus can be started, with accessibility turned
+                          on there, its settings in memory and a runtime folder of its own (the accessibility bus puts
+                          its socket in $XDG_RUNTIME_DIR/at-spi, where the desktop's own is), so the desktop's
+                          accessibility bus and setting are never touched
 TOOLKITS_SETTLE_S seconds (90) pass after the builds and after each toolkit's loaded run, and then the section waits
 until the 1-minute load average is under 1, at most 10 minutes more, so that each toolkit is measured on a machine as
 quiet as the one before; each row's context gives the load average it was measured at. The programs keep their caches
@@ -58,13 +59,13 @@ from common import BENCH_DIR, WORK, emit, env, fail, median, pct, run, smaps_rol
 from sysinfo import busiest, cpu_ticks  # noqa: E402
 import screen  # noqa: E402  the screen section: its cells, spike and frame-pacing maths
 
-NAMES = {'gtk4': 'GTK 4', 'qtquick': 'Qt Quick', 'slint': 'Slint', 'iced': 'iced'}
+NAMES = {'gtk4': 'GTK 4', 'qtquick': 'Qt Quick', 'slint': 'Slint', 'iced': 'iced', 'flutter': 'Flutter'}
 METRICS = ['first_frame_ms', 'rss_start_mib', 'pss_start_mib', 'still_cpu_pct', 'still_wakeups_s', 'rss_idle_mib',
            'pss_idle_mib', 'missed_idle_pct', 'frame_p99_idle_ms', 'frame_work_p99_ms', 'missed_load_pct',
            'frame_p99_load_ms', 'atspi_objects']
 HZ = os.sysconf('SC_CLK_TCK')
-START_S = 2.5   # memory after the start, and the accessibility check: the rows are there, the updates not begun
-STILL_AT = 8.0  # the still window starts after the updates (3–5 s) and the card's 200 ms
+START_S = 2.5   # memory after the start: the rows are there, the updates not begun
+STILL_AT = 8.0  # the still window and the accessibility check: after the updates (3–5 s) and the card's 200 ms
 D = os.path.join(WORK, 'toolkits')
 PROBE = os.path.join(WORK, 'bin', 'probe.so')
 DRIVERS = re.compile(r'/(libvulkan_\w+|libgallium[-\w.]*?|\w+_dri)\.so')
@@ -480,7 +481,7 @@ def atspi_inside(argv):
         import gi
         gi.require_version('Atspi', '2.0')
         from gi.repository import Atspi
-        time.sleep(START_S)
+        time.sleep(STILL_AT)
         app, limit = None, time.monotonic() + 5
         while app is None and time.monotonic() < limit:
             desktop = Atspi.get_desktop(0)
