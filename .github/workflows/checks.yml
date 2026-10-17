@@ -6,7 +6,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Reads the code and checks that it parses; measures nothing and needs no other permission.
+# Reads the code, checks that it parses and runs the prototype's tests; measures nothing and needs no other permission.
 permissions:
   contents: read
 
@@ -24,3 +24,20 @@ jobs:
           python-version: '3.14'
       - name: Run the source checks
         run: bash bench/check.sh
+
+  prototype:
+    name: Prototype checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The end-to-end tests run commands in worlds through bubblewrap; without it they skip with a note.
+      - name: Install bubblewrap
+        run: sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+      - name: Install the pinned Rust toolchain
+        working-directory: prototype
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rustfmt,clippy
+      - name: Run the prototype's source checks
+        run: bash prototype/check.sh
