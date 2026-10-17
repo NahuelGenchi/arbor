@@ -22,7 +22,9 @@ Each program takes one argument: `still` shows the window with its 300 rows, cha
                           frame pacing during the animation (`animate`), with the machine as it is: the screen
                           section's method and maths, from the time the compositor showed each new frame of the
                           window, which src/probe.c, loaded into the program (LD_PRELOAD), asks it for. 1 s of warm-up
-                          after the first frame, then FRAMES_S seconds
+                          after the first frame, then FRAMES_S seconds. The frame rows fail when a key or the mouse
+                          was used, when the window lost the focus, or when the compositor showed it for less than
+                          90% of the refreshes, since then they would measure the person at the PC
   ui.T.frame_work_p99_ms  the work of each frame in that run: the CPU time of the program, all its threads, from
                           committing one frame of the window to committing the next (the probe reads the program's
                           CPU clock at each commit), the slowest 1%; the note gives the mean
@@ -362,6 +364,7 @@ def pacing(t, argv, seconds, loaded):
             procs.append(spike)
         sleep_until(first + (screen.WARMUP + seconds) * 1e9)
         b, procs_b = reading(p.pid), cpu_ticks()
+        idle = screen.idle_ms()
         time.sleep(0.5)  # the replies about the last frames
         if spike:
             spike_s = screen.spike_ended(spike, mib)
@@ -374,6 +377,19 @@ def pacing(t, argv, seconds, loaded):
             q.wait()
     got = probe_lines(path, p.pid)
     res = screen.pacing_of(as_frames(got), seconds, until=seconds)
+    # Frames of a window that someone used, or that was not in front, say nothing of the toolkit: as on the still
+    # screen, those rows fail.
+    start, end = first + screen.WARMUP * 1e9, first + (screen.WARMUP + seconds) * 1e9
+    expected = seconds * res['ctx']['refresh_hz']
+    if idle is not None and idle < (screen.WARMUP + seconds) * 1000:
+        return fail(keys, f'a key or the mouse was used {idle / 1000:.0f} s before the end of the animation, so it '
+                          'was not left alone: leave the PC alone during this section')
+    if not focused(got, start, end):
+        return fail(keys, 'the window lost the focus during the animation (another window was brought in front): '
+                          'leave the PC alone during this section')
+    if res['ctx']['refreshes'] < 0.9 * expected:
+        return fail(keys, f"the compositor showed the window for {res['ctx']['refreshes']:,} of the "
+                          f"{expected:,.0f} refreshes of the animation, so it was covered for part of it")
     dt, frames = b['t'] - a['t'], res['ctx']['frames']
     ctx = dict(res['ctx'], load1=before, busy=busiest(procs_a, procs_b, dt, floor=10),
                window=f"{got['c'][-1][1]}×{got['c'][-1][2]}" if got['c'] else None,
@@ -390,6 +406,12 @@ def pacing(t, argv, seconds, loaded):
     emit(keys[1], res['p99_ms'], ctx)
     if not loaded:
         emit(keys[2], *work(got, seconds))
+
+
+def focused(got, start, end):
+    """Whether the window was the active one from start to end (CLOCK_MONOTONIC ns), from its configure events."""
+    before = [c for c in got['c'] if c[0] <= start]
+    return bool(before and before[-1][3]) and all(c[3] for c in got['c'] if start < c[0] <= end)
 
 
 def work(got, seconds):
