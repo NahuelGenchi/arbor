@@ -58,7 +58,7 @@ pub const TOOLCHAINS: [&str; 19] = [
 
 /// Password and key files and folders, relative to the home folder. They stay hidden in a cell even when its world
 /// or its key includes the folder they are in, unless that world or key is the file or folder itself.
-pub const SECRETS: [&str; 30] = [
+pub const SECRETS: [&str; 35] = [
     // Keys and passwords
     ".ssh",
     ".gnupg",
@@ -93,6 +93,15 @@ pub const SECRETS: [&str; 30] = [
     ".config/chromium",
     ".config/BraveSoftware",
     ".config/microsoft-edge",
+    // AI agents' logins. OpenCode keeps its own in a database, next to every session, and writes the latest changes to
+    // files beside it that come and go, so its whole folder stays hidden.
+    ".local/share/opencode",
+    ".claude/.credentials.json",
+    // Anthropic's profiles, where Claude Code keeps a Console login made without an API key
+    ".config/anthropic/credentials",
+    ".codex/auth.json",
+    // Codex's logins to MCP servers, where there is no keyring
+    ".codex/.credentials.json",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -78,7 +78,10 @@ A key cannot open the whole computer, the folders a cell gets fresh copies of (`
 - keys and passwords: `.ssh`, `.gnupg`, `.password-store`, `.local/share/keyrings` and `.pki`;
 - cloud and service logins: `.aws`, `.azure`, `.config/gcloud`, `.kube`, `.docker/config.json`, `.config/gh`, `.git-credentials`, `.netrc`, `.vault-token` and `.terraform.d/credentials.tfrc.json`;
 - package registry tokens: `.npmrc`, `.pypirc`, `.gem/credentials`, `.cargo/credentials`, `.cargo/credentials.toml`, `.gradle/gradle.properties`, `.m2/settings.xml` and `.m2/settings-security.xml`;
-- browser and mail profiles, with saved passwords and signed-in sessions: `.mozilla`, `snap/firefox`, `.thunderbird`, `.config/google-chrome`, `.config/chromium`, `.config/BraveSoftware` and `.config/microsoft-edge`.
+- browser and mail profiles, with saved passwords and signed-in sessions: `.mozilla`, `snap/firefox`, `.thunderbird`, `.config/google-chrome`, `.config/chromium`, `.config/BraveSoftware` and `.config/microsoft-edge`;
+- AI agents' logins: OpenCode's whole folder, `.local/share/opencode`; Claude Code's `.claude/.credentials.json`, and `.config/anthropic/credentials` for a Console login made without an API key; Codex's `.codex/auth.json`, and `.codex/.credentials.json` for its logins to MCP servers.
+
+OpenCode keeps its logins in its database, `opencode.db`, next to every session, and writes the latest changes to files beside it, which come and go as it runs, while arbor hides what is there when a command starts. So the whole folder stays hidden, with OpenCode's old login file and its MCP servers' tokens. A key that names one file in it, such as `--read ~/.local/share/opencode/opencode.db`, opens that file alone, and OpenCode in a world gets a login of its own as a copy: see [OpenCode, with the login it already has](#opencode-with-the-login-it-already-has). The list names the places programs use by default: a login moved elsewhere, as with `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, is not hidden.
 
 ### A key's own home folder
 

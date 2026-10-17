@@ -44,6 +44,56 @@ fn path_of(dirs: &[PathBuf]) -> std::ffi::OsString {
     std::env::join_paths(all).unwrap()
 }
 
+/// Where AI agents keep their logins, in the home folder.
+const AGENT_LOGINS: [&str; 9] = [
+    ".local/share/opencode/opencode.db",
+    ".local/share/opencode/opencode.db-wal",
+    ".local/share/opencode/opencode.db-shm",
+    ".local/share/opencode/auth.json",
+    ".local/share/opencode/mcp-auth.json",
+    ".claude/.credentials.json",
+    ".config/anthropic/credentials/default.json",
+    ".codex/auth.json",
+    ".codex/.credentials.json",
+];
+
+/// Files next to them that hold no login.
+const NEXT_TO_LOGINS: [&str; 4] = [
+    ".local/share/notes",
+    ".claude/settings.json",
+    ".config/anthropic/configs/default.json",
+    ".codex/config.toml",
+];
+
+/// Writes a made-up login, `login`, where each agent keeps one in `home`, and `other` in the files next to them.
+fn made_up_logins(home: &Path) {
+    let files = AGENT_LOGINS
+        .map(|f| (f, "login"))
+        .into_iter()
+        .chain(NEXT_TO_LOGINS.map(|f| (f, "other")));
+    for (rel, text) in files {
+        let path = home.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+}
+
+/// What a command in `world`, under `key` if given, reads in each of `files` in the home folder: its text, nothing
+/// from a hidden file, or `-` where there is none, as in a hidden folder.
+fn reads(e: &Env, world: &str, key: Option<&str>, files: &[&str]) -> Vec<String> {
+    let script = files
+        .iter()
+        .map(|f| format!("cat ~/{f} 2>/dev/null || printf -; echo"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut args = vec!["run", world];
+    if let Some(k) = key {
+        args.extend(["--key", k]);
+    }
+    args.extend(["--", "sh", "-c", &script]);
+    e.ok(&args).lines().map(str::to_string).collect()
+}
+
 #[test]
 fn the_home_folder_is_hidden_until_a_key_opens_it_and_password_files_stay_hidden() {
     let Some(e) = Env::new("grants") else { return };
@@ -80,6 +130,84 @@ fn the_home_folder_is_hidden_until_a_key_opens_it_and_password_files_stay_hidden
     // Writes to an opened folder are thrown away.
     inside(&e, Some("cargo"), "echo x > ~/.cargo/new");
     assert!(!home.join(".cargo/new").exists());
+}
+
+#[test]
+fn agents_logins_stay_hidden_in_what_a_world_or_key_opens_unless_a_key_names_them() {
+    let Some(e) = Env::new("agentlogins") else {
+        return;
+    };
+    new_world(&e);
+    let home = &e.user_home;
+    made_up_logins(home);
+    let h = home.to_str().unwrap();
+    let key = |name: &str, opens: &[&str]| {
+        let paths: Vec<String> = opens.iter().map(|o| format!("{h}/{o}")).collect();
+        let mut args = vec!["key", "new", name];
+        for p in &paths {
+            args.extend(["--read", p.as_str()]);
+        }
+        e.ok(&args);
+    };
+    let every: Vec<&str> = AGENT_LOGINS
+        .iter()
+        .chain(&NEXT_TO_LOGINS)
+        .copied()
+        .collect();
+    // The hidden folders look empty and the hidden files read empty, while the files next to them show.
+    let hidden = [
+        "-", "-", "-", "-", "-", "", "-", "", "", "other", "other", "other", "other",
+    ];
+
+    // A key that opens the folders they are in, or the whole home folder, hides them...
+    key("folders", &[".local/share", ".claude", ".config", ".codex"]);
+    assert_eq!(reads(&e, "demo", Some("folders"), &every), hidden);
+    e.ok(&["key", "new", "all", "--read", h]);
+    assert_eq!(reads(&e, "demo", Some("all"), &every), hidden);
+    // ...and so does a world of the home folder, where writes to them vanish and leave nothing in the world.
+    e.ok(&["new", "home", "--from", h]);
+    assert_eq!(reads(&e, "home", None, &every), hidden);
+    let writes = AGENT_LOGINS.map(|f| format!("echo x > ~/{f}")).join("; ");
+    e.ok(&["run", "home", "--", "sh", "-c", &writes]);
+    assert_eq!(e.ok(&["diff", "home"]), "no changes\n");
+    for f in AGENT_LOGINS {
+        assert_eq!(fs::read_to_string(home.join(f)).unwrap(), "login", "{f}");
+    }
+
+    // A key that names a login opens it, while the rest of the home folder stays hidden...
+    key("logins", &AGENT_LOGINS);
+    let mut named = vec!["login"; 9];
+    named.extend(["-"; 4]);
+    assert_eq!(reads(&e, "demo", Some("logins"), &every), named);
+    // ...as does one that names OpenCode's folder...
+    key("opencode", &[".local/share/opencode"]);
+    assert_eq!(
+        reads(&e, "demo", Some("opencode"), &AGENT_LOGINS[..5]),
+        ["login"; 5]
+    );
+    // ...and one that names a login inside a folder it opens shows that login, while the rest of OpenCode's folder
+    // stays hidden.
+    key(
+        "within",
+        &[
+            ".local/share",
+            ".local/share/opencode/opencode.db",
+            ".claude",
+            ".claude/.credentials.json",
+        ],
+    );
+    let files = [
+        ".local/share/notes",
+        ".local/share/opencode/opencode.db",
+        ".local/share/opencode/opencode.db-wal",
+        ".local/share/opencode/auth.json",
+        ".claude/settings.json",
+        ".claude/.credentials.json",
+    ];
+    assert_eq!(
+        reads(&e, "demo", Some("within"), &files),
+        ["other", "login", "-", "-", "other", "login"]
+    );
 }
 
 #[test]
@@ -740,6 +868,7 @@ fn the_agent_s_own_logins_stay_in_its_home_while_yours_stay_hidden() {
     fs::create_dir_all(&cargo).unwrap();
     fs::write(cargo.join("config.toml"), "[build]").unwrap();
     fs::write(cargo.join("credentials.toml"), "token").unwrap();
+    made_up_logins(home);
     e.ok(&[
         "key",
         "new",
@@ -752,7 +881,9 @@ fn the_agent_s_own_logins_stay_in_its_home_while_yours_stay_hidden() {
     inside(
         &e,
         Some("agent"),
-        "echo mine > ~/.netrc; mkdir ~/.ssh && echo mine > ~/.ssh/config; echo x > ~/.cargo/new",
+        "echo mine > ~/.netrc; mkdir ~/.ssh && echo mine > ~/.ssh/config; echo x > ~/.cargo/new; \
+         mkdir -p ~/.local/share/opencode ~/.claude && echo mine > ~/.local/share/opencode/opencode.db && \
+         echo mine > ~/.claude/.credentials.json",
     );
     let cat = |path: &str| {
         inside(
@@ -763,13 +894,19 @@ fn the_agent_s_own_logins_stay_in_its_home_while_yours_stay_hidden() {
     };
     assert_eq!(cat("~/.netrc"), "mine\n");
     assert_eq!(cat("~/.ssh/config"), "mine\n");
+    assert_eq!(cat("~/.local/share/opencode/opencode.db"), "mine\n");
+    assert_eq!(cat("~/.claude/.credentials.json"), "mine\n");
     // ...while yours stay hidden, also inside what the key opens on top of its home, where writes still vanish.
     assert_eq!(cat("~/.ssh/id_ed25519"), "hidden\n");
+    assert_eq!(cat("~/.local/share/opencode/auth.json"), "hidden\n");
     assert_eq!(cat("~/.cargo/config.toml"), "[build]");
     assert_eq!(cat("~/.cargo/credentials.toml"), "");
     assert_eq!(cat("~/.cargo/new"), "hidden\n");
     assert!(!cargo.join("new").exists());
     assert_eq!(fs::read_to_string(home.join(".netrc")).unwrap(), "yours");
+    for f in AGENT_LOGINS {
+        assert_eq!(fs::read_to_string(home.join(f)).unwrap(), "login", "{f}");
+    }
 }
 
 #[test]
