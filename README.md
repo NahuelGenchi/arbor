@@ -17,11 +17,10 @@
   <p>
     <a href="#in-one-minute">In one minute</a> &nbsp;·&nbsp;
     <a href="#what-you-get">What you get</a> &nbsp;·&nbsp;
-    <a href="#the-new-building-blocks">Building blocks</a> &nbsp;·&nbsp;
     <a href="#one-task-start-to-finish">One task</a> &nbsp;·&nbsp;
     <a href="#measured-not-guessed">Measured</a> &nbsp;·&nbsp;
-    <a href="#measure-your-own-pc">Measure your PC</a> &nbsp;·&nbsp;
-    <a href="#where-it-stands">Where it stands</a>
+    <a href="#measure-your-own-pc">Try it</a> &nbsp;·&nbsp;
+    <a href="#where-it-stands">Roadmap</a>
   </p>
 </div>
 
@@ -54,29 +53,31 @@ The trouble is that every operating system in use today descends from ideas of 1
 
 <table>
   <tr>
-    <td width="33%" valign="top">
+    <td width="50%" valign="top">
       <h3>💸 A smaller bill</h3>
       Three quarters of what agents cost goes on reading the same words again and again. arbor cuts what they reread before anything else.
     </td>
-    <td width="33%" valign="top">
+    <td width="50%" valign="top">
       <h3>⚡ Much faster</h3>
       On the same PC, a safe space for an agent starts about 100 times faster, and a file is found among 2.2 million in a third of a millisecond.
     </td>
-    <td width="33%" valign="top">
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <h3>↩️ Undo for everything</h3>
       An agent works on a copy of everything it can see. Keep the result, or throw the copy away whole, with nothing left to clean up.
     </td>
-  </tr>
-  <tr>
-    <td width="33%" valign="top">
+    <td width="50%" valign="top">
       <h3>🔑 Safe to hand over</h3>
       Like a valet key for a car: an agent gets exactly the access its task needs, for as long as it lasts, and never sees your passwords.
     </td>
-    <td width="33%" valign="top">
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <h3>📮 Nothing leaves without you</h3>
       Payments, emails and posts wait in an outbox until a rule or a person releases them, and leave exactly once, with a receipt.
     </td>
-    <td width="33%" valign="top">
+    <td width="50%" valign="top">
       <h3>🪶 A lighter machine</h3>
       One shared service instead of a heavy program for every agent and a browser for every app, and a third of the disk back from files stored twice.
     </td>
@@ -87,7 +88,7 @@ The trouble is that every operating system in use today descends from ideas of 1
 
 Today's computers are built from users, programs, files and text. arbor is built from these, and it is named after the Latin word for tree because almost everything in it branches.
 
-| arbor's idea | what it replaces | think of it as |
+| the idea | what it replaces | think of it as |
 | :--- | :--- | :--- |
 | **World** | a disk and its folders | a draft of everything an agent can see, copied in an instant, then kept or thrown away |
 | **Object** | a file | a piece of data that knows what it is and is never written over: each change is a new version |
@@ -173,17 +174,15 @@ It writes a report to `bench/results/` with every number next to the one measure
 
 arbor is planned in steps. The first prototype is a layer on top of Linux, so today's programs keep working inside it; the whole of it, with new hardware, is a project of about ten years. Each step is a milestone:
 
-| | milestone | what it covers |
-| :---: | :--- | :--- |
-| 🟢 | [**M0 Project foundation**](https://github.com/NahuelGenchi/arbor/milestone/1) | this repository, its documents and how work is tracked |
-| 🟢 | [**M1 Measurements**](https://github.com/NahuelGenchi/arbor/milestone/2) | the report and the suite; the baseline of 16 October 2026 is done |
-| ⚪ | [**M2 Worlds and storage**](https://github.com/NahuelGenchi/arbor/milestone/3) | instant copies of everything, each piece of content stored once, finding anything at once |
-| ⚪ | [**M3 Cells**](https://github.com/NahuelGenchi/arbor/milestone/4) | sealed rooms that start in a fraction of a millisecond, and the keys that open them |
-| ⚪ | [**M4 Agent layer**](https://github.com/NahuelGenchi/arbor/milestone/5) | agents that reread less: tools described on demand, short typed answers, one shared service |
-| ⚪ | [**M5 Lean system**](https://github.com/NahuelGenchi/arbor/milestone/6) | memory, starting up and energy: no swapping to disk, no waiting at boot, nothing that polls |
-| ⚪ | [**M6 Outbox and ledger**](https://github.com/NahuelGenchi/arbor/milestone/7) | effects that wait for a yes, budgets, and the record of every step |
+- 🟢 **[M0 · Project foundation](https://github.com/NahuelGenchi/arbor/milestone/1)** — this repository, its documents and how work is tracked
+- 🟢 **[M1 · Measurements](https://github.com/NahuelGenchi/arbor/milestone/2)** — the report and the suite; the baseline of 16 October 2026 is done
+- ⚪ **[M2 · Worlds and storage](https://github.com/NahuelGenchi/arbor/milestone/3)** — instant copies of everything, each piece of content stored once, finding anything at once
+- ⚪ **[M3 · Cells](https://github.com/NahuelGenchi/arbor/milestone/4)** — sealed rooms that start in a fraction of a millisecond, and the keys that open them
+- ⚪ **[M4 · Agent layer](https://github.com/NahuelGenchi/arbor/milestone/5)** — agents that reread less: tools described on demand, short typed answers, one shared service
+- ⚪ **[M5 · Lean system](https://github.com/NahuelGenchi/arbor/milestone/6)** — memory, starting up and energy: no swapping to disk, no waiting at boot, nothing that polls
+- ⚪ **[M6 · Outbox and ledger](https://github.com/NahuelGenchi/arbor/milestone/7)** — effects that wait for a yes, budgets, and the record of every step
 
-🟢 in progress &nbsp;·&nbsp; ⚪ planned
+<sub>🟢 in progress &nbsp;·&nbsp; ⚪ planned</sub>
 
 ## Read more
 
