@@ -1,11 +1,13 @@
 /* Shared look of the README images: the paper and ink of nahuelgenchi.com, with arbor's own three colours.
-   Every colour pair used for data was run through a colour-blindness check in both themes. */
+   Every colour pair used for data was run through a colour-blindness check in both themes. For WCAG 2.2 AA, the text
+   colours (--ink to --ink-3 and the three -ink) are at least 4.7:1 on paper and wash in both themes, and green,
+   violet and amber at least 3.7:1. */
 :root {
   --paper: #fcfbf8; --wash: #f4f1ea; --rule: #e6e2d8;
   --ink: #1c1b18; --ink-2: #4b4841; --ink-3: #6f6b61; --quiet: #cdc7ba;
   --green: #1d8a5a; --green-ink: #146845; --green-wash: #e3f1e9;
   --violet: #7a5fd0; --violet-ink: #5a43ad;
-  --amber: #d08a1a; --amber-ink: #8a5a00; --amber-wash: #fbf0dc;
+  --amber: #a86f0c; --amber-ink: #8a5a00; --amber-wash: #fbf0dc;
   --cut: #c9c3b6;
   --serif: "Newsreader", Georgia, serif;
   --sans: "Inter", system-ui, sans-serif;
