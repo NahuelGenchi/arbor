@@ -1,6 +1,7 @@
 //! Thin wrappers for the few Linux calls the standard library lacks: locks, atomic renames, extended attributes,
-//! whiteouts, private temporary folders, the session keyring, process and folder watches, threads that leave signals
-//! to the main one, and deferred interrupts. Path calls never follow a final symlink.
+//! whiteouts, private temporary folders, lookups from an open folder, the session keyring, process and folder
+//! watches, threads that leave signals to the main one, and deferred interrupts. Path calls never follow a final
+//! symlink.
 
 use std::ffi::{CString, OsString};
 use std::fs::File;
@@ -157,6 +158,27 @@ pub fn make_temp_dir(prefix: &Path) -> io::Result<PathBuf> {
     }
     template.pop();
     Ok(PathBuf::from(OsString::from_vec(template)))
+}
+
+/// Which of `names` there are in the folder `dir`, by their place in `names`. Each is looked up from the open folder,
+/// not along the whole path, since a cell looks for a few names in many folders when it starts.
+pub fn present(dir: &Path, names: &[CString]) -> Vec<usize> {
+    let Ok(folder) = cpath(dir) else {
+        return Vec::new();
+    };
+    let flags = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let fd = unsafe { libc::open(folder.as_ptr(), flags) };
+    if fd < 0 {
+        return Vec::new();
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    (0..names.len())
+        .filter(|&i| {
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            let at = libc::AT_SYMLINK_NOFOLLOW;
+            unsafe { libc::fstatat(fd.as_raw_fd(), names[i].as_ptr(), &mut st, at) == 0 }
+        })
+        .collect()
 }
 
 /// True for an overlayfs whiteout: a character device numbered 0:0.

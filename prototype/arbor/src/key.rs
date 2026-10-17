@@ -11,7 +11,7 @@
 //! the agent keeps there, can outlive the end it was made with.
 
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{CString, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -509,10 +509,16 @@ pub fn in_project(dir: &Path, inside: bool) -> Vec<PathBuf> {
         more.sort();
         folders.extend(more);
     }
+    let names: Vec<CString> = PROJECT_RECORDS
+        .iter()
+        .map(|rel| CString::new(*rel).unwrap_or_default())
+        .collect();
     folders
         .iter()
-        .flat_map(|folder| PROJECT_RECORDS.iter().map(move |rel| folder.join(rel)))
-        .filter(|p| fs::symlink_metadata(p).is_ok())
+        .flat_map(|folder| {
+            let there = sys::present(folder, &names);
+            there.into_iter().map(|i| folder.join(PROJECT_RECORDS[i]))
+        })
         .collect()
 }
 
