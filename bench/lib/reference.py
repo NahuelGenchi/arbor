@@ -70,6 +70,45 @@ def placement(r, *parts):
     return '; '.join(p for p in parts if p)
 
 
+# The screen rows (sections/screen.py), the baseline the Mission Control interface is compared against. The still
+# screen's CPU is the report's M number; the other rows came after M, and their reference is the suite's own: the
+# medians of four `ONLY=screen` runs in a row from an ordinary context (a systemd --user unit), with nobody at the PC.
+# Their load averages at the start were 0.45 (ref_load), 1.06, 6.55 and 6.11 (the last two left over from the cells
+# of the run before); over the four, the compositor woke 91–214 times a second, 1 to 4 of about 1,200 refreshes
+# showed no new frame idle, and 2.8–13.3% under load, so the wakeups and the missed frames move well beyond ±15%
+# from run to run.
+SCREEN_REF = {'ref_date': '17 Oct 2026', 'ref_load': 0.45}
+MISSED = {'dp': 2, 'abs_tol': 0.1,
+          'abs_why': 'within 1 frame in 1,000 of the reference, the precision the target in docs/INTERFACE.md is set in'}
+
+
+def still_why(r, key):
+    """What the screen and the rest of the machine did during the still-screen window."""
+    gpu, rest, busy = (r.ctx(key, f) for f in ('gpu_ms', 'rest_cpu_pct', 'busy'))
+    drew = ("the driver does not report the compositor's GPU time" if gpu is None else
+            'the compositor drew nothing in the window (no GPU time)' if not gpu else
+            f'the compositor drew frames in the window, so something on the screen changed ({gpu:,.0f} ms of GPU time)')
+    by_thread = r.ctx(key, 'by_thread')
+    return ((f'by thread: {by_thread}; ' if by_thread else '') + f"{drew}; the rest of the machine used {rest:.0f}% "
+            "of a core" + (f' (busy: {busy})' if busy else '') + f"; load average {r.ctx(key, 'load1')} at its start")
+
+
+def frames_why(r, key):
+    """How the test window's frames went, and what ran beside them."""
+    c = lambda f: r.ctx(key, f)  # noqa: E731
+    parts = [f"{c('missed')} of {c('refreshes'):,} refreshes at {c('refresh_hz')} Hz showed no new frame, and the "
+             f"slowest frame took {c('worst_ms')} ms"]
+    if c('cells') is not None:
+        spike = f"touched in {c('spike_s')} s" if c('spike_s') is not None else 'still being touched at the end'
+        during = c('missed_during_spike')
+        parts.append(f"{c('cells')} busy cells and a {c('spike_mib'):,} MiB spike, {spike}"
+                     + (f', {during} of the missed frames while it touched its memory' if during is not None else ''))
+    if c('focus') is False:
+        parts.append('the test window did not have the focus at the end, so something may have covered it')
+    parts.append(f"load average {c('load1')} at its start" + (f" (busy: {c('busy')})" if c('busy') else ''))
+    return '; '.join(parts)
+
+
 ENTRIES = [
     # 1. Runtimes
     E('rt.start.c_static', 'Runtime', 'start: static C', 0.21, 'ms', 'perf'),
@@ -326,4 +365,18 @@ ENTRIES = [
     E('arbor.serve_pss_mib', 'Prototype', 'idle PSS: `arbor serve`', 0.87, 'MiB', 'pss', 'suite', dp=2, **ARBOR_REF),
     E('arbor.diff100_tokens', 'Tokens', '`arbor diff`, 100 files changed', 700, 'tok', 'input', 'suite', **ARBOR_REF,
       why=lambda r: '`arbor diff` lists the same 100 changes differently than at the reference'),
+
+    # 9. The screen
+    E('screen.still_cpu_pct', 'Screen', 'still screen, no input: compositor CPU, share of one core', 2.1, '%', 'state',
+      'opt', why=lambda r: still_why(r, 'screen.still_cpu_pct')),
+    E('screen.still_wakeups_s', 'Screen', 'still screen, no input: compositor wakeups', 130, '/s', 'state', 'suite',
+      dp=0, **SCREEN_REF, why=lambda r: still_why(r, 'screen.still_wakeups_s')),
+    E('screen.missed_idle_pct', 'Screen', 'test window: frames missed, machine idle', 0.13, '%', 'state', 'suite',
+      **MISSED, **SCREEN_REF, why=lambda r: frames_why(r, 'screen.missed_idle_pct')),
+    E('screen.frame_p99_idle_ms', 'Screen', 'test window: slowest 1% of frame times, machine idle', 16.7, 'ms', 'state',
+      'suite', dp=1, **SCREEN_REF, why=lambda r: frames_why(r, 'screen.frame_p99_idle_ms')),
+    E('screen.missed_load_pct', 'Screen', 'test window: frames missed, a busy cell per CPU thread and a memory spike',
+      8.35, '%', 'state', 'suite', **MISSED, **SCREEN_REF, why=lambda r: frames_why(r, 'screen.missed_load_pct')),
+    E('screen.frame_p99_load_ms', 'Screen', 'test window: slowest 1% of frame times, under that load', 33.4, 'ms',
+      'state', 'suite', dp=1, **SCREEN_REF, why=lambda r: frames_why(r, 'screen.frame_p99_load_ms')),
 ]

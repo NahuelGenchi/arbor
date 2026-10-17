@@ -14,7 +14,8 @@ from reference import ENTRIES, M_INFO, M_PRESSURE, PSS_WHY, TOL  # noqa: E402
 # Which section measures a key (run.sh's ONLY/SKIP leave sections out; their rows are left out of the table).
 SECTION_OF = (('rt.', 'runtimes'), ('cell.py_', 'pycell'), ('cell.', 'cells'), ('mem.', 'memstate'),
               ('ram.', 'memstate'), ('heap.', 'heap'), ('search.', 'search'), ('code.', 'search'), ('boot.', 'boot'),
-              ('storage.', 'storage'), ('tok.', 'transcripts'), ('fmt.', 'formats'), ('arbor.', 'arbor'))
+              ('storage.', 'storage'), ('tok.', 'transcripts'), ('fmt.', 'formats'), ('arbor.', 'arbor'),
+              ('screen.', 'screen'))
 DP = {'%': 1, 'MiB': 1, 'GiB': 1, 'MB': 1, 's': 1, '×': 2, 'Mtok': 2, 'B': 0, 'tok': 0, '': 0}
 
 
@@ -213,7 +214,8 @@ def evaluate(rows, e, rec):
         rel = now / m - 1
         delta = f'{rel:+.0%}' if abs(rel) >= 0.005 else '±0%'
         ok = abs(rel) <= e.get('tol', TOL) or in_abs
-        note = '' if abs(rel) <= e.get('tol', TOL) else f"within {e.get('abs_tol')} {e['unit']} of M, the precision M was printed with"
+        note = '' if abs(rel) <= e.get('tol', TOL) else (
+            e.get('abs_why') or f"within {e.get('abs_tol')} {e['unit']} of M, the precision M was printed with")
     return ('✅', delta, note) if ok else ('⚠️', delta, explain(rows, e, rec) or 'outside ±15%; no specific cause found')
 
 
@@ -247,6 +249,15 @@ def note_ctx(e, rec):
         return f"{ctx.get('with_ask_ms'):.2f} ms with the ask, {ctx['run_ms']:.2f} ms without"
     if k.startswith('arbor.serve_') and ctx.get('service'):
         return f"arbor serve {ctx['service']}"
+    if k == 'screen.still_cpu_pct' and ctx.get('compositor'):
+        return (f"{ctx['compositor']}; GPU time {ctx.get('gpu_ms')} ms; the rest of the machine used "
+                f"{ctx.get('rest_cpu_pct')}% of a core")
+    if k == 'screen.still_wakeups_s' and ctx.get('by_thread'):
+        return f"by thread: {ctx['by_thread']}"
+    if k.startswith(('screen.missed_', 'screen.frame_')) and ctx.get('frames'):
+        load = f"; {ctx['cells']} cells, a {ctx['spike_mib']:,} MiB spike" if ctx.get('cells') is not None else ''
+        return (f"{ctx['frames']:,} frames at {ctx.get('refresh_hz')} Hz, {ctx.get('missed')} missed, the slowest "
+                f"{ctx.get('worst_ms')} ms; {ctx.get('to_screen_ms')} ms from commit to screen (median){load}")
     return ''
 
 
