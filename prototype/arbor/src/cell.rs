@@ -9,6 +9,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -159,9 +160,26 @@ pub fn start_dir(world: &World) -> PathBuf {
     }
 }
 
-/// Runs `cmd` in the world and returns its exit code (128 + signal when it was killed). The caller holds the
-/// world's lock and loaded the world after taking it.
-pub fn run(world: &World, _lock: &Lock, cmd: &[OsString], opts: &Options) -> Result<i32> {
+/// How a command in a cell ended.
+pub struct Ran {
+    /// Its exit code, or 128 + the signal that killed it.
+    pub code: i32,
+    /// CPU time of all its processes.
+    pub cpu_ms: u64,
+    /// Peak memory of its largest process, in KiB.
+    pub mem_kib: u64,
+}
+
+/// What this process's finished children have used so far: CPU milliseconds and the largest peak memory in KiB.
+fn children_usage() -> (u64, u64) {
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) };
+    let ms = |t: libc::timeval| t.tv_sec as u64 * 1000 + t.tv_usec as u64 / 1000;
+    (ms(ru.ru_utime) + ms(ru.ru_stime), ru.ru_maxrss as u64)
+}
+
+/// Runs `cmd` in the world. The caller holds the world's lock and loaded the world after taking it.
+pub fn run(world: &World, _lock: &Lock, cmd: &[OsString], opts: &Options) -> Result<Ran> {
     if world.state != State::Open {
         return Err(Error::refused(format!(
             "world '{}' was kept; run `arbor undo {}` to reopen it",
@@ -186,6 +204,11 @@ pub fn run(world: &World, _lock: &Lock, cmd: &[OsString], opts: &Options) -> Res
             Ok(())
         });
     }
+    // bwrap's outer process exits as soon as the command does, without waiting for the cell's init, and the
+    // cell's CPU time and memory would go with it. As a subreaper, arbor adopts that init and waits for it below,
+    // so they count.
+    unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) };
+    let (cpu_before, _) = children_usage();
     let mut child = command.spawn().ctx(|| "cannot start bwrap".to_string())?;
     // Ctrl-C belongs to the command inside: Arbor waits for it instead of dying first and leaving it behind.
     let (old_int, old_quit) = unsafe {
@@ -195,14 +218,23 @@ pub fn run(world: &World, _lock: &Lock, cmd: &[OsString], opts: &Options) -> Res
         )
     };
     let status = child.wait();
+    // The adopted init dies with bwrap (--die-with-parent) and takes the cell's last processes with it.
+    while unsafe { libc::waitpid(-1, std::ptr::null_mut(), 0) } > 0
+        || io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+    {}
     unsafe {
         libc::signal(libc::SIGINT, old_int);
         libc::signal(libc::SIGQUIT, old_quit);
     }
     let status = status?;
-    Ok(status
-        .code()
-        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+    let (cpu, mem_kib) = children_usage();
+    Ok(Ran {
+        code: status
+            .code()
+            .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
+        cpu_ms: cpu - cpu_before,
+        mem_kib,
+    })
 }
 
 #[cfg(test)]

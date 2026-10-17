@@ -138,6 +138,33 @@ fn a_world_changes_nothing_until_kept() {
     e.ok(&["discard", "demo"]);
     assert_eq!(e.read("src/a").as_deref(), Some("one"));
     assert_eq!(e.ok(&["worlds"]), "");
+
+    // Every step that changed something or ran a command is in the ledger, the refused run included.
+    let ledger = e.ok(&["ledger"]);
+    let rows: Vec<&str> = ledger.lines().skip(1).collect();
+    let expect = [
+        ("new", "ok"),
+        ("run", "exit 0"),
+        ("keep", "ok"),
+        ("run", "refused"),
+        ("undo", "ok"),
+        ("discard", "ok"),
+    ];
+    assert_eq!(rows.len(), expect.len(), "{ledger}");
+    for (row, (act, out)) in rows.iter().zip(expect) {
+        assert!(
+            row.contains(&format!(" {act} ")) && row.contains(&format!(" {out} ")),
+            "{ledger}"
+        );
+    }
+    assert!(
+        rows[2].contains("3 changes (1 added, 1 modified, 1 deleted)"),
+        "{ledger}"
+    );
+    assert!(
+        e.ok(&["ledger", "--verify"])
+            .starts_with("ledger ok: 6 steps, head ")
+    );
 }
 
 #[test]
@@ -186,6 +213,7 @@ fn exit_codes_and_refusals() {
         Some(2)
     );
     assert_eq!(e.arbor(&["frobnicate"]).status.code(), Some(2));
+    assert_eq!(e.arbor(&["ledger", "--last", "x"]).status.code(), Some(2));
     assert_eq!(
         e.arbor(&["run", "demo", "--net", "--", "true"])
             .status
