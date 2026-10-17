@@ -1,15 +1,18 @@
 //! Keys: what a command in a world may open beyond the world, until when, within which limits, and what the effects
 //! it asks for may cost. A cell starts sealed (see `cell`): the home folders are empty, the environment is cleared
 //! and there is no network. A key opens folders and files there, passes variables in by name, opens the network to
-//! the hosts it names (see `net`) and caps the cell's limits, until a set time, like a valet key. A key can be
-//! narrowed into another, never widened, and taking one back takes back every key made within it.
+//! the hosts it names (see `net`), can give the cell a home folder of its own that is kept between runs, and caps the
+//! cell's limits, until a set time, like a valet key. A key can be narrowed into another, never widened, and taking
+//! one back takes back every key made within it.
 //!
-//! A key holds names and paths, never a secret's value. Each is a file in the state folder's `keys`.
+//! A key holds names and paths, never a secret's value. Each is a file in the state folder's `keys`. A key's own
+//! home folder is in its `homes`: it holds what the commands under the key write there, such as an agent's settings
+//! and login, and lives as long as the key.
 
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -109,6 +112,10 @@ pub struct Key {
     /// The hosts a cell under it may reach, over HTTPS; none means no network.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub net: Vec<Host>,
+    /// The key whose home folder a cell under it gets, kept between runs: its own name, or that of the key it was
+    /// made within. None means an empty home folder each time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
     #[serde(default)]
     pub limits: Limits,
     /// What the effects released under it, and under the keys made within it, may cost in total.
@@ -143,6 +150,8 @@ pub struct Spec {
     pub env: Vec<String>,
     /// The hosts, as `--net` takes them.
     pub net: Vec<String>,
+    /// A home folder of its own. Unset is none, or, within another key, that key's.
+    pub home: bool,
     pub limits: Limits,
     pub spend: Option<Cents>,
     /// When it ends. Unset is 8 hours from now, or, within another key, that key's end.
@@ -151,6 +160,43 @@ pub struct Spec {
 
 pub fn keys_dir() -> Result<PathBuf> {
     Ok(paths::state_dir()?.join("keys"))
+}
+
+/// Where the keys' own home folders are, one folder per key that has one, named after it.
+pub fn homes_dir() -> Result<PathBuf> {
+    Ok(paths::state_dir()?.join("homes"))
+}
+
+/// Makes the home folder `dir`, in `homes`, so that only its owner may enter either. Fails with `AlreadyExists`
+/// when `dir` is there.
+fn new_home(dir: &Path) -> io::Result<()> {
+    let private = |d: &Path| fs::set_permissions(d, fs::Permissions::from_mode(0o700));
+    let homes = dir.parent().unwrap_or(dir);
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(homes)?;
+    private(homes)?;
+    fs::DirBuilder::new().mode(0o700).create(dir)?;
+    private(dir)
+}
+
+/// What the folder `dir` takes on disk: the blocks of all it holds that can be read, without following links. A
+/// folder's descriptor closes before its contents are read, so a deep tree needs no more than one at a time.
+pub fn disk_usage(dir: &Path) -> u64 {
+    let (mut used, mut todo) = (0, vec![dir.to_path_buf()]);
+    while let Some(p) = todo.pop() {
+        let Ok(meta) = fs::symlink_metadata(&p) else {
+            continue;
+        };
+        used += meta.blocks() * 512;
+        if meta.is_dir()
+            && let Ok(entries) = fs::read_dir(&p)
+        {
+            todo.extend(entries.flatten().map(|e| e.path()));
+        }
+    }
+    used
 }
 
 fn file(name: &str) -> Result<PathBuf> {
@@ -386,6 +432,7 @@ impl Key {
             read,
             env: sorted(spec.env),
             net,
+            home: spec.home.then(|| spec.name.clone()),
             limits: spec.limits,
             spend: spec.spend,
             made_ns: now,
@@ -408,8 +455,47 @@ impl Key {
         if key.until_ns <= now {
             return Err(Error::usage("a key must end later than now"));
         }
+        key.check_home(paths::resolved_home().as_deref())?;
+        // A new key's home starts empty: one left by an earlier key of the same name is neither handed on nor
+        // deleted.
+        let home = homes_dir()?.join(&key.name);
+        let left = |home: &Path| {
+            Error::refused(format!(
+                "{} is left from an earlier key named '{}': move it away or remove it, then make the key again",
+                paths::tilde(home),
+                key.name
+            ))
+        };
+        if key.owns_home() && !exists(&key.name) && fs::symlink_metadata(&home).is_ok() {
+            return Err(left(&home));
+        }
         key.save_new()?;
+        if key.owns_home()
+            && let Err(e) = new_home(&home)
+        {
+            let _ = fs::remove_file(file(&key.name)?);
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                return Err(left(&home));
+            }
+            return Err(e).ctx(|| format!("cannot create {}", home.display()));
+        }
         Ok(key)
+    }
+
+    /// Refuses a key with a home folder that also opens `home`, the home folder, or a folder that holds it: in a
+    /// cell, the key's home takes its place.
+    pub fn check_home(&self, home: Option<&Path>) -> Result<()> {
+        if let (Some(_), Some(home)) = (&self.home, home)
+            && let Some(p) = self.read.iter().find(|p| paths::contains(p, home))
+        {
+            return Err(Error::refused(format!(
+                "key '{}' has a home folder, so it cannot also open {}: in a cell, the key's home takes the place of {}",
+                self.name,
+                paths::tilde(p),
+                paths::tilde(home)
+            )));
+        }
+        Ok(())
     }
 
     /// Fits this key within `outer`: what it names must lie within `outer`'s, and what it leaves out is `outer`'s.
@@ -449,6 +535,13 @@ impl Key {
             .find(|h| !outer.net.iter().any(|o| o.covers(h)))
         {
             return Err(refuse(format!("does not open {h}")));
+        }
+        // Without a home of its own, it shares the outer key's, if any; a home of its own needs an outer key that has
+        // one, since one kept between runs is more than a key without it opens.
+        match (&self.home, &outer.home) {
+            (None, home) => self.home = home.clone(),
+            (Some(_), None) => return Err(refuse("has no home folder".into())),
+            (Some(_), Some(_)) => {}
         }
         self.limits = self
             .limits
@@ -587,8 +680,49 @@ impl Key {
             .join(", ")
     }
 
-    /// `opens shop; reads ~/.cargo; env CARGO_HOME; net api.example.com; mem 4GiB; spend $5.00; within dev; until
-    /// 18:00`, for the ledger.
+    /// The folder a cell under it gets as its home folder, kept between runs, if it has one.
+    pub fn home_dir(&self) -> Result<Option<PathBuf>> {
+        let Some(owner) = &self.home else {
+            return Ok(None);
+        };
+        world::check_name_as(owner, "key")?;
+        Ok(Some(homes_dir()?.join(owner)))
+    }
+
+    /// Whether the home folder it gives is its own, not that of the key it was made within.
+    pub fn owns_home(&self) -> bool {
+        self.home.as_ref() == Some(&self.name)
+    }
+
+    /// Makes its home folder again, empty, when it is gone.
+    pub fn ensure_home(&self) -> Result<()> {
+        if let Some(dir) = self.home_dir()?
+            && let Err(e) = new_home(&dir)
+            && e.kind() != io::ErrorKind::AlreadyExists
+        {
+            return Err(e).ctx(|| format!("cannot create {}", dir.display()));
+        }
+        Ok(())
+    }
+
+    /// Removes its own home folder, once nothing runs under it any more. True when there was one.
+    pub fn remove_home(&self) -> Result<bool> {
+        let dir = match self.home_dir()? {
+            Some(dir) if self.owns_home() && fs::symlink_metadata(&dir).is_ok() => dir,
+            _ => return Ok(false),
+        };
+        world::remove_tree(&dir).ctx(|| {
+            format!(
+                "cannot remove the home folder of key '{}', {}",
+                self.name,
+                paths::tilde(&dir)
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// `opens shop; reads ~/.cargo; env CARGO_HOME; net api.example.com; home ~/.local/share/arbor/homes/dev; mem
+    /// 4GiB; spend $5.00; within dev; until 18:00`, for the ledger.
     pub fn describe(&self) -> String {
         let mut parts = vec![format!("opens {}", self.opened())];
         if !self.read.is_empty() {
@@ -599,6 +733,9 @@ impl Key {
         }
         if !self.net.is_empty() {
             parts.push(format!("net {}", self.hosts()));
+        }
+        if let Ok(Some(dir)) = self.home_dir() {
+            parts.push(format!("home {}", paths::tilde(&dir)));
         }
         let limits = self.limits.describe();
         if !limits.is_empty() {
@@ -615,28 +752,30 @@ impl Key {
     }
 }
 
-/// Takes back the key `name` and every key made within it, at any depth. Returns their names, `name` first.
-pub fn take_back(name: &str) -> Result<Vec<String>> {
+/// Takes back the key `name` and every key made within it, at any depth. Returns them, `name` first. Their home
+/// folders stay until the caller has stopped what runs under them (see `Key::remove_home`).
+pub fn take_back(name: &str) -> Result<Vec<Key>> {
     let first = Key::load(name)?;
     let all = Key::list()?;
-    let mut gone = vec![first.name];
+    let mut gone = vec![first];
     loop {
-        let more: Vec<String> = all
+        let more: Vec<Key> = all
             .iter()
             .filter(|k| {
-                !gone.contains(&k.name) && k.within.as_ref().is_some_and(|w| gone.contains(w))
+                let taken = |n: &String| gone.iter().any(|g| &g.name == n);
+                !taken(&k.name) && k.within.as_ref().is_some_and(taken)
             })
-            .map(|k| k.name.clone())
+            .cloned()
             .collect();
         if more.is_empty() {
             break;
         }
         gone.extend(more);
     }
-    for n in &gone {
-        match fs::remove_file(file(n)?) {
+    for k in &gone {
+        match fs::remove_file(file(&k.name)?) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => {
-                return Err(e).ctx(|| format!("cannot remove key '{n}'"));
+                return Err(e).ctx(|| format!("cannot remove key '{}'", k.name));
             }
             _ => {}
         }
@@ -656,6 +795,7 @@ mod tests {
             read: Vec::new(),
             env: Vec::new(),
             net: Vec::new(),
+            home: None,
             limits: Limits::default(),
             spend: None,
             made_ns: 0,
@@ -723,6 +863,93 @@ mod tests {
         assert!(wider(&|k| k.limits.mem = Some(2 << 30)).contains("allows less memory"));
         assert!(wider(&|k| k.spend = Some(501)).contains("may spend $5.00"));
         assert!(wider(&|k| k.until_ns = 20_000).contains("ends at"));
+    }
+
+    #[test]
+    fn a_key_within_another_shares_its_home_or_has_its_own_only_where_that_one_has_one() {
+        let mut outer = key("agent");
+        // Without a home of its own, it shares the outer key's...
+        outer.home = Some("agent".into());
+        let mut k = key("short");
+        k.narrow(&outer, false, false, 0).unwrap();
+        assert_eq!(k.home.as_deref(), Some("agent"));
+        assert!(!k.owns_home() && outer.owns_home());
+        // ...and with one, it has its own.
+        let mut k = key("fresh");
+        k.home = Some("fresh".into());
+        k.narrow(&outer, false, false, 0).unwrap();
+        assert!(k.owns_home());
+        // A key without one gives none, and a home of its own would open more.
+        outer.home = None;
+        let mut k = key("short");
+        k.narrow(&outer, false, false, 0).unwrap();
+        assert_eq!(k.home, None);
+        k.home = Some("short".into());
+        let err = k.narrow(&outer, false, false, 0).unwrap_err().msg;
+        assert!(
+            err.contains("would open more than key 'agent', which has no home folder"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_key_with_a_home_cannot_also_open_the_home_folder() {
+        let home = Path::new("/home/u");
+        let mut k = key("agent");
+        k.read = vec![PathBuf::from("/home/u/.cargo"), PathBuf::from("/usr/share")];
+        k.home = Some("agent".into());
+        assert!(k.check_home(Some(home)).is_ok());
+        for holds in ["/home/u", "/home"] {
+            k.read = vec![PathBuf::from(holds)];
+            let err = k.check_home(Some(home)).unwrap_err();
+            assert_eq!(err.code, crate::error::REFUSED, "{holds}");
+            assert!(
+                err.msg.contains("the key's home takes the place of"),
+                "{}",
+                err.msg
+            );
+        }
+        // Without a home, it may.
+        k.home = None;
+        assert!(k.check_home(Some(home)).is_ok());
+        // The ledger names the folder it gives, its own or the outer key's.
+        k.read.clear();
+        assert!(!k.describe().contains("home"));
+        k.home = Some("outer".into());
+        let said = k.describe();
+        assert!(
+            said.contains("; home ") && said.contains("homes/outer;"),
+            "{said}"
+        );
+        // A damaged key file cannot name a folder elsewhere as its home.
+        k.home = Some("../../elsewhere".into());
+        assert!(k.home_dir().is_err());
+    }
+
+    #[test]
+    fn disk_usage_counts_files_without_following_links() {
+        let root = std::env::temp_dir().join(format!("arbor-usage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("home/deep/er")).unwrap();
+        // Bytes that do not compress, so a filesystem that compresses stores them whole.
+        let noise = |n: usize| {
+            let mut x = 0x2545_f491_4f6c_dd1du64;
+            (0..n)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    x as u8
+                })
+                .collect::<Vec<u8>>()
+        };
+        fs::write(root.join("home/deep/er/file"), noise(64 * 1024)).unwrap();
+        fs::write(root.join("big"), noise(1 << 20)).unwrap();
+        std::os::unix::fs::symlink(root.join("big"), root.join("home/link")).unwrap();
+        let used = disk_usage(&root.join("home"));
+        assert!((64 * 1024..1 << 20).contains(&used), "{used}");
+        assert_eq!(disk_usage(&root.join("none")), 0);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

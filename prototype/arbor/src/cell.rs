@@ -6,7 +6,8 @@
 //! cleared environment; no network, no new user namespaces and an empty session keyring; and a filter that refuses
 //! the kernel calls sandbox escapes start from (see `seccomp`). Its one way out is a socket to the outbox, where it
 //! asks for effects that a person may release (see `outbox`). A key (see `key`) opens more folders and files and
-//! passes variables in; password files stay hidden even then. A key can also open the network to the hosts it names:
+//! passes variables in; password files stay hidden even then. A key can give the cell a home folder of its own, kept
+//! between runs, in place of the empty one. A key can also open the network to the hosts it names:
 //! the cell's first process is then arbor itself, which hands the arbor outside a port on the cell's loopback to
 //! answer as a proxy, and becomes the command (see `net`). Where the user's systemd manager allows it, each cell
 //! also runs in its own cgroup (see `cgroup`), with its limits, and its whole cost is read from there. A command
@@ -156,6 +157,8 @@ enum Mount {
     Empty,
     /// An empty folder made inside an empty one, so the cell can stand in the home folder.
     Dir,
+    /// The home folder of the key, read-write, in place of `Dir`: what is written there stays for the next run.
+    Home,
     /// The world: its changes over its base folder.
     World,
     /// A folder a key opens. Writes to it are thrown away, so tools that keep caches there still work.
@@ -173,6 +176,8 @@ pub struct View {
     mounts: Vec<(PathBuf, Mount)>,
     /// The home folder, resolved.
     home: Option<PathBuf>,
+    /// The key's home folder, which the cell sees at `home` (`Mount::Home`).
+    key_home: Option<PathBuf>,
 }
 
 fn add(a: &mut Vec<OsString>, items: &[&dyn AsRef<OsStr>]) {
@@ -192,10 +197,35 @@ impl View {
             ("/run".into(), Mount::Empty),
         ];
         // The home folders and mounted drives are empty, and writes there vanish: only the world and what its key
-        // opens show through.
-        let home = paths::home()
-            .and_then(|h| fs::canonicalize(h).ok())
-            .filter(|h| h.is_dir() && h != Path::new("/"));
+        // opens show through. A key may give the cell a home folder of its own instead of the empty one, which stays.
+        let home = paths::resolved_home();
+        let key_home = key
+            .map(Key::home_dir)
+            .transpose()?
+            .flatten()
+            .map(|d| std::path::absolute(&d).unwrap_or(d));
+        if let Some(k) = key.filter(|_| key_home.is_some()) {
+            k.check_home(home.as_deref())?;
+            match &home {
+                None => {
+                    return Err(Error::refused(format!(
+                        "key '{}' has a home folder, but HOME names no folder to put it in",
+                        k.name
+                    )));
+                }
+                // The world shows the home folder itself there.
+                Some(h) if paths::contains(&world.base, h) => {
+                    return Err(Error::refused(format!(
+                        "key '{}' has a home folder, so it cannot run in world {}, whose folder {} {} your home folder",
+                        k.name,
+                        world.name,
+                        paths::tilde(&world.base),
+                        if &world.base == h { "is" } else { "holds" }
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
         let mut hidden: Vec<PathBuf> = ["/home", "/media", "/mnt"]
             .into_iter()
             .filter_map(|p| fs::canonicalize(p).ok())
@@ -211,7 +241,12 @@ impl View {
         if let Some(home) = &home
             && hidden.iter().any(|h| paths::contains(h, home))
         {
-            m.push((home.clone(), Mount::Dir));
+            let how = if key_home.is_some() {
+                Mount::Home
+            } else {
+                Mount::Dir
+            };
+            m.push((home.clone(), how));
         }
         // What shows through, outer paths first so inner ones land on top.
         let mut shown = vec![(world.base.clone(), Mount::World)];
@@ -256,7 +291,11 @@ impl View {
         {
             m.push((runtime, Mount::Empty));
         }
-        Ok(View { mounts: m, home })
+        Ok(View {
+            mounts: m,
+            home,
+            key_home,
+        })
     }
 
     /// The `bwrap` arguments for a cell with these mounts in `world` that runs `cmd` in `cwd` with `path` as its
@@ -281,6 +320,10 @@ impl View {
                 Mount::Proc => add(&mut a, &[&"--proc", p]),
                 Mount::Empty | Mount::Secrets => add(&mut a, &[&"--tmpfs", p]),
                 Mount::Dir => add(&mut a, &[&"--dir", p]),
+                Mount::Home => match &self.key_home {
+                    Some(dir) => add(&mut a, &[&"--bind", dir, p]),
+                    None => add(&mut a, &[&"--dir", p]),
+                },
                 Mount::World => add(
                     &mut a,
                     &[
@@ -387,23 +430,15 @@ impl View {
                 Some(None) => return At::Absent,
                 None => return At::Unsure,
             },
+            Mount::Home => match self.home_file(&p) {
+                Some(Some(file)) => file,
+                Some(None) => return self.unseen(world, &p, hops),
+                None => return At::Unsure,
+            },
             // A fresh /dev or /proc has what the computer's has not, and the other way round.
             Mount::Dev | Mount::Proc => return At::Unsure,
             Mount::Empty | Mount::Dir | Mount::Secrets | Mount::Secret => {
-                // The cell sees nothing here; the computer may have it, and where the file really is.
-                return match fs::metadata(&p) {
-                    Ok(meta) if meta.is_file() => {
-                        let mut places = vec![p.clone()];
-                        if let Ok(real) = fs::canonicalize(&p)
-                            && real != p
-                            && !matches!(self.at(world, &real, hops + 1), At::Runs(_))
-                        {
-                            places.push(real);
-                        }
-                        At::Hidden(places)
-                    }
-                    _ => At::Absent,
-                };
+                return self.unseen(world, &p, hops);
             }
         };
         // A folder on the way may be a link, which the cell follows to wherever it points.
@@ -427,6 +462,44 @@ impl View {
             Ok(meta) if meta.is_file() => At::Runs(file),
             _ => At::Absent,
         }
+    }
+
+    /// What the cell finds at `p`, where it sees nothing: the computer may have the file, and where it really is.
+    fn unseen(&self, world: &World, p: &Path, hops: u32) -> At {
+        match fs::metadata(p) {
+            Ok(meta) if meta.is_file() => {
+                let mut places = vec![p.to_path_buf()];
+                if let Ok(real) = fs::canonicalize(p)
+                    && real != p
+                    && !matches!(self.at(world, &real, hops + 1), At::Runs(_))
+                {
+                    places.push(real);
+                }
+                At::Hidden(places)
+            }
+            _ => At::Absent,
+        }
+    }
+
+    /// Where the key's home folder keeps `p`, a path inside the home folder: `Some(Some(file))` where it has
+    /// something there, `Some(None)` where it has nothing, and `None` where a link on the way leaves arbor unsure.
+    fn home_file(&self, p: &Path) -> Option<Option<PathBuf>> {
+        let (Some(home), Some(key_home)) = (&self.home, &self.key_home) else {
+            return Some(None);
+        };
+        let rel = p.strip_prefix(home).ok()?;
+        let mut at = key_home.clone();
+        let mut parts = rel.components().peekable();
+        while let Some(part) = parts.next() {
+            at.push(part);
+            match fs::symlink_metadata(&at) {
+                Ok(_) if parts.peek().is_none() => break,
+                Ok(meta) if meta.file_type().is_symlink() => return None,
+                Ok(meta) if meta.is_dir() => {}
+                _ => return Some(None),
+            }
+        }
+        Some(Some(at))
     }
 
     /// What the cell runs for `name`, as `execvp` finds it: at that path from `cwd` when it holds a `/`, else in the
@@ -1097,11 +1170,13 @@ pub fn run(
         started_ns: world::now_ns(),
         cgroup: group.as_ref().map(|g| g.dir().to_path_buf()),
     })?;
-    // A key taken back after the caller checked it, but before the cell was listed, is caught here.
-    if let Some(k) = key
-        && !key::exists(&k.name)
-    {
-        return Err(Error::refused(format!("key '{}' was taken back", k.name)));
+    // A key taken back after the caller checked it, but before the cell was listed, is caught here. From here on a
+    // take-back stops this cell before it removes the key's home, so a home that is gone can be made again, empty.
+    if let Some(k) = key {
+        if !key::exists(&k.name) {
+            return Err(Error::refused(format!("key '{}' was taken back", k.name)));
+        }
+        k.ensure_home()?;
     }
     // Who asks through the cell's socket is known here, never taken from what the cell sends.
     let asker = outbox::Asker {
@@ -1326,6 +1401,7 @@ mod tests {
                 (p("/home/u/shop/.state"), Mount::Empty),
             ],
             home: Some(p("/home/u")),
+            key_home: None,
         };
         for (path, seen) in [
             ("/usr/bin/env", Mount::Root),
@@ -1341,6 +1417,63 @@ mod tests {
         ] {
             assert_eq!(view.over(Path::new(path)), seen, "{path}");
         }
+    }
+
+    #[test]
+    fn a_key_s_home_stands_in_the_home_folder_under_the_world_and_what_the_key_opens() {
+        let root = env::temp_dir().join(format!("arbor-unit-home-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (home, key_home) = (root.join("u"), root.join("state/homes/agent"));
+        let world = World {
+            name: "shop".into(),
+            base: home.join("shop"),
+            since_ns: 0,
+            state: State::Open,
+            kept_ns: None,
+            dir: root.join("state/worlds/shop"),
+        };
+        let script = |path: &Path| {
+            use std::os::unix::fs::PermissionsExt;
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // The agent installed one tool in its home; the other is only in the real home folder.
+        script(&key_home.join("bin/mine"));
+        script(&home.join("bin/yours"));
+        fs::create_dir_all(key_home.join(".local")).unwrap();
+        std::os::unix::fs::symlink("/elsewhere", key_home.join(".local/bin")).unwrap();
+        fs::create_dir_all(world.up()).unwrap();
+        fs::create_dir_all(&world.base).unwrap();
+        let view = View {
+            mounts: vec![
+                ("/".into(), Mount::Root),
+                (root.clone(), Mount::Empty),
+                (home.clone(), Mount::Home),
+                (world.base.clone(), Mount::World),
+                (home.join(".cargo"), Mount::Folder),
+            ],
+            home: Some(home.clone()),
+            key_home: Some(key_home.clone()),
+        };
+        for (path, seen) in [
+            (home.join("notes"), Mount::Home),
+            (home.join("shop/src"), Mount::World),
+            (home.join(".cargo/bin/cargo"), Mount::Folder),
+        ] {
+            assert_eq!(view.over(&path), seen, "{}", path.display());
+        }
+        assert_eq!(
+            view.at(&world, &home.join("bin/mine"), 0),
+            At::Runs(key_home.join("bin/mine"))
+        );
+        assert_eq!(
+            view.at(&world, &home.join("bin/yours"), 0),
+            At::Hidden(vec![home.join("bin/yours")])
+        );
+        assert_eq!(view.at(&world, &home.join("bin/none"), 0), At::Absent);
+        assert_eq!(view.at(&world, &home.join(".local/bin/x"), 0), At::Unsure);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1412,6 +1545,7 @@ mod tests {
             read: Vec::new(),
             env: vec!["CARGO_HOME".into()],
             net: Vec::new(),
+            home: None,
             limits: Limits::default(),
             spend: None,
             made_ns: 0,

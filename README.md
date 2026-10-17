@@ -176,7 +176,7 @@ arbor keep shop                         # put the changes in the real folder; ar
 
 `arbor run shop -- npm test` runs one command instead of a shell. Inside a world your home folder is empty, so tools installed there, such as `~/.nvm`, need a key that opens them: `arbor key new dev --toolchains`, then `arbor run shop --key dev -- npm test`.
 
-A world has no network either, until a key names the hosts it may reach over HTTPS. That lets an agent work in a world of its own: after `arbor key new agent --toolchains --read ~/.local/share/claude --env ANTHROPIC_API_KEY --net api.anthropic.com`, Claude Code started in `arbor shell shop --key agent` reaches its API and nothing else, and what it changes waits in the world until you keep it.
+A world has no network either, until a key names the hosts it may reach over HTTPS. That lets an agent work in a world of its own: after `arbor key new agent --toolchains --read ~/.local/share/claude --env ANTHROPIC_API_KEY --net api.anthropic.com --home`, Claude Code started in `arbor shell shop --key agent` reaches its API and nothing else, keeps its settings from one run to the next in a home folder of the key's own, and what it changes waits in the world until you keep it.
 
 How fast it is on the PC above. Every number here is **M**: the suite's [`arbor` section](bench/README.md#sections) measured it on 17 October 2026, and the last column names its row in [`bench/lib/reference.py`](bench/lib/reference.py).
 

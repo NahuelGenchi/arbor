@@ -24,6 +24,13 @@ pub fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The home folder, resolved, when it is a folder other than `/`: the one a cell hides.
+pub fn resolved_home() -> Option<PathBuf> {
+    home()
+        .and_then(|h| std::fs::canonicalize(h).ok())
+        .filter(|h| h.is_dir() && h != Path::new("/"))
+}
+
 /// Shows a path under the home folder as `~/…`: shorter to read, and shorter for a model to read.
 pub fn tilde(path: &Path) -> String {
     if let Some(home) = home()
