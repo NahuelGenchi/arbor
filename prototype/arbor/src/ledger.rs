@@ -51,10 +51,13 @@ pub struct Step {
     pub seq: u64,
     /// When it finished, in nanoseconds since 1970.
     pub ts: u64,
-    /// Who acted: `you` for the arbor command. Keys and agents come with cells (M3).
+    /// Who acted: `you` for the arbor command. Agents come later, in cells of their own.
     pub by: String,
-    /// `new`, `start`, `run`, `shell`, `keep`, `undo` or `discard`. A command's cell records `start` when it
-    /// begins, then `run` or `shell` when it ends.
+    /// The key a command ran under, or the key a `key` step made and a `take-back` step took back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// `new`, `start`, `run`, `shell`, `stop`, `keep`, `undo`, `discard`, `key` or `take-back`. A command's cell
+    /// records `start` when it begins, then `run` or `shell` when it ends.
     pub act: String,
     pub world: String,
     /// The cell a command ran in, as `arbor ps` names it.
@@ -65,7 +68,8 @@ pub struct Step {
     /// The limits a command ran under: `mem 512MiB, cpu 0.5, pids 64, time 10m`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<String>,
-    /// `ok`, `running`, `exit N`, `killed: time limit`, `killed: memory limit`, `refused`, `failed` or `stopped`.
+    /// `ok`, `running`, `exit N`, `killed: time limit`, `killed: memory limit`, `killed: key expired`, `stopped`,
+    /// `stopped: key taken back`, `refused` or `failed`.
     pub out: String,
     pub cost: Cost,
 }
@@ -73,6 +77,7 @@ pub struct Step {
 /// A step to record; the ledger numbers and stamps it.
 pub struct New<'a> {
     pub act: &'a str,
+    pub key: Option<&'a str>,
     pub world: &'a str,
     pub cell: Option<&'a str>,
     pub what: &'a str,
@@ -158,6 +163,7 @@ impl Ledger {
             seq: seq + 1,
             ts: world::now_ns(),
             by: "you".into(),
+            key: new.key.map(Into::into),
             act: new.act.into(),
             world: new.world.into(),
             cell: new.cell.map(Into::into),
@@ -375,6 +381,7 @@ mod tests {
     fn add(l: &Ledger, what: &str) -> Step {
         l.append(New {
             act: "run",
+            key: None,
             world: "demo",
             cell: Some("0badcafe"),
             what,

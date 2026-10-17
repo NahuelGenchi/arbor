@@ -11,6 +11,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 fn cpath(p: &Path) -> io::Result<CString> {
     CString::new(p.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
@@ -180,6 +181,51 @@ pub fn pidfd_open(pid: libc::pid_t) -> io::Result<OwnedFd> {
     }
 }
 
+/// Sends `sig` to the process `pidfd` names. Unlike a process ID, the descriptor never names another process
+/// that took the number after it ended.
+pub fn pidfd_send_signal(pidfd: &OwnedFd, sig: libc::c_int) -> io::Result<()> {
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            sig,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if ret < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Waits up to `timeout` for `fd` to become readable, as a pidfd does when its process ends.
+pub fn readable_within(fd: BorrowedFd, timeout: Duration) -> io::Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let ms = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .min(i32::MAX as u128) as i32;
+        let mut pfd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        match unsafe { libc::poll(&mut pfd, 1, ms) } {
+            n if n > 0 => return Ok(true),
+            0 => return Ok(false),
+            _ => {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
 /// A pipe whose ends close on exec: (read, write).
 pub fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
@@ -334,29 +380,36 @@ impl DirWatch {
 }
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-const DEFERRED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
 
 extern "C" fn note_interrupt(_: libc::c_int) {
     INTERRUPTED.store(true, Ordering::SeqCst);
 }
 
-/// While held, Ctrl-C, a closed terminal or `kill` only raise a flag that `interrupted` reads, so keep and undo
-/// stop between two steps with their journal in order, never halfway through one. Signals ignored before (as
-/// under `nohup`) stay ignored.
+/// While held, the signals it was made for only raise a flag that `interrupted` reads. Keep and undo stop between
+/// two steps with their journal in order, never halfway through one; a cell is stopped and how it ended recorded.
+/// Signals ignored before (as under `nohup`) stay ignored.
 pub struct Interrupts {
-    old: [libc::sighandler_t; 3],
+    old: Vec<(libc::c_int, libc::sighandler_t)>,
 }
 
+/// Defers Ctrl-C, a closed terminal and `kill`.
 pub fn defer_interrupts() -> Interrupts {
+    defer(&[libc::SIGINT, libc::SIGTERM, libc::SIGHUP])
+}
+
+pub fn defer(signals: &[libc::c_int]) -> Interrupts {
     INTERRUPTED.store(false, Ordering::SeqCst);
     let handler = note_interrupt as extern "C" fn(libc::c_int) as libc::sighandler_t;
-    let old = DEFERRED.map(|sig| unsafe {
-        let old = libc::signal(sig, handler);
-        if old == libc::SIG_IGN {
-            libc::signal(sig, libc::SIG_IGN);
-        }
-        old
-    });
+    let old = signals
+        .iter()
+        .map(|&sig| unsafe {
+            let old = libc::signal(sig, handler);
+            if old == libc::SIG_IGN {
+                libc::signal(sig, libc::SIG_IGN);
+            }
+            (sig, old)
+        })
+        .collect();
     Interrupts { old }
 }
 
@@ -364,11 +417,56 @@ impl Interrupts {
     pub fn interrupted(&self) -> bool {
         INTERRUPTED.load(Ordering::SeqCst)
     }
+
+    /// Waits until `fd` is readable (true), or `timeout` passes or one of the signals arrives (false). The signals
+    /// are held back until `ppoll` lets them in, so one that arrives just before the wait still ends it.
+    pub fn poll(&self, fd: BorrowedFd, timeout: Option<Duration>) -> io::Result<bool> {
+        unsafe {
+            let mut held: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut held);
+            for &(sig, _) in &self.old {
+                libc::sigaddset(&mut held, sig);
+            }
+            let mut before: libc::sigset_t = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, &held, &mut before);
+            let mut during = before;
+            for &(sig, _) in &self.old {
+                libc::sigdelset(&mut during, sig);
+            }
+            let ts = timeout.map(|t| libc::timespec {
+                tv_sec: t.as_secs() as libc::time_t,
+                tv_nsec: t.subsec_nanos() as libc::c_long,
+            });
+            let mut pfd = libc::pollfd {
+                fd: fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let n = if self.interrupted() {
+                0
+            } else {
+                libc::ppoll(
+                    &mut pfd,
+                    1,
+                    ts.as_ref().map_or(std::ptr::null(), |t| t as *const _),
+                    &during,
+                )
+            };
+            let err = io::Error::last_os_error();
+            libc::pthread_sigmask(libc::SIG_SETMASK, &before, std::ptr::null_mut());
+            match n {
+                n if n > 0 => Ok(true),
+                0 => Ok(false),
+                _ if err.kind() == io::ErrorKind::Interrupted => Ok(false),
+                _ => Err(err),
+            }
+        }
+    }
 }
 
 impl Drop for Interrupts {
     fn drop(&mut self) {
-        for (sig, old) in DEFERRED.into_iter().zip(self.old) {
+        for &(sig, old) in &self.old {
             unsafe { libc::signal(sig, old) };
         }
     }

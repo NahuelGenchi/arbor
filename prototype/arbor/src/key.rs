@@ -1,0 +1,692 @@
+//! Keys: what a command in a world may open beyond the world, until when, and within which limits. A cell starts
+//! sealed (see `cell`): the home folders are empty and the environment is cleared. A key opens folders and files
+//! there, passes variables in by name and caps the cell's limits, until a set time, like a valet key. A key can be
+//! narrowed into another, never widened, and taking one back takes back every key made within it.
+//!
+//! A key holds names and paths, never a secret's value. Each is a file in the state folder's `keys`.
+
+use std::env;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+use crate::cgroup::Limits;
+use crate::error::{Context, Error, Result};
+use crate::{paths, sys, world};
+
+/// How long a key lasts when nobody says: a working day.
+pub const DEFAULT_LIFE: Duration = Duration::from_secs(8 * 3600);
+
+/// The language toolchains `--toolchains` opens where they exist, relative to the home folder.
+pub const TOOLCHAINS: [&str; 18] = [
+    // Rust
+    ".cargo",
+    ".rustup",
+    // JavaScript
+    ".nvm",
+    ".npm",
+    ".bun",
+    ".deno",
+    ".volta",
+    ".local/share/pnpm",
+    // Python
+    ".pyenv",
+    ".local/bin",
+    ".local/lib",
+    ".cache/pip",
+    // Go, Ruby and Java
+    "go",
+    ".rbenv",
+    ".gem",
+    ".sdkman",
+    ".gradle",
+    ".m2",
+];
+
+/// Password and key files and folders, relative to the home folder. They stay hidden in a cell even when its world
+/// or its key includes the folder they are in, unless that world or key is the file or folder itself.
+pub const SECRETS: [&str; 30] = [
+    // Keys and passwords
+    ".ssh",
+    ".gnupg",
+    ".password-store",
+    ".local/share/keyrings",
+    ".pki",
+    // Cloud and service logins
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".kube",
+    ".docker/config.json",
+    ".config/gh",
+    ".git-credentials",
+    ".netrc",
+    ".vault-token",
+    ".terraform.d/credentials.tfrc.json",
+    // Package registry tokens
+    ".npmrc",
+    ".pypirc",
+    ".gem/credentials",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".gradle/gradle.properties",
+    ".m2/settings.xml",
+    ".m2/settings-security.xml",
+    // Browser and mail profiles: saved passwords and signed-in sessions
+    ".mozilla",
+    "snap/firefox",
+    ".thunderbird",
+    ".config/google-chrome",
+    ".config/chromium",
+    ".config/BraveSoftware",
+    ".config/microsoft-edge",
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Key {
+    pub name: String,
+    /// The key it was made within: it opens nothing that one does not, and ends with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<String>,
+    /// The worlds it opens; none means any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worlds: Vec<String>,
+    /// The folders and files it opens, absolute and resolved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read: Vec<PathBuf>,
+    /// The variables it passes in, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+    #[serde(default)]
+    pub limits: Limits,
+    /// When it was made and when it ends, in nanoseconds since 1970.
+    pub made_ns: u64,
+    pub until_ns: u64,
+}
+
+/// What `arbor key new` asks for.
+#[derive(Debug, Default)]
+pub struct Spec {
+    pub name: String,
+    pub within: Option<String>,
+    pub worlds: Vec<String>,
+    pub read: Vec<PathBuf>,
+    pub toolchains: bool,
+    pub env: Vec<String>,
+    pub limits: Limits,
+    /// When it ends. Unset is 8 hours from now, or, within another key, that key's end.
+    pub until_ns: Option<u64>,
+}
+
+pub fn keys_dir() -> Result<PathBuf> {
+    Ok(paths::state_dir()?.join("keys"))
+}
+
+fn file(name: &str) -> Result<PathBuf> {
+    Ok(keys_dir()?.join(format!("{name}.json")))
+}
+
+/// True while the key named `name` has not been taken back.
+pub fn exists(name: &str) -> bool {
+    file(name).is_ok_and(|f| f.exists())
+}
+
+fn check_env_name(name: &str) -> Result<()> {
+    let ok = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::usage(format!("'{name}' is not a variable name")))
+    }
+}
+
+/// Whether a key may open `path`, absolute and resolved: not the whole computer, not the folders a cell gets fresh
+/// copies of, not arbor's own folder with every world's changes, and not the session's sockets.
+pub fn check_grant(path: &Path) -> Result<()> {
+    let why = if path == Path::new("/") {
+        Some("that is the whole computer")
+    } else if ["/proc", "/dev", "/sys", "/run"]
+        .iter()
+        .any(|live| path.starts_with(live))
+    {
+        Some("a cell gets a fresh one")
+    } else if paths::contains(&resolved(paths::state_dir()?), path) {
+        Some("it holds every world's changes")
+    } else if env::var_os("XDG_RUNTIME_DIR")
+        .is_some_and(|r| paths::contains(&resolved(PathBuf::from(r)), path))
+    {
+        Some("it holds the session's sockets")
+    } else {
+        None
+    };
+    match why {
+        Some(why) => Err(Error::refused(format!(
+            "a key cannot open {}: {why}",
+            paths::tilde(path)
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn resolved(path: PathBuf) -> PathBuf {
+    fs::canonicalize(&path).unwrap_or(path)
+}
+
+/// A path for `--read`, resolved, that a key may open.
+fn grant(path: &Path) -> Result<PathBuf> {
+    let p = match fs::canonicalize(path) {
+        Ok(p) => p,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(Error::usage(format!("there is no {}", path.display())));
+        }
+        Err(e) => return Err(e).ctx(|| format!("cannot open {}", path.display())),
+    };
+    check_grant(&p)?;
+    Ok(p)
+}
+
+/// The toolchain folders that exist in the home folder.
+pub fn toolchains() -> Vec<PathBuf> {
+    let Some(home) = paths::home() else {
+        return Vec::new();
+    };
+    TOOLCHAINS
+        .iter()
+        .filter_map(|t| fs::canonicalize(home.join(t)).ok())
+        .filter(|p| p.is_dir() && check_grant(p).is_ok())
+        .collect()
+}
+
+/// The password and key files of the home folder `home` that a cell would see, with whether each is a folder. A
+/// cell sees what lies outside its `hidden` folders, and what lies inside `shown`: its world's folder and what its
+/// key opens. Each is found where it really is, so one linked from elsewhere counts too. One that is itself among
+/// `shown` was opened on purpose and stays.
+pub fn secrets_in(home: &Path, hidden: &[PathBuf], shown: &[PathBuf]) -> Vec<(PathBuf, bool)> {
+    let mut found: Vec<(PathBuf, bool)> = Vec::new();
+    for rel in SECRETS {
+        let Ok(path) = fs::canonicalize(home.join(rel)) else {
+            continue;
+        };
+        let seen = !hidden.iter().any(|h| paths::contains(h, &path))
+            || shown
+                .iter()
+                .any(|s| s != &path && paths::contains(s, &path));
+        let named = shown.contains(&path);
+        let covered = found.iter().any(|(f, _)| paths::contains(f, &path));
+        if seen && !named && !covered {
+            let dir = path.is_dir();
+            found.push((path, dir));
+        }
+    }
+    found
+}
+
+fn local(ts_ns: u64) -> Option<libc::tm> {
+    let secs = (ts_ns / 1_000_000_000) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    (!unsafe { libc::localtime_r(&secs, &mut tm) }.is_null()).then_some(tm)
+}
+
+/// A clock time for people, never a countdown: `18:00` today, else `10-18 09:00`.
+pub fn clock(ts_ns: u64, now_ns: u64) -> String {
+    match (local(ts_ns), local(now_ns)) {
+        (Some(t), Some(n)) if (t.tm_year, t.tm_yday) == (n.tm_year, n.tm_yday) => {
+            format!("{:02}:{:02}", t.tm_hour, t.tm_min)
+        }
+        (Some(t), _) => format!(
+            "{:02}-{:02} {:02}:{:02}",
+            t.tm_mon + 1,
+            t.tm_mday,
+            t.tm_hour,
+            t.tm_min
+        ),
+        _ => "?".into(),
+    }
+}
+
+/// The next time the local clock reads `HH:MM`: today, or tomorrow once that has passed.
+pub fn parse_until(text: &str, now_ns: u64) -> Result<u64> {
+    let bad = || {
+        Error::usage(format!(
+            "'{text}' is not a time of day: use for example 18:00"
+        ))
+    };
+    let (h, m) = text.trim().split_once(':').ok_or_else(bad)?;
+    let (h, m): (i32, i32) = match (h.parse(), m.parse()) {
+        (Ok(h), Ok(m)) if (0..24).contains(&h) && (0..60).contains(&m) && m_ok(text) => (h, m),
+        _ => return Err(bad()),
+    };
+    let now = (now_ns / 1_000_000_000) as libc::time_t;
+    let at = |days: i32| -> Option<libc::time_t> {
+        let mut tm = local(now_ns)?;
+        tm.tm_mday += days;
+        (tm.tm_hour, tm.tm_min, tm.tm_sec, tm.tm_isdst) = (h, m, 0, -1);
+        let t = unsafe { libc::mktime(&mut tm) };
+        (t != -1).then_some(t)
+    };
+    let t = match at(0) {
+        Some(t) if t > now => t,
+        _ => at(1).ok_or_else(bad)?,
+    };
+    Ok(t as u64 * 1_000_000_000)
+}
+
+/// Minutes are two digits, as clocks show them.
+fn m_ok(text: &str) -> bool {
+    text.trim().rsplit(':').next().is_some_and(|m| m.len() == 2)
+}
+
+impl Key {
+    pub fn load(name: &str) -> Result<Key> {
+        world::check_name_as(name, "key")?;
+        let text = match fs::read_to_string(file(name)?) {
+            Ok(t) => t,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(Error::usage(format!(
+                    "there is no key named '{name}' (see `arbor keys`)"
+                )));
+            }
+            Err(e) => return Err(e).ctx(|| format!("cannot read key '{name}'")),
+        };
+        serde_json::from_str(&text).ctx(|| format!("key '{name}' is damaged"))
+    }
+
+    /// Every key, sorted by name. Files that cannot be read are skipped.
+    pub fn list() -> Result<Vec<Key>> {
+        let dir = keys_dir()?;
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e).ctx(|| format!("cannot read {}", dir.display())),
+        };
+        let mut keys = Vec::new();
+        for entry in entries {
+            let name = entry?.file_name();
+            if let Some(name) = name.to_str().and_then(|n| n.strip_suffix(".json"))
+                && let Ok(key) = Key::load(name)
+            {
+                keys.push(key);
+            }
+        }
+        keys.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(keys)
+    }
+
+    /// Makes and saves a key. One made within another must lie within it, and inherits what it leaves out.
+    pub fn create(spec: Spec) -> Result<Key> {
+        world::check_name_as(&spec.name, "key")?;
+        for w in &spec.worlds {
+            world::check_name(w)?;
+        }
+        for v in &spec.env {
+            check_env_name(v)?;
+        }
+        let now = world::now_ns();
+        let mut read = spec
+            .read
+            .iter()
+            .map(|p| grant(p))
+            .collect::<Result<Vec<_>>>()?;
+        if spec.toolchains {
+            read.extend(toolchains());
+        }
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v.dedup();
+            v
+        };
+        read.sort();
+        read.dedup();
+        let mut key = Key {
+            name: spec.name.clone(),
+            within: spec.within.clone(),
+            worlds: sorted(spec.worlds),
+            read,
+            env: sorted(spec.env),
+            limits: spec.limits,
+            made_ns: now,
+            until_ns: spec
+                .until_ns
+                .unwrap_or(now + DEFAULT_LIFE.as_nanos() as u64),
+        };
+        if let Some(outer) = &spec.within {
+            let outer = Key::load(outer)?;
+            if outer.ended(now) {
+                return Err(Error::refused(format!(
+                    "key '{}' ended at {}",
+                    outer.name,
+                    clock(outer.until_ns, now)
+                )));
+            }
+            let named_reads = !spec.read.is_empty() || spec.toolchains;
+            key.narrow(&outer, named_reads, spec.until_ns.is_some(), now)?;
+        }
+        if key.until_ns <= now {
+            return Err(Error::usage("a key must end later than now"));
+        }
+        key.save_new()?;
+        Ok(key)
+    }
+
+    /// Fits this key within `outer`: what it names must lie within `outer`'s, and what it leaves out is `outer`'s.
+    fn narrow(&mut self, outer: &Key, named_reads: bool, named_end: bool, now: u64) -> Result<()> {
+        let refuse = |what: String| {
+            Error::refused(format!(
+                "key '{}' would open more than key '{}', which {what}",
+                self.name, outer.name
+            ))
+        };
+        if self.worlds.is_empty() {
+            self.worlds = outer.worlds.clone();
+        } else if !outer.worlds.is_empty()
+            && let Some(w) = self.worlds.iter().find(|w| !outer.worlds.contains(w))
+        {
+            return Err(refuse(format!("does not open world '{w}'")));
+        }
+        if !named_reads {
+            self.read = outer.read.clone();
+        } else if let Some(p) = self
+            .read
+            .iter()
+            .find(|p| !outer.read.iter().any(|o| paths::contains(o, p)))
+        {
+            return Err(refuse(format!("does not open {}", paths::tilde(p))));
+        }
+        if self.env.is_empty() {
+            self.env = outer.env.clone();
+        } else if let Some(v) = self.env.iter().find(|v| !outer.env.contains(v)) {
+            return Err(refuse(format!("does not pass {v}")));
+        }
+        self.limits = self
+            .limits
+            .within(outer.limits)
+            .map_err(|what| refuse(format!("allows less {what}")))?;
+        if !named_end {
+            self.until_ns = outer.until_ns;
+        } else if self.until_ns > outer.until_ns {
+            return Err(refuse(format!("ends at {}", clock(outer.until_ns, now))));
+        }
+        Ok(())
+    }
+
+    /// Writes the key's file, mode 600, refusing a name that is taken.
+    fn save_new(&self) -> Result<()> {
+        let dir = keys_dir()?;
+        fs::create_dir_all(&dir).ctx(|| format!("cannot create {}", dir.display()))?;
+        let tmp = dir.join(format!(".{}.{}.tmp", self.name, std::process::id()));
+        let path = file(&self.name)?;
+        let written = (|| {
+            let mut f = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(
+                serde_json::to_string_pretty(self)
+                    .map_err(io::Error::other)?
+                    .as_bytes(),
+            )?;
+            f.write_all(b"\n")?;
+            f.sync_all()?;
+            sys::rename_noreplace(&tmp, &path)
+        })();
+        match written {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                if e.kind() == io::ErrorKind::AlreadyExists {
+                    Err(Error::refused(format!(
+                        "a key named '{}' already exists",
+                        self.name
+                    )))
+                } else {
+                    Err(e).ctx(|| format!("cannot write {}", path.display()))
+                }
+            }
+        }
+    }
+
+    pub fn ended(&self, now_ns: u64) -> bool {
+        now_ns >= self.until_ns
+    }
+
+    pub fn opens(&self, world: &str) -> bool {
+        self.worlds.is_empty() || self.worlds.iter().any(|w| w == world)
+    }
+
+    /// Refuses a key that has ended or that does not open `world`.
+    pub fn check(&self, world: &str) -> Result<()> {
+        let now = world::now_ns();
+        if self.ended(now) {
+            return Err(Error::refused(format!(
+                "key '{}' ended at {}",
+                self.name,
+                clock(self.until_ns, now)
+            )));
+        }
+        if !self.opens(world) {
+            return Err(Error::refused(format!(
+                "key '{}' does not open world '{world}'; it opens {}",
+                self.name,
+                self.worlds.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    /// What it opens: `any world` or `shop, docs`.
+    pub fn opened(&self) -> String {
+        if self.worlds.is_empty() {
+            "any world".into()
+        } else {
+            self.worlds.join(", ")
+        }
+    }
+
+    /// `~/.cargo, ~/.rustup`.
+    pub fn reads(&self) -> String {
+        self.read
+            .iter()
+            .map(|p| paths::tilde(p))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// `opens shop; reads ~/.cargo; env CARGO_HOME; mem 4GiB; within dev; until 18:00`, for the ledger.
+    pub fn describe(&self) -> String {
+        let mut parts = vec![format!("opens {}", self.opened())];
+        if !self.read.is_empty() {
+            parts.push(format!("reads {}", self.reads()));
+        }
+        if !self.env.is_empty() {
+            parts.push(format!("env {}", self.env.join(", ")));
+        }
+        let limits = self.limits.describe();
+        if !limits.is_empty() {
+            parts.push(limits);
+        }
+        if let Some(w) = &self.within {
+            parts.push(format!("within {w}"));
+        }
+        parts.push(format!("until {}", clock(self.until_ns, world::now_ns())));
+        parts.join("; ")
+    }
+}
+
+/// Takes back the key `name` and every key made within it, at any depth. Returns their names, `name` first.
+pub fn take_back(name: &str) -> Result<Vec<String>> {
+    let first = Key::load(name)?;
+    let all = Key::list()?;
+    let mut gone = vec![first.name];
+    loop {
+        let more: Vec<String> = all
+            .iter()
+            .filter(|k| {
+                !gone.contains(&k.name) && k.within.as_ref().is_some_and(|w| gone.contains(w))
+            })
+            .map(|k| k.name.clone())
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        gone.extend(more);
+    }
+    for n in &gone {
+        match fs::remove_file(file(n)?) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                return Err(e).ctx(|| format!("cannot remove key '{n}'"));
+            }
+            _ => {}
+        }
+    }
+    Ok(gone)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(name: &str) -> Key {
+        Key {
+            name: name.into(),
+            within: None,
+            worlds: Vec::new(),
+            read: Vec::new(),
+            env: Vec::new(),
+            limits: Limits::default(),
+            made_ns: 0,
+            until_ns: 10_000,
+        }
+    }
+
+    #[test]
+    fn a_key_within_another_opens_no_more() {
+        let mut outer = key("dev");
+        outer.worlds = vec!["shop".into()];
+        outer.read = vec![PathBuf::from("/home/u/.cargo")];
+        outer.env = vec!["CARGO_HOME".into()];
+        outer.limits.mem = Some(1 << 30);
+
+        // What it leaves out, it inherits.
+        let mut k = key("tests");
+        k.narrow(&outer, false, false, 0).unwrap();
+        assert_eq!(
+            (
+                k.worlds.clone(),
+                k.read.clone(),
+                k.env.clone(),
+                k.limits,
+                k.until_ns
+            ),
+            (
+                outer.worlds.clone(),
+                outer.read.clone(),
+                outer.env.clone(),
+                outer.limits,
+                10_000
+            )
+        );
+
+        // What it names must lie within.
+        let mut k = key("tests");
+        k.read = vec![PathBuf::from("/home/u/.cargo/bin")];
+        k.limits.mem = Some(512 << 20);
+        k.until_ns = 5_000;
+        k.narrow(&outer, true, true, 0).unwrap();
+        assert_eq!((k.limits.mem, k.until_ns), (Some(512 << 20), 5_000));
+
+        let wider = |change: &dyn Fn(&mut Key)| {
+            let mut k = key("tests");
+            change(&mut k);
+            let named_end = k.until_ns != 10_000;
+            k.narrow(&outer, !k.read.is_empty(), named_end, 0)
+                .unwrap_err()
+                .msg
+        };
+        assert!(wider(&|k| k.worlds = vec!["bank".into()]).contains("does not open world 'bank'"));
+        assert!(
+            wider(&|k| k.read = vec![PathBuf::from("/home/u/.ssh")])
+                .contains("does not open /home/u/.ssh")
+        );
+        assert!(wider(&|k| k.env = vec!["TOKEN".into()]).contains("does not pass TOKEN"));
+        assert!(wider(&|k| k.limits.mem = Some(2 << 30)).contains("allows less memory"));
+        assert!(wider(&|k| k.until_ns = 20_000).contains("ends at"));
+    }
+
+    #[test]
+    fn opens_its_worlds_until_it_ends() {
+        let mut k = key("dev");
+        assert!(k.opens("anything") && !k.ended(9_999) && k.ended(10_000));
+        k.worlds = vec!["shop".into()];
+        assert!(k.opens("shop") && !k.opens("bank"));
+        assert_eq!(k.opened(), "shop");
+    }
+
+    #[test]
+    fn grants_stay_out_of_the_computer_s_live_folders() {
+        for bad in ["/", "/proc/self", "/dev", "/sys/fs", "/run/user/1000"] {
+            assert!(check_grant(Path::new(bad)).is_err(), "{bad}");
+        }
+        assert!(check_grant(Path::new("/usr/share")).is_ok());
+        assert!(check_env_name("CARGO_HOME").is_ok() && check_env_name("_x1").is_ok());
+        for bad in ["", "1X", "A-B", "A=B"] {
+            assert!(check_env_name(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn hides_the_password_files_a_cell_would_see_unless_opened_by_name() {
+        let root = std::env::temp_dir().join(format!("arbor-secrets-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("home/.ssh")).unwrap();
+        fs::create_dir_all(root.join("home/.cargo")).unwrap();
+        fs::create_dir_all(root.join("data/gnupg")).unwrap();
+        let root = fs::canonicalize(&root).unwrap();
+        let home = root.join("home");
+        fs::write(home.join(".cargo/credentials.toml"), "").unwrap();
+        fs::write(home.join(".npmrc"), "").unwrap();
+        // Linked from outside the home folder, where nothing hides it.
+        std::os::unix::fs::symlink(root.join("data/gnupg"), home.join(".gnupg")).unwrap();
+        let (gnupg, ssh) = ((root.join("data/gnupg"), true), (home.join(".ssh"), true));
+        let npmrc = (home.join(".npmrc"), false);
+        let cargo = (home.join(".cargo/credentials.toml"), false);
+        let found = |shown: &[PathBuf]| secrets_in(&home, std::slice::from_ref(&home), shown);
+
+        assert_eq!(found(&[]), vec![gnupg.clone()]);
+        assert_eq!(
+            found(std::slice::from_ref(&home)),
+            vec![ssh, gnupg.clone(), npmrc.clone(), cargo.clone()]
+        );
+        assert_eq!(
+            found(&[home.join(".cargo")]),
+            vec![gnupg.clone(), cargo.clone()]
+        );
+        assert_eq!(
+            found(&[home.clone(), home.join(".ssh")]),
+            vec![gnupg, npmrc, cargo]
+        );
+        assert!(Key::load("Bad Name").is_err_and(|e| e.code == crate::error::USAGE));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn reads_clock_times() {
+        let now = world::now_ns();
+        let at = parse_until("23:59", now).unwrap();
+        assert!(at > now && at - now <= 24 * 3600 * 1_000_000_000);
+        assert!(clock(at, now).ends_with(":59"));
+        for bad in ["noon", "24:00", "12:60", "12:5", "1200", ""] {
+            assert!(parse_until(bad, now).is_err(), "{bad}");
+        }
+        assert_eq!(clock(now, now).len(), 5);
+    }
+}

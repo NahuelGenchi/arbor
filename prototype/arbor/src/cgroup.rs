@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Context, Error, Result};
 
 const ROOT: &str = "/sys/fs/cgroup";
@@ -198,16 +200,53 @@ pub fn serve() -> Result<i32> {
 }
 
 /// What a cell may use. `None` is no limit.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Limits {
     /// Memory in bytes, page cache and the cell's `/tmp` included; swap is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mem: Option<u64>,
     /// CPUs: 0.5 is half of one, 2 is two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu: Option<f64>,
     /// Processes and threads at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pids: Option<u64>,
-    /// Wall time.
+    /// Wall time, kept in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "millis")]
     pub time: Option<Duration>,
+}
+
+mod millis {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(d: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+        match d {
+            Some(d) => s.serialize_u64(d.as_millis() as u64),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+        Ok(Option::<u64>::deserialize(d)?.map(Duration::from_millis))
+    }
+}
+
+/// The smaller of two limits, where either is set.
+fn smaller<T: PartialOrd>(a: Option<T>, b: Option<T>) -> Option<T> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if b < a { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// `inner` where it is no larger than `outer`, `outer` where `inner` is unset, or `None` when it is larger.
+fn no_larger<T: PartialOrd>(inner: Option<T>, outer: Option<T>) -> Option<Option<T>> {
+    match (inner, outer) {
+        (Some(i), Some(o)) if i > o => None,
+        (i, o) => Some(i.or(o)),
+    }
 }
 
 /// The command-line flags that set limits.
@@ -224,6 +263,27 @@ impl Limits {
             _ => return Err(Error::usage(format!("there is no limit --{flag}"))),
         }
         Ok(())
+    }
+
+    /// The tighter of two sets of limits: a key's and a command line's.
+    pub fn tighter(self, other: Limits) -> Limits {
+        Limits {
+            mem: smaller(self.mem, other.mem),
+            cpu: smaller(self.cpu, other.cpu),
+            pids: smaller(self.pids, other.pids),
+            time: smaller(self.time, other.time),
+        }
+    }
+
+    /// These limits for a key made within one with `outer`'s: each one this sets must be no larger, and the
+    /// ones it leaves unset are `outer`'s. Errs with the name of the first that is larger.
+    pub fn within(self, outer: Limits) -> std::result::Result<Limits, &'static str> {
+        Ok(Limits {
+            mem: no_larger(self.mem, outer.mem).ok_or("memory")?,
+            cpu: no_larger(self.cpu, outer.cpu).ok_or("CPU")?,
+            pids: no_larger(self.pids, outer.pids).ok_or("processes")?,
+            time: no_larger(self.time, outer.time).ok_or("time")?,
+        })
     }
 
     /// True when a limit only a cgroup can hold is set.
@@ -576,6 +636,38 @@ mod tests {
         assert_eq!(limits.describe(), "mem 512MiB, cpu 0.5, pids 64, time 10m");
         assert!(limits.need_cgroup());
         assert!(!Limits::default().need_cgroup());
+        let flags = Limits {
+            mem: Some(1 << 30),
+            cpu: Some(2.0),
+            ..Limits::default()
+        };
+        let both = limits.tighter(flags);
+        assert_eq!(
+            (both.mem, both.cpu, both.pids),
+            (Some(512 << 20), Some(0.5), Some(64))
+        );
+        assert_eq!(flags.within(limits), Err("memory"));
+        let narrow = Limits {
+            pids: Some(8),
+            ..Limits::default()
+        };
+        assert_eq!(
+            narrow.within(limits),
+            Ok(Limits {
+                pids: Some(8),
+                ..limits
+            })
+        );
+        let json = serde_json::to_string(&limits).unwrap();
+        assert_eq!(
+            json,
+            r#"{"mem":536870912,"cpu":0.5,"pids":64,"time":600000}"#
+        );
+        assert_eq!(serde_json::from_str::<Limits>(&json).unwrap(), limits);
+        assert_eq!(
+            serde_json::from_str::<Limits>("{}").unwrap(),
+            Limits::default()
+        );
         assert_eq!(Limits::default().describe(), "");
         assert_eq!(size(3 << 29), "1.5GiB");
         assert_eq!(size(70 << 20), "70MiB");
