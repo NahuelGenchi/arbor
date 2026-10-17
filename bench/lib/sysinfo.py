@@ -73,7 +73,7 @@ def main():
     params = {k: os.environ[k].replace(home, '~') for k in (
         'PROJECTS_DIR', 'NAME_SEARCH_ROOT', 'NAME_QUERY', 'CODE_ROOT', 'CODE_QUERIES', 'DEDUP_ROOT', 'FORK_TREE',
         'GIT_LOG_REPO', 'GIT_LOG_REF', 'TRANSCRIPTS_DIR', 'HEAP_JSONL', 'HEAP_JSONL_BYTES', 'O200K_FILE',
-        'DOCKER_IMAGE', 'LISTING_DIR', 'INITRD') if os.environ.get(k)}
+        'DOCKER_IMAGE', 'LISTING_DIR', 'INITRD', 'ARBOR_BIN') if os.environ.get(k)}
     tools = {'python': version(['python3', '--version']), 'node': version(['node', '--version']),
              'rustc': version(['rustc', '--version']), 'gcc': version(['gcc', '--version']),
              'rg': version(['rg', '--version']), 'docker': version(['docker', '--version']),

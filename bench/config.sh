@@ -36,6 +36,9 @@ DOCKER_IMAGE="${DOCKER_IMAGE:-ubuntu:24.04}"
 # 5. Boot
 INITRD="${INITRD:-/boot/initrd.img}"
 
+# 8. The prototype: empty builds prototype/ (release, offline) into the temp dir; a path measures that binary instead.
+ARBOR_BIN="${ARBOR_BIN:-}"
+
 # Where temp files go (removed at exit; tmpfs, as in the M run) and where reports are written.
 BENCH_TMP="${BENCH_TMP:-${TMPDIR:-/tmp}}"
 RESULTS_DIR="${RESULTS_DIR:-$BENCH_DIR/results}"

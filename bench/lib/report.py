@@ -14,7 +14,7 @@ from reference import ENTRIES, M_INFO, M_PRESSURE, PSS_WHY, TOL  # noqa: E402
 # Which section measures a key (run.sh's ONLY/SKIP leave sections out; their rows are left out of the table).
 SECTION_OF = (('rt.', 'runtimes'), ('cell.py_', 'pycell'), ('cell.', 'cells'), ('mem.', 'memstate'),
               ('ram.', 'memstate'), ('heap.', 'heap'), ('search.', 'search'), ('code.', 'search'), ('boot.', 'boot'),
-              ('storage.', 'storage'), ('tok.', 'transcripts'), ('fmt.', 'formats'))
+              ('storage.', 'storage'), ('tok.', 'transcripts'), ('fmt.', 'formats'), ('arbor.', 'arbor'))
 DP = {'%': 1, 'MiB': 1, 'GiB': 1, 'MB': 1, 's': 1, '×': 2, 'Mtok': 2, 'B': 0, 'tok': 0, '': 0}
 
 
@@ -243,6 +243,10 @@ def note_ctx(e, rec):
         return f"{ctx.get('hashed_files'):,} files hashed in {ctx['scan_s']} s"
     if k == 'fmt.git_log' and ctx.get('repo'):
         return f"{ctx['repo']} at {ctx.get('ref')}"
+    if k == 'arbor.ask_ms' and ctx.get('run_ms'):
+        return f"{ctx.get('with_ask_ms'):.2f} ms with the ask, {ctx['run_ms']:.2f} ms without"
+    if k.startswith('arbor.serve_') and ctx.get('service'):
+        return f"arbor serve {ctx['service']}"
     return ''
 
 
