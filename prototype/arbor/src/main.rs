@@ -33,6 +33,7 @@ arbor: try changes on a copy of a folder, then keep them or throw them away.
   arbor stop CELL                    stop a command running in a world
   arbor key new NAME [GRANTS]        make a key that opens more than the world, until a set time
   arbor keys                         list the keys
+  arbor key renew NAME [--for D]     move a key's end later, ended or not; its home folder stays
   arbor key take-back NAME           end a key and every key made within it, and stop their commands
   arbor outbox [ID] [--all]          list the effects waiting for you (ID: everything about one)
   arbor release ID                   run an effect a world asked for: as you, once
@@ -49,7 +50,8 @@ GRANTS: --read PATH (a folder or file), --toolchains (~/.cargo, ~/.npm, ~/.pyenv
 --env VAR (passes a variable in), --net HOST (a host it may reach over https: api.example.com,
 *.example.com, HOST:PORT), --home (a home folder of its own, kept between runs), --world W (only that
 world), LIMITS, --spend AMOUNT (what its effects may cost in all: 5, 2.50), --for DURATION or
---until HH:MM (8h if neither), --within KEY (a narrower key, made from another).
+--until HH:MM (8h if neither), --within KEY (a narrower key, made from another). A renewal takes --for or
+--until too: without either, 8h from now, or the end of the key it was made within.
 
 Inside a world, `arbor look` reads what the world sees, and `arbor effect [--cost AMOUNT] [--why TEXT]
 [--input FILE] [--wait] -- CMD...` asks for CMD to run outside: in the real folder, as you, with the
@@ -702,11 +704,12 @@ fn stop(p: &mut lexopt::Parser) -> Result<i32> {
 }
 
 fn key_cmd(p: &mut lexopt::Parser) -> Result<i32> {
-    let usage =
-        "usage: arbor key new NAME [GRANTS], or arbor key take-back NAME (see `arbor help`)";
+    let usage = "usage: arbor key new NAME [GRANTS], arbor key renew NAME [--for D], \
+                 or arbor key take-back NAME (see `arbor help`)";
     match p.next()? {
         Some(Value(v)) => match v.string()?.as_str() {
             "new" => key_new(p),
+            "renew" => key_renew(p),
             "take-back" => take_back(p),
             other => Err(Error::usage(format!(
                 "there is no `arbor key {other}`; {usage}"
@@ -717,15 +720,24 @@ fn key_cmd(p: &mut lexopt::Parser) -> Result<i32> {
     }
 }
 
+/// Reads the value of `--for DURATION` (`life`) or `--until HH:MM` into `until`, as the time it names; giving both
+/// is a mistake.
+fn read_end(p: &mut lexopt::Parser, life: bool, now: u64, until: &mut Option<u64>) -> Result<()> {
+    let text = p.value()?.string()?;
+    let at = if life {
+        now.saturating_add(cgroup::parse_duration(&text)?.as_nanos() as u64)
+    } else {
+        key::parse_until(&text, now)?
+    };
+    if until.replace(at).is_some() {
+        return Err(Error::usage("give --for or --until, not both"));
+    }
+    Ok(())
+}
+
 fn key_new(p: &mut lexopt::Parser) -> Result<i32> {
     let now = world::now_ns();
     let (mut name, mut spec) = (None, key::Spec::default());
-    let end = |spec: &mut key::Spec, at: u64| {
-        if spec.until_ns.replace(at).is_some() {
-            return Err(Error::usage("give --for or --until, not both"));
-        }
-        Ok(())
-    };
     while let Some(arg) = p.next()? {
         match arg {
             Long("world") => spec.worlds.push(p.value()?.string()?),
@@ -735,13 +747,9 @@ fn key_new(p: &mut lexopt::Parser) -> Result<i32> {
             Long("net") => spec.net.push(p.value()?.string()?),
             Long("home") => spec.home = true,
             Long("within") => spec.within = Some(p.value()?.string()?),
-            Long("for") => {
-                let life = cgroup::parse_duration(&p.value()?.string()?)?;
-                end(&mut spec, now.saturating_add(life.as_nanos() as u64))?;
-            }
-            Long("until") => {
-                let at = key::parse_until(&p.value()?.string()?, now)?;
-                end(&mut spec, at)?;
+            Long(flag @ ("for" | "until")) => {
+                let life = flag == "for";
+                read_end(p, life, now, &mut spec.until_ns)?;
             }
             Long(flag) if cgroup::FLAGS.contains(&flag) => {
                 let flag = flag.to_string();
@@ -764,6 +772,48 @@ fn key_new(p: &mut lexopt::Parser) -> Result<i32> {
             "Use it with `arbor run WORLD --key {} -- CMD`. `arbor key take-back {}` ends it early.",
             k.name, k.name
         ));
+        Ok(0)
+    })
+}
+
+fn key_renew(p: &mut lexopt::Parser) -> Result<i32> {
+    let now = world::now_ns();
+    let (mut name, mut until) = (None, None);
+    while let Some(arg) = p.next()? {
+        match arg {
+            Long(flag @ ("for" | "until")) => {
+                let life = flag == "for";
+                read_end(p, life, now, &mut until)?;
+            }
+            Value(v) if name.is_none() => name = Some(v.string()?),
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    let name = name.ok_or_else(|| Error::usage("which key? (see `arbor keys`)"))?;
+    recorded("renew", "-", |note| {
+        note.key = Some(name.clone());
+        let (k, was) = key::renew(&name, until)?;
+        let now = world::now_ns();
+        note.what = format!(
+            "key {} until {} instead of {}",
+            k.name,
+            key::clock(k.until_ns, now),
+            key::clock(was, now)
+        );
+        println!("renewed {}", note.what);
+        // The keys made within it keep their own ends, and each may be renewed up to this one's.
+        let within: Vec<String> = Key::list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w.within.as_ref() == Some(&k.name))
+            .map(|w| w.name)
+            .collect();
+        if let Some(first) = within.first() {
+            hint(&format!(
+                "Keys made within it keep their own ends: {}. `arbor key renew {first}` moves one later.",
+                within.join(", ")
+            ));
+        }
         Ok(0)
     })
 }

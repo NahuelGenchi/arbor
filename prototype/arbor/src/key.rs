@@ -7,10 +7,11 @@
 //!
 //! A key holds names and paths, never a secret's value. Each is a file in the state folder's `keys`. A key's own
 //! home folder is in its `homes`: it holds what the commands under the key write there, such as an agent's settings
-//! and login, and lives as long as the key.
+//! and login, and lives as long as the key. Renewing a key moves its end later, never sooner, so its home, and what
+//! the agent keeps there, can outlive the end it was made with.
 
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -206,6 +207,23 @@ fn file(name: &str) -> Result<PathBuf> {
 /// True while the key named `name` has not been taken back.
 pub fn exists(name: &str) -> bool {
     file(name).is_ok_and(|f| f.exists())
+}
+
+/// Takes the lock that renewals and take-backs take turns under, until the returned file is dropped: a renewal never
+/// brings back a key taken back meanwhile, and two renewals never undo each other.
+fn lock() -> Result<File> {
+    let dir = keys_dir()?;
+    fs::create_dir_all(&dir).ctx(|| format!("cannot create {}", dir.display()))?;
+    let path = dir.join("lock");
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .ctx(|| format!("cannot open {}", path.display()))?;
+    sys::flock(&file, true, true)?;
+    Ok(file)
 }
 
 fn check_env_name(name: &str) -> Result<()> {
@@ -443,11 +461,7 @@ impl Key {
         if let Some(outer) = &spec.within {
             let outer = Key::load(outer)?;
             if outer.ended(now) {
-                return Err(Error::refused(format!(
-                    "key '{}' ended at {}",
-                    outer.name,
-                    clock(outer.until_ns, now)
-                )));
+                return Err(outer.ended_refusal(now));
             }
             let named_reads = !spec.read.is_empty() || spec.toolchains;
             key.narrow(&outer, named_reads, spec.until_ns.is_some(), now)?;
@@ -469,7 +483,7 @@ impl Key {
         if key.owns_home() && !exists(&key.name) && fs::symlink_metadata(&home).is_ok() {
             return Err(left(&home));
         }
-        key.save_new()?;
+        key.save(true)?;
         if key.owns_home()
             && let Err(e) = new_home(&home)
         {
@@ -562,8 +576,56 @@ impl Key {
         Ok(())
     }
 
-    /// Writes the key's file, mode 600, refusing a name that is taken.
-    fn save_new(&self) -> Result<()> {
+    /// When this key ends once renewed: at `asked`, else 8 hours from `now`, or, for a key made within `outer`, when
+    /// that one ends. The end only moves later, and no later than `outer`'s, which must not have ended: so a command
+    /// running under the key never has to stop sooner than it was told, and keys made within it stay within it.
+    fn renewal(&self, outer: Option<&Key>, asked: Option<u64>, now: u64) -> Result<u64> {
+        let end = match (asked, outer) {
+            (Some(at), _) => at,
+            (None, Some(outer)) => outer.until_ns,
+            (None, None) => now.saturating_add(DEFAULT_LIFE.as_nanos() as u64),
+        };
+        if let Some(outer) = outer {
+            let at = clock(outer.until_ns, now);
+            if outer.ended(now) {
+                return Err(Error::refused(format!(
+                    "key '{}' was made within key '{}', which ended at {at}: renew that one first",
+                    self.name, outer.name
+                )));
+            }
+            if end > outer.until_ns {
+                return Err(Error::refused(format!(
+                    "key '{}' would open more than key '{}', which ends at {at}",
+                    self.name, outer.name
+                )));
+            }
+        }
+        if end <= now {
+            return Err(Error::usage("a key must end later than now"));
+        }
+        if end <= self.until_ns {
+            let why = match outer {
+                Some(outer) if asked.is_none() => format!(
+                    ", as late as key '{}' it was made within: renew that one first",
+                    outer.name
+                ),
+                _ => format!(
+                    "; renewing moves an end only later, and `arbor key take-back {}` ends it now",
+                    self.name
+                ),
+            };
+            return Err(Error::refused(format!(
+                "key '{}' already lasts until {}{why}",
+                self.name,
+                clock(self.until_ns, now)
+            )));
+        }
+        Ok(end)
+    }
+
+    /// Writes the key's file, mode 600: a new one, refusing a name that is taken, or, with `new` false, in place of
+    /// its own.
+    fn save(&self, new: bool) -> Result<()> {
         let dir = keys_dir()?;
         fs::create_dir_all(&dir).ctx(|| format!("cannot create {}", dir.display()))?;
         let tmp = dir.join(format!(".{}.{}.tmp", self.name, std::process::id()));
@@ -582,7 +644,11 @@ impl Key {
             )?;
             f.write_all(b"\n")?;
             f.sync_all()?;
-            sys::rename_noreplace(&tmp, &path)
+            if new {
+                sys::rename_noreplace(&tmp, &path)
+            } else {
+                fs::rename(&tmp, &path)
+            }
         })();
         match written {
             Ok(()) => Ok(()),
@@ -602,6 +668,25 @@ impl Key {
 
     pub fn ended(&self, now_ns: u64) -> bool {
         now_ns >= self.until_ns
+    }
+
+    /// Why an ended key opens nothing, and how to renew it.
+    fn ended_refusal(&self, now_ns: u64) -> Error {
+        Error::refused(format!(
+            "key '{}' ended at {}; `arbor key renew {}` moves its end later",
+            self.name,
+            clock(self.until_ns, now_ns),
+            self.name
+        ))
+    }
+
+    /// When it ends, read again: a renewal may have moved its end later since this copy was read. Taken back, or
+    /// made again under its name, it keeps the end this copy has.
+    pub fn ends_at(&self) -> u64 {
+        Key::load(&self.name)
+            .ok()
+            .filter(|k| k.made_ns == self.made_ns)
+            .map_or(self.until_ns, |k| k.until_ns)
     }
 
     pub fn id(&self) -> KeyRef {
@@ -637,11 +722,7 @@ impl Key {
     pub fn check(&self, world: &str) -> Result<()> {
         let now = world::now_ns();
         if self.ended(now) {
-            return Err(Error::refused(format!(
-                "key '{}' ended at {}",
-                self.name,
-                clock(self.until_ns, now)
-            )));
+            return Err(self.ended_refusal(now));
         }
         if !self.opens(world) {
             return Err(Error::refused(format!(
@@ -752,9 +833,22 @@ impl Key {
     }
 }
 
+/// Moves the end of the key `name` later (see `Key::renewal`). Returns the key, and the end it had. Nothing else about
+/// it changes, nor about the keys made within it.
+pub fn renew(name: &str, asked: Option<u64>) -> Result<(Key, u64)> {
+    let _lock = lock()?;
+    let mut key = Key::load(name)?;
+    let outer = key.within.as_deref().map(Key::load).transpose()?;
+    let was = key.until_ns;
+    key.until_ns = key.renewal(outer.as_ref(), asked, world::now_ns())?;
+    key.save(false)?;
+    Ok((key, was))
+}
+
 /// Takes back the key `name` and every key made within it, at any depth. Returns them, `name` first. Their home
 /// folders stay until the caller has stopped what runs under them (see `Key::remove_home`).
 pub fn take_back(name: &str) -> Result<Vec<Key>> {
+    let _lock = lock()?;
     let first = Key::load(name)?;
     let all = Key::list()?;
     let mut gone = vec![first];
@@ -959,6 +1053,89 @@ mod tests {
         k.worlds = vec!["shop".into()];
         assert!(k.opens("shop") && !k.opens("bank"));
         assert_eq!(k.opened(), "shop");
+        // Once ended, it says how to renew it.
+        let err = k.check("shop").unwrap_err();
+        assert!(
+            err.msg
+                .contains("`arbor key renew dev` moves its end later"),
+            "{}",
+            err.msg
+        );
+    }
+
+    #[test]
+    fn a_renewal_moves_an_end_only_later_and_never_past_the_key_it_was_made_within() {
+        use crate::error::{REFUSED, USAGE};
+        let hour = 3600 * 1_000_000_000;
+        let now = 100 * hour;
+        let refused = |r: Result<u64>, said: &[&str]| {
+            let err = r.unwrap_err();
+            assert_eq!(err.code, REFUSED, "{}", err.msg);
+            for s in said {
+                assert!(err.msg.contains(s), "{s} in {}", err.msg);
+            }
+        };
+        // Ended or not, without an end it lasts 8 hours from now; with one, until then.
+        let mut k = key("agent");
+        k.until_ns = now - hour;
+        assert_eq!(k.renewal(None, None, now).unwrap(), now + 8 * hour);
+        assert_eq!(
+            k.renewal(None, Some(now + 2 * hour), now).unwrap(),
+            now + 2 * hour
+        );
+        // Never sooner than it ends now, nor than now.
+        k.until_ns = now + 3 * hour;
+        refused(
+            k.renewal(None, Some(now + 2 * hour), now),
+            &[
+                "already lasts until",
+                "`arbor key take-back agent` ends it now",
+            ],
+        );
+        refused(k.renewal(None, Some(now + 3 * hour), now), &[]);
+        let err = k.renewal(None, Some(now), now).unwrap_err();
+        assert_eq!(err.code, USAGE, "{}", err.msg);
+
+        // Within another key, up to that one's end, which is also where it goes without one.
+        let mut outer = key("outer");
+        outer.until_ns = now + 5 * hour;
+        let mut inner = key("inner");
+        inner.within = Some("outer".into());
+        inner.until_ns = now - hour;
+        assert_eq!(
+            inner.renewal(Some(&outer), None, now).unwrap(),
+            now + 5 * hour
+        );
+        assert_eq!(
+            inner
+                .renewal(Some(&outer), Some(now + 4 * hour), now)
+                .unwrap(),
+            now + 4 * hour
+        );
+        refused(
+            inner.renewal(Some(&outer), Some(now + 6 * hour), now),
+            &["key 'inner' would open more than key 'outer', which ends at"],
+        );
+        // One that lasts as long as it already waits for that one to be renewed...
+        inner.until_ns = outer.until_ns;
+        refused(
+            inner.renewal(Some(&outer), None, now),
+            &["as late as key 'outer' it was made within: renew that one first"],
+        );
+        // ...as does any while that one has ended.
+        outer.until_ns = now - hour;
+        inner.until_ns = now - 2 * hour;
+        refused(
+            inner.renewal(Some(&outer), Some(now + hour), now),
+            &[
+                "was made within key 'outer', which ended at",
+                "renew that one first",
+            ],
+        );
+        refused(
+            inner.renewal(Some(&outer), None, now),
+            &["renew that one first"],
+        );
     }
 
     #[test]
