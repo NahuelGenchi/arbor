@@ -217,8 +217,9 @@ after it, and for every step it takes. `sessions/ab.py` measures what that comes
 OpenCode, unchanged, doing small tasks on this repository in worlds of the prototype.
 
 ```bash
-python3 sessions/ab.py                 # 5 sessions per task and arm, 60 in all
+python3 sessions/ab.py                 # arms A and B, 5 sessions per task and arm, 60 in all
 python3 sessions/ab.py --reps 8 --tasks find,fix-clock
+AB_GAP=20 python3 sessions/ab.py --arms A,C,D --reps 10   # three arms, 180 sessions, 20 s apart
 python3 sessions/ab.py --resume results/sessions_<date>_<host>.jsonl   # go on with a stopped run
 python3 sessions/summary.py results/sessions_<date>_<host>.jsonl       # the report again
 ```
@@ -231,20 +232,29 @@ of 10 rounds took about 48 minutes (**M**).
   a large file (`list`), work out what a function does with four inputs (`explain`), and find a bug from its symptom
   and fix it, twice in Rust (`fix-clock`, `fix-plural`) and once in Python (`fix-python`). Each task's check, written
   before the runs, decides success from the agent's last answer or from the files it left in the world.
-- **The arms** differ only in the world's `AGENTS.md`: **A** describes the repository; **B** adds a paragraph that says
-  to read with `arbor look`, a large file by its outline and lines, several reads in one call.
+- **The arms** differ only in the world's `AGENTS.md` and, for D, one tool: **A** describes the repository; **B** adds
+  a paragraph that says to read with `arbor look`, a large file by its outline and lines, several reads in one call.
+  **C** and **D** (#74) aim at the steps B added: find with the grep tool first, rather than by listing folders, then
+  make every read the task needs in one call, with the queries described in full. C runs `arbor look` in the shell. D
+  calls it as a tool of its own, `arbor_look`, which takes a list of queries: `sessions/look_mcp.py`, a local MCP
+  server that OpenCode starts in the cell from the key's settings, with the queries in its description. The agent can
+  call it directly, and Code Mode also offers it, as `tools.arbor.look`.
 - **Each session starts afresh**: a copy of the arm's repository at the same path, a new world over it, and a new key
-  with a home folder of its own that opens OpenCode's program, its two hosts and that world. The arms alternate (AB,
-  then BA).
+  with a home folder of its own that opens OpenCode's program, its two hosts and that world. The arms take turns (AB,
+  then BA; ACD, CDA, then DAC).
 - **What it counts**, from OpenCode's own database in the key's home, read-only and from the session tables only: each
   model call (a step) with its input, cache-read, cache-write, output and reasoning tokens, the tools called and what
   they returned, and the last answer. `sessions/summary.py` reports the medians and spread per task and arm, the
-  suite's weighted cost (input 1, cache write 1.25, cache read 0.1, output 5, where output includes reasoning), and B
-  against A as a ratio of medians with a bootstrap 95% interval.
+  suite's weighted cost (input 1, cache write 1.25, cache read 0.1, output 5, where output includes reasoning), and
+  each arm against A, and each later arm against an earlier one, as a ratio of medians with a bootstrap 95% interval.
 - **Every session the agent ends counts**, failed or not, since a failed session is paid for too, and one that runs out
   of time (`AB_TIMEOUT`, 900 s) counts as failed. A session that the provider ends, as the free model's rate limit does
-  after heavy use, runs again, twice at most; a slot whose every attempt the provider ended is left out of the report,
-  named, and runs again on `--resume`.
+  after heavy use, runs again, twice at most. When the provider ends every attempt, the run stops, and `--resume` goes
+  on later; a slot whose every attempt the provider ended is left out of the report, named, and runs again on
+  `--resume`.
+
+`AB_GAP` waits that many seconds after each session: the free model's rate limit ends sessions after about 120 in an
+hour, and lasts more than 20 minutes.
 
 **It spends nothing.** Every call goes to OpenCode's free model, `opencode/deepseek-v4.1-flash-free` (`AB_MODEL`, which
 must be one whose name ends in `-free`). No login goes into the key's home: the free model needs none, and the
@@ -267,6 +277,17 @@ weighted tokens came out the same: 1.01 (0.85–1.15) over all tasks. No task's 
 (0.45–1.23) on `fix-python` to 1.19 (0.88–1.65) on `fix-clock`. 58 of A's 60 sessions and 57 of B's 59 passed their
 checks. These are small tasks on one repository, with one agent and one model; what longer tasks, another agent or
 another model would show is not measured.
+
+**What a second run found on 17–18 October 2026: still no saving** (**M**: 156 of the 180 sessions of
+`--arms A,C,D --reps 10`. The free model's rate limit stopped the run there, and it was recorded without the other 24:
+round 9, and round 8's `fix-plural` and `fix-python`. `SESSIONS_REF` keeps C and D). Told to find with the grep tool
+first and then make every read in one call, the agent took as many steps as A: C/A 1.02 (0.89–1.14), D/A 0.98
+(0.87–1.12). But it no longer read less: tool text 1.10 (0.83–1.28) and 0.93 (0.75–1.13). It used `arbor look` in
+23 and 35 of 52 sessions, and otherwise the grep and read tools, as A did. Its weighted tokens came out 1.05
+(0.86–1.23) in C and 1.04 (0.84–1.19) in D, and the tool against the shell 0.99 (0.83–1.14). 47 of A's 52 sessions
+passed their checks, 50 of C's and 49 of D's. In D the agent never called `arbor_look` directly: all 92 of its calls
+went through Code Mode, as `tools.arbor.look`. So across the three forms tried, B read less but took more steps, and
+C and D took no more steps but read as much: none lowered the weighted tokens.
 
 **A free remote model's answers vary** from one session to the next, and the model behind the name can change, so a
 new run will not repeat the numbers exactly; compare the arms within one run.

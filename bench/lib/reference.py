@@ -70,13 +70,23 @@ ARBOR_LOOK_REF = {'ref_date': '17 Oct 2026', 'ref_load': 2.02}
 # medians, but for arbor.ask_ms, the difference of two close medians (0.48–0.64 ms here, 0.57–0.80 ms there), and the
 # binary, 0.07 MiB larger. The reference of `arbor look` alone, which now describes outline and lines, is from them.
 ARBOR_OUTLINE_REF = {'ref_date': '17 Oct 2026', 'ref_load': 0.5}
-# The reference of bench/sessions, which run.sh does not run: the A/B of whole OpenCode sessions with and without
-# `arbor look` (sessions/ab.py --reps 10), 119 of its 120 sessions (the free model's rate limit ended every attempt of
-# the last), its report's B against A over all tasks: (ratio of medians, 95% interval), and the sessions that passed
-# their check in A and in B. sessions/summary.py prints it under a new run's ratios.
-SESSIONS_REF = {'ref_date': '17 Oct 2026', 'ref_load': 0.47, 'sessions': 119, 'ok': ('58/60', '57/59'),
-                'weighted': (1.01, 0.85, 1.15), 'steps': (1.27, 1.19, 1.52), 'input': (0.82, 0.65, 1.00),
-                'output': (1.18, 0.99, 1.43), 'tool text': (0.61, 0.54, 0.76)}
+# The references of bench/sessions, which run.sh does not run: A/Bs of whole OpenCode sessions with and without
+# `arbor look`, per arm, its report's ratios against A over all tasks: (ratio of medians, 95% interval), and the
+# sessions that passed their check in A and in the arm. sessions/summary.py prints each under a new run's ratios. B is
+# from the first A/B (sessions/ab.py --reps 10), 119 of its 120 sessions (the free model's rate limit ended every
+# attempt of the last). C and D are from the second (#74, --arms A,C,D --reps 10), 156 of its 180 sessions: the rate
+# limit stopped it there, and it was recorded without the other 24. It resumed after 26 sessions at load 0.56.
+SESSIONS_REF = {
+    'B': {'ref_date': '17 Oct 2026', 'ref_load': 0.47, 'sessions': 119, 'ok': ('58/60', '57/59'),
+          'weighted': (1.01, 0.85, 1.15), 'steps': (1.27, 1.19, 1.52), 'input': (0.82, 0.65, 1.00),
+          'output': (1.18, 0.99, 1.43), 'tool text': (0.61, 0.54, 0.76)},
+    'C': {'ref_date': '17 Oct 2026', 'ref_load': 6.60, 'sessions': 156, 'ok': ('47/52', '50/52'),
+          'weighted': (1.05, 0.86, 1.23), 'steps': (1.02, 0.89, 1.14), 'input': (1.11, 0.86, 1.36),
+          'output': (0.99, 0.84, 1.12), 'tool text': (1.10, 0.83, 1.28)},
+    'D': {'ref_date': '17 Oct 2026', 'ref_load': 6.60, 'sessions': 156, 'ok': ('47/52', '49/52'),
+          'weighted': (1.04, 0.84, 1.19), 'steps': (0.98, 0.87, 1.12), 'input': (1.06, 0.76, 1.28),
+          'output': (1.03, 0.93, 1.20), 'tool text': (0.93, 0.75, 1.13)},
+}
 
 
 def cycles(r, key):
