@@ -68,4 +68,4 @@ With nothing running, the window meets the still-screen targets. With 300 rooms,
 | `src/mission.css` | the look: the brief's colours, light, dark and high contrast |
 | `demo.sh` | made-up worlds, rooms and decisions, and the window on them |
 
-`arbor-mission --bench still` and `--bench animate` are for the suite's `mission` section ([`bench/README.md`](../../bench/README.md)): `animate` moves the first decision without end, as #8's test program moves its card, and reads arbor's state every 100 ms. `../check.sh` lints and tests the app with arbor when GTK's development files are there.
+`arbor-mission --bench still` and `--bench animate` are for the suite's `mission` section ([`bench/README.md`](../../bench/README.md)): `animate` moves the first decision without end, as #8's test program moves its card, and reads ten times as often as the window does: the ledger every 100 ms and the rooms every second. `../check.sh` lints and tests the app with arbor when GTK's development files are there.

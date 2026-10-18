@@ -1081,6 +1081,17 @@ pub fn running_seen() -> Result<Vec<Running>> {
     list_running(false)
 }
 
+/// One running cell, by the id `arbor ps` shows, for a reader such as Mission Control that follows the ledger's
+/// steps: `None` when it is not running, because it ended or its arbor is gone. Like `running_seen`, it changes
+/// nothing.
+pub fn seen(id: &str) -> Result<Option<Running>> {
+    // An id is a file name in the cells folder, and only ever letters, digits and dashes.
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Ok(None);
+    }
+    read_running(&running_dir()?.join(format!("{id}.json")), false)
+}
+
 fn list_running(clean: bool) -> Result<Vec<Running>> {
     let dir = running_dir()?;
     let entries = match fs::read_dir(&dir) {
@@ -1094,30 +1105,41 @@ fn list_running(clean: bool) -> Result<Vec<Running>> {
         if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
-        let Ok(file) = File::open(&path) else {
-            continue; // it ended meanwhile
-        };
-        let cell: Option<Running> = serde_json::from_reader(&file).ok();
-        match sys::flock(&file, false, false) {
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => cells.extend(cell),
-            Err(e) => return Err(e.into()),
-            Ok(()) if !clean => {}
-            Ok(()) => {
-                // Its arbor is gone, and the cell died with it; make sure, then clean up.
-                if let Some(group) = cell
-                    .and_then(|c| c.cgroup)
-                    .filter(|g| g.starts_with(cgroup::cells_dir()))
-                {
-                    cgroup::kill_dir(&group);
-                    cgroup::remove_dir(&group);
-                }
-                let _ = fs::remove_file(path.with_extension("sock"));
-                let _ = fs::remove_file(&path);
-            }
-        }
+        cells.extend(read_running(&path, clean)?);
     }
     cells.sort_by_key(|c| c.started_ns);
     Ok(cells)
+}
+
+/// A cell's file, if its arbor still holds it, so the cell runs. A file whose arbor is gone is removed when `clean`.
+fn read_running(path: &Path, clean: bool) -> Result<Option<Running>> {
+    let Ok(file) = File::open(path) else {
+        return Ok(None); // it ended meanwhile
+    };
+    // Read whole, then parsed: serde_json reading straight from a file makes a system call for every byte.
+    let mut text = Vec::new();
+    let cell: Option<Running> = (&file)
+        .read_to_end(&mut text)
+        .ok()
+        .and_then(|_| serde_json::from_slice(&text).ok());
+    match sys::flock(&file, false, false) {
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(cell),
+        Err(e) => Err(e.into()),
+        Ok(()) if !clean => Ok(None),
+        Ok(()) => {
+            // Its arbor is gone, and the cell died with it; make sure, then clean up.
+            if let Some(group) = cell
+                .and_then(|c| c.cgroup)
+                .filter(|g| g.starts_with(cgroup::cells_dir()))
+            {
+                cgroup::kill_dir(&group);
+                cgroup::remove_dir(&group);
+            }
+            let _ = fs::remove_file(path.with_extension("sock"));
+            let _ = fs::remove_file(path);
+            Ok(None)
+        }
+    }
 }
 
 /// Stops a running cell: asks the arbor that runs it to end it, so that arbor records how it ended, and waits up to

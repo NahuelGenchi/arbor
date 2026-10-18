@@ -4,12 +4,14 @@
 //! How it stays quiet (docs/INTERFACE.md, *How an update reaches the screen*): it watches arbor's ledger with inotify,
 //! since every step that changes a world, a cell or the outbox is recorded there, and sleeps until the ledger moves.
 //! A change starts a reading at once, and the next one waits until a second has passed, so a busy ledger is read at
-//! most once a second. A reading runs off the main thread; the window then changes only the lines whose words
-//! changed, and GTK draws them on the next frame. What rooms use changes without a step, so while rooms run and the
-//! window is shown, it reads them again every 10 s. A still screen has no timer running.
+//! most once a second. While the ledger keeps moving, the watch rests: the window reads the ledger again on each
+//! calm second instead of waking for each of its writes, and watches again once a reading finds nothing new. A
+//! reading runs off the main thread and reads only what the new steps name (`state`); the window then changes only
+//! the lines whose words changed, and GTK draws them on the next frame. What rooms use changes without a step, so
+//! while rooms run and the window is shown, it reads them again every 10 s. A still screen has no timer running.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -44,7 +46,8 @@ const CSS: &str = include_str!("mission.css");
 pub enum Bench {
     /// The window as it is: it shows arbor's state and sleeps.
     Still,
-    /// The first line moves without end, and arbor's state is read every 100 ms.
+    /// The first line moves without end, and the window reads ten times as often as it would: the ledger every
+    /// 100 ms, and the rooms every second.
     Animate,
 }
 
@@ -63,7 +66,7 @@ pub fn run(options: Options) -> glib::ExitCode {
     // The first reading of arbor's state runs while GTK starts, so the first frame shows it without waiting for it.
     let first = std::thread::spawn(|| {
         let mut reader = Reader::new(STEPS);
-        let snap = reader.read(Kind::All);
+        let snap = reader.read(Kind::LEDGER);
         (reader, snap)
     });
     let first = RefCell::new(Some(first));
@@ -511,7 +514,7 @@ impl Ui {
     fn start(self: &Rc<Ui>, first: Option<(Reader, Snapshot)>) {
         let (reader, snap) = first.unwrap_or_else(|| {
             let mut reader = Reader::new(STEPS);
-            let snap = reader.read(Kind::All);
+            let snap = reader.read(Kind::LEDGER);
             (reader, snap)
         });
         self.reader.replace(Some(reader));
@@ -521,7 +524,7 @@ impl Ui {
         self.watch();
         // A step recorded between that reading and the watch would otherwise wait for the next one.
         if self.reader.borrow().as_ref().is_some_and(Reader::behind) {
-            self.request(Kind::All);
+            self.request(Kind::LEDGER);
         }
         if let Some(path) = self.options.png.clone() {
             let ui = self.clone();
@@ -537,10 +540,17 @@ impl Ui {
                 Some(r) => r.shift.bob(),
                 None => eprintln!("arbor-mission: nothing waits for a person, so nothing moves"),
             }
+            // Ten times as often as the window reads: the ledger every 100 ms, and the rooms every second.
             let weak = Rc::downgrade(self);
+            let mut tick = 0u32;
             glib::timeout_add_local(Duration::from_millis(100), move || match weak.upgrade() {
                 Some(ui) => {
-                    ui.request(Kind::All);
+                    tick += 1;
+                    ui.request(if tick.is_multiple_of(10) {
+                        Kind::LEDGER.and(Kind::ROOMS)
+                    } else {
+                        Kind::LEDGER
+                    });
                     glib::ControlFlow::Continue
                 }
                 None => glib::ControlFlow::Break,
@@ -565,15 +575,45 @@ impl Ui {
         let weak = Rc::downgrade(self);
         monitor.connect_changed(move |_, _, _, _| {
             if let Some(ui) = weak.upgrade() {
-                if !ready && state::watched().is_some_and(|(_, r)| r) {
+                if ready {
+                    // The ledger moves: it is followed on the calm second from here, not on each of its writes.
+                    ui.rest();
+                } else if state::watched().is_some_and(|(_, r)| r) {
                     ui.watch();
                 }
-                ui.request(Kind::All);
+                ui.request(Kind::LEDGER);
             }
         });
         if let Some(old) = self.monitor.replace(Some(monitor)) {
             old.cancel();
         }
+    }
+
+    /// Stops watching the ledger, so its writes wake nothing.
+    fn rest(&self) {
+        if let Some(m) = self.monitor.take() {
+            m.cancel();
+        }
+    }
+
+    /// After a reading of the ledger, while the watch rests: one more reading on the calm second if it found new
+    /// steps, else the watch again.
+    fn follow(self: &Rc<Ui>) {
+        if self.monitor.borrow().is_some() || self.pending.get().is_some_and(|k| k.ledger) {
+            return;
+        }
+        let Some(moved) = self.reader.borrow().as_ref().map(Reader::moved) else {
+            return;
+        };
+        if !moved {
+            self.watch();
+            // A step recorded between that reading and the watch would otherwise wait for the next one.
+            if !self.reader.borrow().as_ref().is_some_and(Reader::behind) {
+                return;
+            }
+            self.rest();
+        }
+        self.request(Kind::LEDGER);
     }
 
     fn calm(&self) -> Duration {
@@ -587,10 +627,7 @@ impl Ui {
     /// Asks for a reading: at once when the last one is a second old, else once that second has passed. A hidden
     /// window reads nothing until it is shown again.
     fn request(self: &Rc<Ui>, kind: Kind) {
-        let kind = match self.pending.get() {
-            Some(Kind::All) => Kind::All,
-            _ => kind,
-        };
+        let kind = self.pending.get().map_or(kind, |k| k.and(kind));
         self.pending.set(Some(kind));
         if self.window.is_suspended()
             || self.reader.borrow().is_none()
@@ -616,8 +653,11 @@ impl Ui {
         self.calm.replace(Some(id));
     }
 
-    /// Reads arbor's state on a thread of GLib's pool, then shows it.
+    /// Reads arbor's state on a thread of GLib's pool, then shows it. A hidden window keeps the ask for later.
     fn read(self: &Rc<Ui>) {
+        if self.window.is_suspended() {
+            return;
+        }
         let (Some(kind), Some(mut reader)) = (self.pending.take(), self.reader.take()) else {
             return;
         };
@@ -635,6 +675,9 @@ impl Ui {
             };
             ui.reader.replace(Some(reader));
             ui.apply(snap);
+            if kind.ledger {
+                ui.follow();
+            }
             if let Some(kind) = ui.pending.get() {
                 ui.request(kind);
             }
@@ -735,7 +778,7 @@ impl Ui {
         let id = glib::timeout_add_seconds_local_once(SAMPLE_S, move || {
             if let Some(ui) = weak.upgrade() {
                 ui.sample.take();
-                ui.request(Kind::Rooms);
+                ui.request(Kind::ROOMS);
             }
         });
         self.sample.replace(Some(id));
@@ -761,7 +804,12 @@ impl Ui {
 /// name. Each try is followed by its first rooms, oldest first, and one line for the rest; past `TRIES_SHOWN`, the
 /// tries fold into one line that counts them.
 fn try_lines(snap: &Snapshot) -> Vec<Line> {
-    let working = |t: &state::Try| snap.rooms.iter().any(|r| r.world == t.name);
+    // Each try's rooms, gathered once: hundreds of tries and rooms would otherwise be compared pair by pair.
+    let mut rooms_in: HashMap<&str, Vec<&state::Room>> = HashMap::new();
+    for r in &snap.rooms {
+        rooms_in.entry(r.world.as_str()).or_default().push(r);
+    }
+    let working = |t: &state::Try| rooms_in.contains_key(t.name.as_str());
     let band = |t: &state::Try| match (t.kept_ns, working(t)) {
         (None, true) => 0,
         (None, false) => 1,
@@ -771,7 +819,7 @@ fn try_lines(snap: &Snapshot) -> Vec<Line> {
     tries.sort_by(|a, b| band(a).cmp(&band(b)).then(a.name.cmp(&b.name)));
     let mut lines = Vec::new();
     for t in tries.iter().take(TRIES_SHOWN) {
-        let rooms: Vec<&state::Room> = snap.rooms.iter().filter(|r| r.world == t.name).collect();
+        let rooms = rooms_in.get(t.name.as_str()).map_or(&[][..], Vec::as_slice);
         lines.push(words::try_line(t, rooms.len(), snap.now_ns));
         for r in rooms.iter().take(ROOMS_SHOWN) {
             lines.push(words::room(r, snap.now_ns));
