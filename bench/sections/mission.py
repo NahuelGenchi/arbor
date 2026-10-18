@@ -6,8 +6,8 @@ It builds arbor and arbor-mission (cargo, release, offline) into the temp dir, o
 Then, in a state folder of its own (ARBOR_HOME in the temp dir), it makes what the window reads, with arbor itself:
 four tries of made-up folders, two effects waiting for a person, a kept try and about twenty steps of history. The
 window runs as `arbor-mission --bench still` (the window as it is) and `--bench animate` (its first line moves as the
-test programs' card does, and it reads arbor's state every 100 ms, ten times as often as it would). Two states, the
-first of them twice:
+test programs' card does, and it reads ten times as often as it would: the ledger's new steps every 100 ms, and
+the rooms every second). Two states, the first of them twice:
   ui.mission.*       the state above, with nothing running: the still screen has nothing to show
   ui.mission_cairo.* the same, drawn by GTK's cairo renderer (GSK_RENDERER=cairo), which loads no GPU driver: what the
                      driver's libraries add to the window's memory, and what drawing on the CPU costs its frames

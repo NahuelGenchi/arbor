@@ -3,6 +3,7 @@
 //! down, in each line's tooltip. Times are clock times, never "3 min ago", so nothing has to be redrawn to stay true.
 //! The facts come first; what an asker said about an effect comes last and is marked as its own words.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use arbor::ledger::Step;
@@ -80,10 +81,11 @@ pub fn heading(waiting: usize) -> String {
 pub fn lead(s: &Snapshot) -> String {
     let tries = s.tries.len();
     let rooms = s.rooms.len();
+    let working: HashSet<&str> = s.rooms.iter().map(|r| r.world.as_str()).collect();
     let busy = s
         .tries
         .iter()
-        .filter(|t| s.rooms.iter().any(|r| r.world == t.name))
+        .filter(|t| working.contains(t.name.as_str()))
         .count();
     if tries == 0 {
         return "No tries yet. A try is a copy of a folder that an agent works on, kept or thrown away whole."

@@ -250,40 +250,40 @@ The alternatives, not chosen:
 - **Drawn by cairo:** the same state, drawn by GTK's cairo renderer (`GSK_RENDERER=cairo`). It draws on the CPU and loads no GPU driver; GTK's default on this PC is its OpenGL renderer.
 - **300 rooms:** the same state, plus 300 more tries with a room working in each. One more try runs a short command every 0.2 s, and each one records two steps, so the ledger keeps moving. Each room is a sealed cell under a memory limit, with a cgroup that the window reads. The rooms sleep, so what they use does not change. What changes on screen is the history and the try that keeps running commands.
 
-The window was not changed to suit the method. `--bench still` is the window as it is. `--bench animate` moves its first decision the way the test program moves its card, and reads arbor's state every 100 ms, ten times as often as the window does.
+The window was not changed to suit the method. `--bench still` is the window as it is. `--bench animate` moves its first decision the way the test program moves its card, and reads ten times as often as the window does: the ledger's new steps every 100 ms, and the rooms every second.
 
-**Conditions.** Same machine as above. One run, on 18 October 2026 at 13:02, from an ordinary process (a systemd user unit). Every row passed the section's checks, and no key or mouse was used during the still minutes. The run started at a load average of 0.15. The cairo rows began right after the loaded animation before them, while the 1-minute load average was still falling: it was 7.0 at their first launch and 1.5 to 2.1 for their animation. No other program used a CPU thread during them, and the section now waits for the load to settle at that point too. The first frame is the median of 5 launches; every other figure is one sample.
+**Conditions.** Same machine as above. Each column is one run, from an ordinary process (a systemd user unit). The first two are from #9's run on 18 October 2026 at 13:02. The 300-room column is from [#78](https://github.com/NahuelGenchi/arbor/issues/78)'s run the same day at 14:17, after the window was changed to read only what new steps name; its run started at a load average of 0.31, and every row passed the section's checks. A run of #78 at 13:52 is not used: during its 300-room still minute another program's windows were drawing, and the section failed those rows. In #9's run: Every row passed the section's checks, and no key or mouse was used during the still minutes. The run started at a load average of 0.15. The cairo rows began right after the loaded animation before them, while the 1-minute load average was still falling: it was 7.0 at their first launch and 1.5 to 2.1 for their animation. No other program used a CPU thread during them, and the section now waits for the load to settle at that point too. The first frame is the median of 5 launches; every other figure is one sample.
 
 | Measure (M: every number in the row) | Nothing running | Drawn by cairo | 300 rooms | Target |
 | :--- | ---: | ---: | ---: | :--- |
-| First frame, ms (M) | 174 (165–175) | 126 (126–127) | 201 (191–205) | at most 200 |
-| Memory 2.5 s after the start, RSS / PSS, MiB (M) | 141 / 60 | 54 / 24 | 163 / 82 | |
-| Memory after a minute of still screen, RSS / PSS, MiB (M) | 141 / 60 | 54 / 24 | 164 / 82 | at most 128 / 64 with 300 agents and every view |
+| First frame, ms (M) | 174 (165–175) | 126 (126–127) | 200 (192–206) | at most 200 |
+| Memory 2.5 s after the start, RSS / PSS, MiB (M) | 141 / 60 | 54 / 24 | 161 / 84 | |
+| Memory after a minute of still screen, RSS / PSS, MiB (M) | 141 / 60 | 54 / 24 | 162 / 84 | at most 128 / 64 with 300 agents and every view |
 | Still screen: frames shown a second (M) | 0 | 0 | 1.0 | 0 with nothing changing; at most 1 busy |
-| Still screen: CPU, % of one core (M) | 0.00 | 0.00 | 2.37 | at most 0.1 with nothing changing; at most 1 busy |
-| Still screen: wakeups a second (M) | 0.10 | 0.03 | 32.3 | at most 0.1 with nothing changing |
-| Animation, machine idle: frames missed, % (M) | 0.42 | 0.42 | 0.25 | none |
+| Still screen: CPU, % of one core (M) | 0.00 | 0.00 | 0.33 | at most 0.1 with nothing changing; at most 1 busy |
+| Still screen: wakeups a second (M) | 0.10 | 0.03 | 12.5 | at most 0.1 with nothing changing |
+| Animation, machine idle: frames missed, % (M) | 0.42 | 0.42 | 0.17 | none |
 | Animation, machine idle: slowest 1% of frame times, ms (M) | 16.7 | 16.7 | 16.7 | |
-| Animation: work per frame, slowest 1%, ms (M) | 0.58 | 0.73 | 17.5 | at most 4 |
-| Animation under load: frames missed, % (M) | 15.1 | 13.1 | 3.8 | at most 0.1 |
-| Animation under load: slowest 1% of frame times, ms (M) | 33.3 | 33.3 | 33.3 | |
+| Animation: work per frame, slowest 1%, ms (M) | 0.58 | 0.73 | 8.98 | at most 4 |
+| Animation under load: frames missed, % (M) | 15.1 | 13.1 | 4.9 | at most 0.1 |
+| Animation under load: slowest 1% of frame times, ms (M) | 33.3 | 33.3 | 33.4 | |
 | Objects on the accessibility bus (M) | 173 | 173 | 371 | |
 | The window's words found on AT-SPI (M) | 8 of 8 | 8 of 8 | 4 of 4 | every control |
 
 What the table shows:
 
 - **With nothing running, the window is still.** No frame in the minute, no CPU time counted, and one wakeup every 10 s, which is the target.
-- **With 300 rooms, it is calm but not cheap.** It showed one frame a second, the target, while the ledger moved. But it used 2.37% of a core, over the 1% target, and woke 32 times a second: 18.7 on its main thread, 9.5 on GLib's own thread (`gmain`) and 3.0 on the thread that reads. With nothing running, these were 0.1. Nearly all the CPU time is on the reading thread. At most once a second, it reads again all 305 tries and what changed in each, the 300 rooms and their cgroups, the outbox, and the ledger's new lines, though each step names what it changed. Reading only what the new steps name is the next piece of work.
-- **Work per frame is 0.58 ms with nothing running**, within 4 ms. With 300 rooms, the slowest 1% took 17.5 ms, but that is not the frame's own work: the probe counts the whole program's CPU time between two frames. In `--bench animate` the window reads arbor's state every 100 ms, and the reading thread used 19% of a core. The median was 0.41 ms, and frames were not missed more often than with nothing running. This run does not separate the main thread's time from the rest.
-- **The first frame** takes 174 ms with nothing running. With 300 rooms it takes 201 ms, 1 ms over the target. It was committed 26 ms later than with nothing running, the time that the first reading of 305 tries and 300 rooms adds, although that reading runs while GTK starts.
+- **With 300 rooms, it is busy but calm: it meets the target.** It showed one frame a second while the ledger moved, and used 0.33% of a core against the 1% target. It woke 12.5 times a second: 9.0 on its main thread, which draws that frame, 2.4 on the threads that read, and 1.0 on GTK's own. In #9's run it used 2.37% of a core and woke 32.3 times a second (18.7 on the main thread, 9.5 on GLib's `gmain` and 3.0 reading), because at most once a second it read again all 305 tries and what changed in each, the 300 rooms and their cgroups and the outbox. [#78](https://github.com/NahuelGenchi/arbor/issues/78) changed three things. A reading now reads only what the ledger's new steps name: the worlds they name, the cells they start or end, and the outbox after a step about an effect. What rooms use, and the files they change in their tries, are read every 10 s with the full list of rooms, since no step records them. While the ledger keeps moving, the window stops watching it and reads it on each calm second instead, so its writes no longer wake `gmain` and the main thread; once a reading finds nothing new, it watches again. And arbor parsed each running cell's file one byte per system call; it now reads the file whole first, in the 10 s sample and in `arbor ps` alike.
+- **Work per frame is 0.58 ms with nothing running**, within 4 ms. With 300 rooms, the slowest 1% took 8.98 ms, down from 17.5 ms in #9's run, but that is not the frame's own work: the probe counts the whole program's CPU time between two frames. In `--bench animate` the window reads the rooms every second, ten times as often as it does, so about one frame in 60 (est.) also holds a full room sample, more than the 1% this row looks at. The median was 0.27 ms and the mean 0.55 ms, and frames were not missed more often than with nothing running. This run does not separate the main thread's time from the rest.
+- **The first frame** takes 174 ms with nothing running. With 300 rooms it takes 200 ms, at the target, and 201 ms in #9's run: the window's first reading still reads all 305 tries and 300 rooms, although it runs while GTK starts.
 - **Frames missed, machine idle:** 0.25 to 0.42%, as with the test programs above. None of them meets "none".
-- **Frames missed under load:** 3.8 to 15.1%, and 7.9 to 9.9% in the run before this one, of the same app (12:46). That is around the minimal client's 8.35% and far from 1 in 1,000. Keeping time and memory for the screen is [#10](https://github.com/NahuelGenchi/arbor/issues/10)'s work.
+- **Frames missed under load:** 4.9 to 15.1%, and 7.9 to 9.9% in the run before this one, of the same app (12:46). That is around the minimal client's 8.35% and far from 1 in 1,000. Keeping time and memory for the screen is [#10](https://github.com/NahuelGenchi/arbor/issues/10)'s work.
 - **Accessibility.** The suite looked for the window's own words on the bus, and every one was there: the heading, both decisions' commands and the tries' names. With 300 rooms, the bus holds 371 objects, not thousands, because only 12 tries and 3 rooms in each are shown, and the rest fold into one line.
 - **Cairo drew this window as well as the default renderer did.** Its first frame was 48 ms sooner and its work per frame was 0.73 ms against 0.58, with the same share of frames missed when idle. This window is small (960 × 640) and moves one line at a time. A larger window, a 4K panel or more motion would cost cairo more CPU time; that was not measured.
 
 ### The two points #8 left open
 
-**Memory.** With GTK's default renderer, the window uses 141 MiB of RSS and 60 MiB of PSS with nothing running. With 300 rooms, after a minute, it uses 164 and 82 MiB. That is over the RSS target in both states, and over the PSS target with 300 rooms. It did not grow over the minute in either state.
+**Memory.** With GTK's default renderer, the window uses 141 MiB of RSS and 60 MiB of PSS with nothing running. With 300 rooms, after a minute, it uses 162 and 84 MiB (#78's run; 164 and 82 in #9's). That is over the RSS target in both states, and over the PSS target with 300 rooms. It did not grow over the minute in either state.
 
 Most of that memory is the GPU driver. Drawn by cairo, which loads no driver, the same window uses 54 MiB of RSS and 24 MiB of PSS (M). With 300 rooms, the window's anonymous memory is 21 MiB larger, 59 MiB of PSS against 38 (M). Under cairo, that would make about 75 MiB of RSS (est.), within the target, but the 300-room state was not measured with cairo.
 
