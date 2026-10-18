@@ -31,8 +31,8 @@ mission/demo.sh shot demo.png dark 960x800   # or draw it into a picture, as the
 
 ## How it keeps still
 
-- **It reads only when arbor writes.** The window watches the ledger with inotify (GLib's file monitor), since every change to worlds, cells and the outbox is a step there, and polls nothing. It reads at most once a second, on a thread of GLib's pool, and then changes only the words that changed. The ledger is read from where the last reading stopped.
-- **Rooms are sampled, not followed.** While rooms with a cgroup run, their memory and processor are read again every 10 s; with none, nothing is.
+- **It reads only when arbor writes, and only what changed.** The window watches the ledger with inotify (GLib's file monitor), since every change to worlds, cells and the outbox is a step there, and polls nothing. It reads at most once a second, on a thread of GLib's pool, and then changes only the words that changed. The ledger is read from where the last reading stopped, and a reading reads again only what its new steps name: those worlds, the cells they start or end, and the outbox after a step about an effect. While the ledger keeps moving, the window stops watching it and reads it on each calm second instead, so its writes wake nothing; once a reading finds nothing new, it watches again.
+- **Rooms are sampled, not followed.** While rooms with a cgroup run, their memory and processor, the list of running cells and the files changed in the tries they work in are read again every 10 s; with none, nothing is.
 - **A hidden window reads nothing.** When the desktop says the window is not seen (GTK's `suspended`, a minimised window for one), readings wait until it is shown again, and then one reading catches up.
 - **Motion is short and rare.** A new line arrives from 12 px higher and fades in, in 200 ms, easing out, at most 5 at once; more than that just appear. Only the line's drawing moves, never the layout. Under the desktop's reduced motion, or with its animations off, nothing moves.
 
@@ -45,25 +45,25 @@ mission/demo.sh shot demo.png dark 960x800   # or draw it into a picture, as the
 
 ## Measured
 
-`ONLY=mission bench/run.sh` measures the window as the suite measured #8's test programs, on arbor state that it makes in its temp folder ([`bench/README.md`](../../bench/README.md)). The section is about fifteen minutes long, and the PC has to be left alone while it runs. The measurements below come from one run on 18 October 2026, from an ordinary process, on the PC of [the toolkits measured](../../docs/INTERFACE.md#the-toolkits-measured). Each figure is one sample, and each first frame is the median of 5 launches. [*The first app, measured*](../../docs/INTERFACE.md#the-first-app-measured) has every row, the conditions, and what the numbers mean.
+`ONLY=mission bench/run.sh` measures the window as the suite measured #8's test programs, on arbor state that it makes in its temp folder ([`bench/README.md`](../../bench/README.md)). The section is about fifteen minutes long, and the PC has to be left alone while it runs. The measurements below come from two runs on 18 October 2026, from an ordinary process: nothing running from #9's run at 13:02, and 300 rooms from #78's run at 14:17, after the window was changed to read only what new steps name, on the PC of [the toolkits measured](../../docs/INTERFACE.md#the-toolkits-measured). Each figure is one sample, and each first frame is the median of 5 launches. [*The first app, measured*](../../docs/INTERFACE.md#the-first-app-measured) has every row, the conditions, and what the numbers mean.
 
 | Measure (M: every number in the row) | Nothing running | 300 rooms | Target |
 | :--- | ---: | ---: | :--- |
-| First frame, ms (M) | 174 | 201 | at most 200 |
-| Memory after a minute, RSS / PSS, MiB (M) | 141 / 60 | 164 / 82 | at most 128 / 64 |
-| Still screen: frames a second / CPU, % of a core / wakeups a second (M) | 0 / 0.00 / 0.10 | 1.0 / 2.37 / 32.3 | 0 / 0.1 / 0.1 still; 1 / 1 busy |
-| Animation: frames missed idle / under load, % (M) | 0.42 / 15.1 | 0.25 / 3.8 | none / 0.1 |
-| Work per frame, slowest 1%, ms (M) | 0.58 | 17.5, most of it the reading thread | at most 4 |
+| First frame, ms (M) | 174 | 200 | at most 200 |
+| Memory after a minute, RSS / PSS, MiB (M) | 141 / 60 | 162 / 84 | at most 128 / 64 |
+| Still screen: frames a second / CPU, % of a core / wakeups a second (M) | 0 / 0.00 / 0.10 | 1.0 / 0.33 / 12.5 | 0 / 0.1 / 0.1 still; 1 / 1 busy |
+| Animation: frames missed idle / under load, % (M) | 0.42 / 15.1 | 0.17 / 4.9 | none / 0.1 |
+| Work per frame, slowest 1%, ms (M) | 0.58 | 8.98, with a room sample every second | at most 4 |
 
-With nothing running, the window meets the still-screen targets. With 300 rooms, it shows one frame a second, as the target says, but each reading reads every try and room again, so it uses 2.4% of a core against 1%. Most of the memory is the GPU driver. Drawn with GTK's cairo renderer (`GSK_RENDERER=cairo arbor-mission`), the same window with nothing running uses 54 MiB of RSS and 24 MiB of PSS (M).
+With nothing running, the window meets the still-screen targets. With 300 rooms, it shows one frame a second and uses 0.33% of a core, within the "busy but calm" target of 1; before it read only what new steps name, it used 2.37% (M, #9's run). Most of the memory is the GPU driver. Drawn with GTK's cairo renderer (`GSK_RENDERER=cairo arbor-mission`), the same window with nothing running uses 54 MiB of RSS and 24 MiB of PSS (M).
 
 ## For developers
 
 | Path | What |
 | :--- | :--- |
-| `src/state.rs` | reading arbor's state: worlds and their changes, the running cells and what each uses, the outbox's waiting effects, and the ledger from where the last reading stopped |
+| `src/state.rs` | reading arbor's state: everything the first time, then only what the ledger's new steps name (worlds and their changes, the cells started or ended, the outbox's waiting effects), and every running cell with what each uses at the 10 s sample |
 | `src/words.rs` | the plain words of every line, and what each line says on the accessibility bus |
-| `src/ui.rs` | the window: its sections, updating only the lines that changed, the file monitor and the calm second, the room sampling, the announcements, and the pictures `examples/shot.rs` draws |
+| `src/ui.rs` | the window: its sections, updating only the lines that changed, the file monitor, which rests while the ledger moves, and the calm second, the room sampling, the announcements, and the pictures `examples/shot.rs` draws |
 | `src/shift.rs` | the widget that moves and fades a line as it is drawn |
 | `src/mission.css` | the look: the brief's colours, light, dark and high contrast |
 | `demo.sh` | made-up worlds, rooms and decisions, and the window on them |

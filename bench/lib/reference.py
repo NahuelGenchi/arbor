@@ -562,20 +562,23 @@ ENTRIES += [E(f'ui.{t}.{metric}', 'Toolkits', f'{name}: {label}', TOOLKIT_M[t][i
 # 11. Mission Control, the first app of #9 (sections/mission.py, run only with ONLY=mission), measured as the toolkits
 # are, in two states of arbor made by the section: `mission`, four tries and two decisions with nothing running, also
 # drawn by GTK's cairo renderer (`mission_cairo`), and `mission_busy`, the same with 300 more tries, a sleeping room in
-# each, while the ledger moves. The reference is the suite's own, from the run of MISSION_REF (docs/INTERFACE.md, The
-# first app, measured), from an ordinary context: one sample a row, the first frame a median of 5 launches. Its cairo
-# rows began while the load average still fell from the loaded run before them (7.0 at the first launch), with no
-# other program using a CPU thread; the section has waited for the load to settle there since.
+# each, while the ledger moves. The reference is the suite's own, from the runs of MISSION_REF (docs/INTERFACE.md, The
+# first app, measured), from an ordinary context: one sample a row, the first frame a median of 5 launches. The first
+# two states are from #9's run at 13:02, whose cairo rows began while the load average still fell from the loaded run
+# before them (7.0 at the first launch), with no other program using a CPU thread; the section has waited for the load
+# to settle there since. `mission_busy` is from #78's run at 14:17, once the window read only what new steps name.
 MISSION = (('mission', 'Mission Control, nothing running'), ('mission_cairo', 'Mission Control, cairo renderer'),
            ('mission_busy', 'Mission Control, 300 rooms'))
-MISSION_REF = {'ref_date': '18 Oct 2026', 'ref_load': 0.15}
+MISSION_REF = {'mission': {'ref_date': '18 Oct 2026', 'ref_load': 0.15},
+               'mission_cairo': {'ref_date': '18 Oct 2026', 'ref_load': 0.15},
+               'mission_busy': {'ref_date': '18 Oct 2026', 'ref_load': 0.31}}
 MISSION_ROWS = TOOLKIT_ROWS + (('still_frames_s', 'still screen, no input: frames shown', '/s',
                                 {'dp': 2, 'abs_tol': 0.05, 'abs_why': 'within 3 frames a minute of the reference'}),)
 MISSION_M = {  # in the order of MISSION_ROWS
     'mission': (174, 140.6, 60.1, 0.0, 0.1, 140.6, 60.3, 0.42, 16.7, 0.58, 15.1, 33.3, 173, 0.0),
     'mission_cairo': (126, 53.9, 23.7, 0.0, 0.03, 53.9, 23.7, 0.42, 16.7, 0.73, 13.09, 33.3, 173, 0.0),
-    'mission_busy': (201, 163.1, 81.8, 2.37, 32.3, 163.7, 82.4, 0.25, 16.7, 17.5, 3.84, 33.3, 371, 1.0),
+    'mission_busy': (200, 160.9, 83.5, 0.33, 12.5, 161.8, 84.3, 0.17, 16.7, 8.98, 4.92, 33.4, 371, 1.0),
 }
 ENTRIES += [E(f'ui.{t}.{metric}', 'Mission Control', f'{name}: {label}', MISSION_M[t][i], unit, 'state', 'suite',
-              **kw, **MISSION_REF, why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
+              **kw, **MISSION_REF[t], why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
             for t, name in MISSION for i, (metric, label, unit, kw) in enumerate(MISSION_ROWS)]
