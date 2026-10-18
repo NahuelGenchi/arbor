@@ -3,7 +3,7 @@
 [Back to README](../README.md) · [Issue #6](https://github.com/NahuelGenchi/arbor/issues/6) · [M7 — Interface](https://github.com/NahuelGenchi/arbor/milestone/8)
 
 > [!NOTE]
-> **No interface exists yet.** This brief decides what Mission Control shows and how a person directs agents through it, before a toolkit is chosen ([#8](https://github.com/NahuelGenchi/arbor/issues/8)) or any code is written ([#9](https://github.com/NahuelGenchi/arbor/issues/9)). The pictures are wireframes with made-up data, and its targets are for later issues to measure: none of them is a result. #8 measured a small test program, not the app, in five toolkits ([The toolkits measured](#the-toolkits-measured)).
+> **No interface exists yet.** This brief decides what Mission Control shows and how a person directs agents through it, before any code is written ([#9](https://github.com/NahuelGenchi/arbor/issues/9)). The pictures are wireframes with made-up data, and its targets are for later issues to measure: none of them is a result for the app. [#8](https://github.com/NahuelGenchi/arbor/issues/8) measured a small test program, not the app, in five toolkits, and GTK 4 was chosen ([The toolkits measured](#the-toolkits-measured)).
 
 Mission Control is the screen where people direct agents. It shows what agents are changing, what they want to send out and what they have spent, and it asks for a person only when a person is needed. Today's desktops were built for one person and a handful of windows. Mission Control has to make hundreds of agents legible to one person at a glance, and spend that person's attention as carefully as money.
 
@@ -232,9 +232,14 @@ What the table shows:
 - **Work per frame** is within 4 ms for all five, from 0.66 ms (Qt Quick) to 2.59 ms (Flutter). **The first frame** takes under 200 ms for all five, though Flutter is at the limit.
 - **Accessibility.** iced 0.14 puts nothing on the accessibility bus, which rules it out under [Accessibility](#accessibility). With Qt 6.10, a plain `Text` in Qt Quick does not reach the bus; `Label` does ([`bench/toolkits/README.md`](../bench/toolkits/README.md#accessibility)).
 
-**Recommendation, for the owner to decide:** GTK 4, through the gtk4-rs bindings, since arbor's prototype is written in Rust. These were not measured: the test program is written in C. GTK 4 is the only toolkit here that meets the still-screen target and also missed the fewest frames under load. Its support for AT-SPI is complete, its licence is the LGPL, and it is the desktop's own toolkit on GNOME. Its cost is memory: 163 MiB of RSS and 140 MiB of PSS for the test program, above the target before any app code. [#9](https://github.com/NahuelGenchi/arbor/issues/9) has to measure the app against that target.
+**Decided: GTK 4**, through the gtk4-rs bindings, since arbor's prototype is written in Rust. The owner chose it on 17 October 2026, from this table. GTK 4 is the only toolkit here that meets the still-screen target and also missed the fewest frames under load. Its support for AT-SPI is complete, its licence is the LGPL, and it is the desktop's own toolkit on GNOME.
 
-The alternatives:
+Two points stay open for [#9](https://github.com/NahuelGenchi/arbor/issues/9):
+
+- **Memory.** The test program alone uses 163 MiB of RSS and 140 MiB of PSS, above the target of 128 MiB and 64 MiB before any app code. #9 has to measure the app against that target.
+- **The bindings.** gtk4-rs was not measured: the test program is written in C. #9 measures what the bindings add.
+
+The alternatives, not chosen:
 
 - **Slint** is the lightest in memory and the fastest to start. Its 10 frames a second under load and its wakeups on a still screen would need fixing, upstream or in arbor, first.
 - **Qt Quick** does the least work per frame and has the quietest still screen. It uses the most memory and missed 11% of frames under load.
@@ -242,7 +247,7 @@ The alternatives:
 
 ## Not decided here
 
-The rendering stack ([#8](https://github.com/NahuelGenchi/arbor/issues/8)), the app itself ([#9](https://github.com/NahuelGenchi/arbor/issues/9)), keeping the screen ahead of agents with reserved time and memory ([#10](https://github.com/NahuelGenchi/arbor/issues/10)), the code of the views ([#11](https://github.com/NahuelGenchi/arbor/issues/11), [#12](https://github.com/NahuelGenchi/arbor/issues/12)), arbor's own compositor ([#13](https://github.com/NahuelGenchi/arbor/issues/13)), and a visual brand. The wireframes borrow the README's paper, ink and typefaces so the pictures read as one family; that is not a chosen look.
+The app itself ([#9](https://github.com/NahuelGenchi/arbor/issues/9)), keeping the screen ahead of agents with reserved time and memory ([#10](https://github.com/NahuelGenchi/arbor/issues/10)), the code of the views ([#11](https://github.com/NahuelGenchi/arbor/issues/11), [#12](https://github.com/NahuelGenchi/arbor/issues/12)), arbor's own compositor ([#13](https://github.com/NahuelGenchi/arbor/issues/13)), and a visual brand. The wireframes borrow the README's paper, ink and typefaces so the pictures read as one family; that is not a chosen look.
 
 ## Open questions
 
