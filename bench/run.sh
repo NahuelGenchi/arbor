@@ -3,9 +3,10 @@
 # results/<date>_<host>.md (plus a .json with the same rows and a .log of the run).
 #   ./run.sh                     everything (about 4½ minutes on the M machine)
 #   ONLY="boot search" ./run.sh  only these sections;  SKIP="storage" ./run.sh  all but these
-# Sections: memstate boot runtimes cells pycell search heap transcripts formats storage arbor screen, and toolkits and
-# mission only when ONLY names them (ONLY=toolkits: about four minutes a toolkit, see toolkits/README.md; ONLY=mission:
-# Mission Control, about fifteen minutes)
+# Sections: memstate boot runtimes cells pycell search heap transcripts formats storage arbor screen, and toolkits,
+# mission and goals only when ONLY names them (ONLY=toolkits: about four minutes a toolkit, see toolkits/README.md;
+# ONLY=mission: Mission Control, about fifteen minutes; ONLY=goals: the five goals over a whole stretch of work, about
+# 45 minutes, which writes its builds to a temp folder on disk, GOALS_TMP)
 # Needs no root. Temp files live in one mktemp dir that is removed on exit, also on Ctrl-C.
 set -uo pipefail
 
@@ -17,7 +18,8 @@ export PROJECTS_DIR NAME_SEARCH_ROOT NAME_QUERY CODE_ROOT CODE_QUERIES DEDUP_ROO
        O200K_FILE LISTING_DIR FORMATS_LOCALE GIT_LOG_REPO GIT_LOG_REF HEAP_JSONL HEAP_JSONL_BYTES DOCKER_IMAGE INITRD \
        ARBOR_BIN OUTLINE_REF OUTLINE_FILES SCREEN_STILL_S FRAMES_S FRAMES_CELLS FRAMES_SPIKE_MIB TOOLKITS \
        TOOLKITS_PREBUILT TOOLKITS_LAUNCHES TOOLKITS_STILL_S TOOLKITS_SETTLE_S FLUTTER FLUTTER_PUB_CACHE MISSION_BIN \
-       MISSION_ROOMS
+       MISSION_ROOMS GOALS_REF GOALS_PARTS GOALS_RUNS GOALS_STILL_S GOALS_STILL_BLOCKS
+export GOALS_TMP="${GOALS_TMP:-$RESULTS_DIR}"
 [ -d "$HOME/.cargo/bin" ] && ! command -v rustc >/dev/null && PATH="$PATH:$HOME/.cargo/bin"
 
 WORK="$(mktemp -d "$BENCH_TMP/arbor-bench.XXXXXX")" || { echo "cannot create a temp dir in $BENCH_TMP" >&2; exit 1; }
@@ -95,6 +97,11 @@ if [[ " ${ONLY:-} " == *" mission "* ]]; then
   section mission 3600 "${PY[@]}" "$S/mission.py"
 else
   SKIPPED="$SKIPPED mission"
+fi
+if [[ " ${ONLY:-} " == *" goals "* ]]; then
+  section goals 5400 "${PY[@]}" "$S/goals.py"
+else
+  SKIPPED="$SKIPPED goals"
 fi
 
 export BENCH_DURATION_S=$(( $(date +%s) - START )) BENCH_SKIPPED="${SKIPPED# }"

@@ -71,6 +71,17 @@ FLUTTER_PUB_CACHE="${FLUTTER_PUB_CACHE:-}"
 MISSION_BIN="${MISSION_BIN:-}"
 MISSION_ROOMS="${MISSION_ROOMS:-300}"
 
+# 12. The five goals, measured only with ONLY=goals: the commit of this repository the work runs on; the parts (empty:
+# session power safety ease still); the measured runs of each arm, after one warm-up; the still desktop's blocks and
+# their seconds, per arm. Its temp folder is made on disk in GOALS_TMP (empty: RESULTS_DIR), so builds write a real
+# disk, and is removed at exit like the other.
+GOALS_REF="${GOALS_REF:-1e314a0ae6a8669098c8991cbcc94837e349f6e6}"
+GOALS_PARTS="${GOALS_PARTS:-}"
+GOALS_RUNS="${GOALS_RUNS:-3}"
+GOALS_STILL_S="${GOALS_STILL_S:-150}"
+GOALS_STILL_BLOCKS="${GOALS_STILL_BLOCKS:-2}"
+GOALS_TMP="${GOALS_TMP:-}"
+
 # Where temp files go (removed at exit; tmpfs, as in the M run) and where reports are written.
 BENCH_TMP="${BENCH_TMP:-${TMPDIR:-/tmp}}"
 RESULTS_DIR="${RESULTS_DIR:-$BENCH_DIR/results}"
