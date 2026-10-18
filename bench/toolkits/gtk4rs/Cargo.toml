@@ -1,0 +1,15 @@
+[package]
+name = "gtk4rs-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The Mission Control test program of issue #8, in GTK 4 through gtk4-rs, to measure what the bindings add"
+
+[dependencies]
+# The bindings Mission Control uses (prototype/mission). GTK 4.12 for gtk_css_provider_load_from_string, which the C
+# program calls too.
+gtk = { package = "gtk4", version = "=0.11.5", features = ["v4_12"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

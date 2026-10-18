@@ -1072,6 +1072,16 @@ fn register(cell: &Running) -> Result<Entry> {
 
 /// The running cells, oldest first. Files left by a crash are removed, with the cgroup they name.
 pub fn running() -> Result<Vec<Running>> {
+    list_running(true)
+}
+
+/// The running cells, oldest first, for a reader such as Mission Control: files left by a crash are skipped and
+/// left for `running` to remove, so reading changes nothing.
+pub fn running_seen() -> Result<Vec<Running>> {
+    list_running(false)
+}
+
+fn list_running(clean: bool) -> Result<Vec<Running>> {
     let dir = running_dir()?;
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
@@ -1091,6 +1101,7 @@ pub fn running() -> Result<Vec<Running>> {
         match sys::flock(&file, false, false) {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => cells.extend(cell),
             Err(e) => return Err(e.into()),
+            Ok(()) if !clean => {}
             Ok(()) => {
                 // Its arbor is gone, and the cell died with it; make sure, then clean up.
                 if let Some(group) = cell

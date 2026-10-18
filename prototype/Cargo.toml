@@ -1,5 +1,7 @@
 [workspace]
-members = ["arbor"]
+members = ["arbor", "mission"]
+# `cargo build` and `cargo install --path arbor` build arbor alone; Mission Control needs GTK 4's development files.
+default-members = ["arbor"]
 resolver = "3"
 
 [workspace.package]

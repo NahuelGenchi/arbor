@@ -28,7 +28,7 @@ jobs:
   prototype:
     name: Prototype checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,6 +64,9 @@ jobs:
           for _ in $(seq 100); do [ -S "$runtime/systemd/private" ] && break; sleep 0.1; done
           echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
           echo "controllers for the user manager: $(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.subtree_control")"
+      # Mission Control (prototype/mission) builds on GTK 4.14, the version Ubuntu 24.04 ships.
+      - name: Install GTK 4's development files for Mission Control
+        run: sudo apt-get install -y -q --no-install-recommends libgtk-4-dev
       - name: Install the pinned Rust toolchain
         working-directory: prototype
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rustfmt,clippy
@@ -71,4 +74,5 @@ jobs:
         env:
           ARBOR_REQUIRE_BWRAP: '1'
           ARBOR_REQUIRE_CGROUPS: '1'
+          ARBOR_REQUIRE_GTK: '1'
         run: bash prototype/check.sh
