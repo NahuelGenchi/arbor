@@ -205,6 +205,13 @@ struct Ui {
     result_frame: RefCell<HashMap<u64, i64>>,
 }
 
+/// Gives a button its own name on the accessibility bus. A button is labelled by its label child, which comes before
+/// a name it is given, so that relation goes.
+fn named(b: &gtk::Button, name: &str) {
+    b.reset_relation(gtk::AccessibleRelation::LabelledBy);
+    b.update_property(&[gtk::accessible::Property::Label(name)]);
+}
+
 fn label(classes: &[&str]) -> gtk::Label {
     let l = gtk::Label::builder()
         .xalign(0.0)
@@ -518,7 +525,7 @@ impl Acts {
                     .label(&a.label)
                     .css_classes(["act"])
                     .build();
-                b.update_property(&[gtk::accessible::Property::Label(&a.name)]);
+                named(&b, &a.name);
                 buttons.append(&b);
                 b
             })
