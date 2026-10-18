@@ -17,6 +17,7 @@
   <p>
     <a href="#in-one-minute">In one minute</a> &nbsp;·&nbsp;
     <a href="#what-you-get">What you get</a> &nbsp;·&nbsp;
+    <a href="#the-five-goals-scored">Goals</a> &nbsp;·&nbsp;
     <a href="#one-task-start-to-finish">One task</a> &nbsp;·&nbsp;
     <a href="#measured-not-guessed">Measured</a> &nbsp;·&nbsp;
     <a href="#try-the-prototype">Try it</a> &nbsp;·&nbsp;
@@ -83,6 +84,29 @@ The trouble is that every operating system in use today descends from ideas of 1
     </td>
   </tr>
 </table>
+
+## The five goals, scored
+
+On 18 October 2026 arbor was given five goals: far fewer resources than a normal operating system, far more power, far less energy, safe to use, and easy, with a beautiful design. Each is scored here on something a person would notice over a stretch of work, not on one operation: today's Ubuntu against the same work done with arbor, on the PC under [Measured, not guessed](#measured-not-guessed), by the suite's [`goals` section](bench/README.md#sections) ([#85](https://github.com/NahuelGenchi/arbor/issues/85)).
+
+The work: three agent-like tries of a change to this repository at once. Each searches the code, edits it, builds its Rust workspace and runs the tests, twice; then one try is kept and two are thrown away. No AI model runs, only the commands an agent runs, so what the agents' own programs take (250–334 MiB each, in the report) is not in it. Today's way is a `git worktree` per try, as coding agents use them now, or a copy of the folder; arbor's is a world per try, with its commands in sealed cells. Each number is the median of 3 runs, the lowest and highest in brackets, and all are **M**, measured on 18 October 2026; the design row has no number.
+
+| goal | measured as | today: worktrees | today: copies | arbor | where arbor stands |
+| :--- | :--- | ---: | ---: | ---: | :--- |
+| **Fewer resources** | memory and swap in use, peak above the start | 4,454 MiB (4,332–4,511) | 1,182 MiB (758–1,232) | **436 MiB** (354–629) | ahead, because a world starts with the folder's build already done: worktrees build everything again, and copies, at a new path, part of it. The agents' own programs are not in it, and arbor does not make them smaller yet |
+| | written to disk | 3,426 MiB (3,418–3,509) | 4,567 MiB (4,550–4,778) | **2,208 MiB** (2,206–2,209) | ahead, by a third against worktrees: the worlds' builds still write their output |
+| **More power** | the whole stretch, end to end | 32.5 s (32.4–33.0) | **10.1 s** (10.0–10.1) | 14.3 s (12.2–14.4) | **behind copies**, though it used 16 s of CPU against their 45 s: builds in a cell wait on something, and the first one after the edit takes 6.9–8.5 s against 2.6 s in a copy. The cause is not found yet, and two other runs took 5 s |
+| | 5 tries of a change at once, keep 1, throw 4 away | 6.6 s (6.6–6.7) | 7.9 s (7.8–9.1) | **4.1 s** (3.8–5.5) | ahead |
+| | undo a kept try: of 5 places it changed, as before | 4 | not run: the same git steps | **5** | ahead: today a file the try wrote outside the project stays changed, and an ignored file such as `.env` is never kept. The undo itself is slower: 7.7 ms against git's 2.3 ms (one run) |
+| **Less energy** | package energy over the stretch (RAPL) | 4,236 J (4,198–4,254) | 937 J (907–945) | **648 J** (607–668) | ahead, from doing less CPU work, so it carries the same caveat as memory |
+| | a still desktop, package power over 150 s blocks | 22.3 W (one block) | | 22.1 W (22.0–22.1), with Mission Control open | **the same**: arbor adds nothing measurable, and does not lower what the desktop itself draws; that is [M5](#where-it-stands), not built |
+| **Safe** | 13 probes of what an agent can reach: logins, transcripts, your files, the project's real folder, the network, localhost, Docker, the session bus, your other programs, an effect without a yes, 512 MiB of memory, the kernel's keyrings | reaches 13, as you | the same | **reaches 0** | ahead: in a cell under a typical agent's key, every probe was blocked |
+| **Easy** | start an agent safely: a copy of the project, one host, none of your logins | no stock way | the same | **3 commands** | ahead, in commands: Mission Control cannot start an agent yet ([#84](https://github.com/NahuelGenchi/arbor/issues/84)) |
+| | approve one effect an agent asked for | nothing waits: it runs at once | the same | 2 commands | **behind** an agent's own prompt, one key press where the agent has one; Mission Control could not approve when this was measured ([#82](https://github.com/NahuelGenchi/arbor/issues/82) adds it) |
+| | keep a try, then throw 4 away | 3 + 8 commands | 3 + 4 | **1 + 4** | ahead |
+| **Beautiful design** | | | | | not measured: there is no measure of it yet, and Mission Control is a first, read-only window |
+
+What the numbers do not say. The work is short and built from one Rust project, so arbor's lead in memory, disk and energy comes mostly from one thing, a world reusing the folder's build, and will differ with other work. The still desktop had one clean block for today, as someone used the PC during the others, and `arbor serve` ran in both arms (2.7 MiB, idle). The package energy was read through RAPL, which only root may read on this PC: the owner opened it to ordinary users for these runs only, since an energy counter anyone can read is a side channel ([#85](https://github.com/NahuelGenchi/arbor/issues/85) says why). Run it again with `ONLY=goals bench/run.sh`.
 
 ## The new building blocks
 

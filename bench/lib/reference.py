@@ -582,3 +582,77 @@ MISSION_M = {  # in the order of MISSION_ROWS
 ENTRIES += [E(f'ui.{t}.{metric}', 'Mission Control', f'{name}: {label}', MISSION_M[t][i], unit, 'state', 'suite',
               **kw, **MISSION_REF[t], why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
             for t, name in MISSION for i, (metric, label, unit, kw) in enumerate(MISSION_ROWS)]
+
+# 12. The five goals of 18 Oct 2026 (sections/goals.py, run only with ONLY=goals, issue #85): today's Ubuntu against arbor
+# over a whole stretch of work. The reference is the suite's own, from an ordinary context: the session and power rows are
+# the medians of the 3 measured runs of each arm (after one warm-up) of the run at 19:59 (GOALS_REF), with the CPU under
+# 1% busy before every run; an earlier run at 18:52 read within 10% of it on every row but the memory and swap ones and
+# arbor's five tries (4.7 s there, 4.1 s here). The safety and ease rows are from that earlier run (GOALS_SAFE_REF), the still desktop
+# from the run in GOALS_STILL_REF. Package energy was read through RAPL, which the owner opened to ordinary users for
+# these runs only (the issue says why it is closed by default). Arbor's wall time is not its CPU time:
+# a diagnostic run with a timestamp after each step found the cells' first build after the edit taking 6.9-8.5 s, against
+# 2.6 s in a copy, on less CPU; two other runs of the arm took 5.0 and 5.1 s. The cause is not found.
+GOALS_REF = {'ref_date': '18 Oct 2026', 'ref_load': 3.5}
+GOALS_SAFE_REF = {'ref_date': '18 Oct 2026', 'ref_load': 3.3}
+# The still desktop's run started at a load average of 5.84, right after the mission section's, and its blocks at 0.41-0.53.
+# Someone used the PC during it: of the two blocks of today, the first saw input in all three attempts, so today has one
+# clean block of 150 s, and arbor two. `arbor serve` was already running when it started, so it ran in both arms: the
+# arms differ by Mission Control, open on the section's state.
+GOALS_STILL_REF = {'ref_date': '18 Oct 2026', 'ref_load': 5.84}
+GOAL_ARMS = (('worktree', 'today, git worktrees'), ('copy', 'today, copies'), ('arbor', 'arbor, worlds'))
+SESSION_ROWS = (  # metric, label, unit, kind, extra
+    ('mem_peak_mib', 'memory and swap in use: peak above the start', 'MiB', 'state', {'tol': 0.3}),
+    ('mem_mean_mib', 'memory and swap in use: mean above the start', 'MiB', 'state', {'tol': 1.0}),
+    ('swap_mib', 'swapped out (zram and disk)', 'MiB', 'state',
+     {'tol': 1.0, 'abs_tol': 64, 'abs_why': 'within 64 MiB of the reference: swap follows what else holds memory'}),
+    ('disk_mib', 'written to disk', 'MiB', 'state', {}),
+    ('taken_mib', 'disk taken by the three tries', 'MiB', 'state', {}),
+    ('wall_s', 'wall time', 's', 'perf', {}),
+    ('cpu_s', 'CPU time, all cores', 's', 'perf', {}),
+    ('energy_j', 'package energy (RAPL)', 'J', 'perf', {}),
+)
+SESSION_M = {  # in the order of SESSION_ROWS
+    'worktree': (4454.0, 1744.4, 117.4, 3426.3, 3314.5, 32.53, 266.6, 4235.6),
+    'copy': (1182.3, 339.0, 9.5, 4567.3, 3358.0, 10.07, 44.74, 936.6),
+    'arbor': (436.4, 114.2, 0.0, 2207.7, 1296.6, 14.31, 16.45, 647.8),
+}
+ENTRIES += [E(f'goal.session.{a}.{metric}', 'Goals', f'session, {name}: {label}', SESSION_M[a][i], unit, kind, 'suite',
+              **kw, **GOALS_REF, blocks_label='runs')
+            for a, name in GOAL_ARMS for i, (metric, label, unit, kind, kw) in enumerate(SESSION_ROWS)]
+COUNT = {'abs_tol': 0, 'abs_why': ''}
+ENTRIES += [E(f'goal.power.{a}.tries5_s', 'Goals', f'power, {name}: 5 tries of a change at once, keep 1', m, 's',
+              'perf', 'suite', **GOALS_REF, blocks_label='runs')
+            for (a, name), m in zip(GOAL_ARMS, (6.60, 7.94, 4.12))]
+ENTRIES += [E(f'goal.power.{a}.{metric}', 'Goals', f'power, {name}: {label}', m, unit, kind, 'suite', **kw, **GOALS_REF)
+            for a, name, ms in (('worktree', 'today, git worktrees', (3, 1, 4, 2.32)),
+                                ('arbor', 'arbor, worlds', (4, 0, 5, 7.65)))
+            for (metric, label, unit, kind, kw), m in zip((
+                ('kept', 'undo test: kinds of change in the folder the keep brought (of 4)', '', 'input', COUNT),
+                ('escaped', 'undo test: changes that reached outside the try unkept', '', 'input', COUNT),
+                ('put_back', 'undo test: places as before once the try is undone (of 5)', '', 'input', COUNT),
+                ('undo_ms', 'undo test: the undo, timed (one run)', 'ms', 'perf', {'tol': 0.5})), ms)]
+ENTRIES += [E(f'goal.safety.{a}.reached', 'Goals', f'safety, {name}: probes that reached (of 13)', m, '', 'input',
+              'suite', **COUNT, **GOALS_SAFE_REF)
+            for a, name, m in (('today', 'as you', 13), ('arbor', 'in a cell under an agent key', 0))]
+ENTRIES += [E(key, 'Goals', f'ease: {label}', m, '', 'input', 'suite', **COUNT, **GOALS_SAFE_REF) for key, label, m in (
+    ('goal.ease.start.today', 'start an agent safely, today', 'no stock way'),
+    ('goal.ease.start.arbor', 'start an agent safely, arbor: commands', 3),
+    ('goal.ease.approve.today', 'approve one effect, today', 'nothing waits'),
+    ('goal.ease.approve.arbor', 'approve one effect, arbor: commands', 2),
+    ('goal.ease.approve.mission', 'approve one effect, Mission Control', 'cannot act yet'),
+    ('goal.ease.keep.worktree', 'keep a try, git worktrees: commands', 3),
+    ('goal.ease.keep.copy', 'keep a try, copies: commands', 3),
+    ('goal.ease.keep.arbor', 'keep a try, arbor: commands', 1),
+    ('goal.ease.undo.worktree', 'undo a kept try, git worktrees: commands', 1),
+    ('goal.ease.undo.arbor', 'undo a kept try, arbor: commands', 1),
+    ('goal.ease.discard4.worktree', 'throw 4 tries away, git worktrees: commands', 8),
+    ('goal.ease.discard4.copy', 'throw 4 tries away, copies: commands', 4),
+    ('goal.ease.discard4.arbor', 'throw 4 tries away, arbor: commands', 4))]
+STILL_ROWS = (('wakeups_s', 'interrupts, all CPUs', '/s', {'dp': 0}), ('busy_pct', 'CPU busy, all cores', '%', {'dp': 2}),
+              ('deep_pct', 'time in the deepest idle state', '%', {'dp': 1}),
+              ('power_w', 'package power (RAPL)', 'W', {'dp': 2}))
+STILL_M = {'today': (2985, 0.50, 94.1, 22.29), 'arbor': (2895, 0.48, 94.4, 22.06)}  # in the order of STILL_ROWS
+ENTRIES += [E(f'goal.still.{a}.{metric}', 'Goals', f'still desktop, {name}: {label}', STILL_M[a][i], unit, 'state',
+              'suite', **kw, **GOALS_STILL_REF, blocks_label='blocks')
+            for a, name in (('today', 'today'), ('arbor', 'with arbor serve and Mission Control'))
+            for i, (metric, label, unit, kw) in enumerate(STILL_ROWS)]
