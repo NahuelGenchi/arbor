@@ -106,7 +106,7 @@ The work: three agent-like tries of a change to this repository at once. Each se
 | | keep a try, then throw 4 away | 3 + 8 commands | 3 + 4 | **1 + 4** | ahead |
 | **Beautiful design** | | | | | not measured: there is no measure of it yet, and Mission Control is a first, read-only window |
 
-What the numbers do not say. The work is short and built from one Rust project, so arbor's lead in memory, disk and energy comes mostly from one thing, a world reusing the folder's build, and will differ with other work. The still desktop had one clean block for today, as someone used the PC during the others, and `arbor serve` ran in both arms (2.7 MiB, idle). The package energy was read through RAPL, which only root may read on this PC: the owner opened it to ordinary users for these runs and closed it again, since an energy counter anyone can read is a side channel. Run it again with `ONLY=goals bench/run.sh`.
+What the numbers do not say. The work is short and built from one Rust project, so arbor's lead in memory, disk and energy comes mostly from one thing, a world reusing the folder's build, and will differ with other work. The still desktop had one clean block for today, as someone used the PC during the others, and `arbor serve` ran in both arms (2.7 MiB, idle). The package energy was read through RAPL, which only root may read on this PC: the owner opened it to ordinary users for these runs only, since an energy counter anyone can read is a side channel ([#85](https://github.com/NahuelGenchi/arbor/issues/85) says why). Run it again with `ONLY=goals bench/run.sh`.
 
 ## The new building blocks
 

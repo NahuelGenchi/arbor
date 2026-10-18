@@ -589,7 +589,7 @@ ENTRIES += [E(f'ui.{t}.{metric}', 'Mission Control', f'{name}: {label}', MISSION
 # 1% busy before every run; an earlier run at 18:52 read within 10% of it on every row but the memory and swap ones and
 # arbor's five tries (4.7 s there, 4.1 s here). The safety and ease rows are from that earlier run (GOALS_SAFE_REF), the still desktop
 # from the run in GOALS_STILL_REF. Package energy was read through RAPL, which the owner opened to ordinary users for
-# these runs only (the issue says why it is closed by default) and closed again. Arbor's wall time is not its CPU time:
+# these runs only (the issue says why it is closed by default). Arbor's wall time is not its CPU time:
 # a diagnostic run with a timestamp after each step found the cells' first build after the edit taking 6.9-8.5 s, against
 # 2.6 s in a copy, on less CPU; two other runs of the arm took 5.0 and 5.1 s. The cause is not found.
 GOALS_REF = {'ref_date': '18 Oct 2026', 'ref_load': 3.5}
