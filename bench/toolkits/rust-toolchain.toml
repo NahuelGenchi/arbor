@@ -1,0 +1,4 @@
+# The same compiler as the prototype (../../prototype/rust-toolchain.toml), for both Rust test programs.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"

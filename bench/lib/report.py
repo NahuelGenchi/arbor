@@ -9,13 +9,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from reference import ENTRIES, M_INFO, M_PRESSURE, PSS_WHY, TOL  # noqa: E402
+from reference import ENTRIES, M_INFO, M_PRESSURE, PSS_WHY, TOL, TOOLKITS, toolkit_note  # noqa: E402
 
 # Which section measures a key (run.sh's ONLY/SKIP leave sections out; their rows are left out of the table).
 SECTION_OF = (('rt.', 'runtimes'), ('cell.py_', 'pycell'), ('cell.', 'cells'), ('mem.', 'memstate'),
               ('ram.', 'memstate'), ('heap.', 'heap'), ('search.', 'search'), ('code.', 'search'), ('boot.', 'boot'),
               ('storage.', 'storage'), ('tok.', 'transcripts'), ('fmt.', 'formats'), ('arbor.', 'arbor'),
-              ('screen.', 'screen'))
+              ('screen.', 'screen'), ('ui.', 'toolkits'))
 DP = {'%': 1, 'MiB': 1, 'GiB': 1, 'MB': 1, 's': 1, '×': 2, 'Mtok': 2, 'B': 0, 'tok': 0, '': 0}
 
 
@@ -258,6 +258,8 @@ def note_ctx(e, rec):
         load = f"; {ctx['cells']} cells, a {ctx['spike_mib']:,} MiB spike" if ctx.get('cells') is not None else ''
         return (f"{ctx['frames']:,} frames at {ctx.get('refresh_hz')} Hz, {ctx.get('missed')} missed, the slowest "
                 f"{ctx.get('worst_ms')} ms; {ctx.get('to_screen_ms')} ms from commit to screen (median){load}")
+    if k.startswith('ui.'):
+        return toolkit_note(ctx, k.rsplit('.', 1)[1])
     return ''
 
 
@@ -273,9 +275,13 @@ def main(results, meta_path, out):
     extra = [dict(key=k, sec=k.split('.')[0], label=k, m=None, unit='', kind='perf', src='run')
              for k in recs if k not in known]
     skipped = os.environ.get('BENCH_SKIPPED', '').split()
+    # The toolkits section measures only the toolkits TOOLKITS names: the others' rows are left out, like a section's.
+    named = os.environ.get('TOOLKITS', '').split() or [t for t, _ in TOOLKITS]
+    left_out = [t for t, _ in TOOLKITS if t not in named] if 'toolkits' not in skipped else []
     for e in ENTRIES + extra:
         rec = recs.get(e['key'])
-        if rec is None and next((s for p, s in SECTION_OF if e['key'].startswith(p)), None) in skipped:
+        if rec is None and (next((s for p, s in SECTION_OF if e['key'].startswith(p)), None) in skipped
+                            or e['key'].startswith('ui.') and e['key'].split('.')[1] in left_out):
             continue
         icon, delta, note = evaluate(rows, e, rec)
         if icon == '✅' and not note:
@@ -303,7 +309,8 @@ def main(results, meta_path, out):
         f"preference {m.get('epp', '?')}; load average {m.get('load1', '?')} at start"
         f"{' (busy: ' + m['busy'] + ' of a core)' if m.get('busy') else ''}; {m.get('mem_available_gib', '?')} GiB "
         f"RAM available, {m.get('swap_used_gib', '?')} GiB swap in use at start. Tools: {m.get('tools', '?')}."
-        + (f" Sections not run (ONLY/SKIP): {', '.join(skipped)}." if skipped else ''),
+        + (f" Sections not run (ONLY/SKIP): {', '.join(skipped)}." if skipped else '')
+        + (f" Toolkits not run (TOOLKITS): {', '.join(left_out)}." if left_out else ''),
         f"**Reference:** M = measured on this PC on {M_INFO['date']} for OPTIMIZATION.md; † = from that run's raw output, "
         "not quoted in OPTIMIZATION.md"
         + (f"; ‡ = not M: the suite's own reference, from its run of {', '.join(sorted(suite_dates))}"

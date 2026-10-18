@@ -3,7 +3,7 @@
 [Back to README](../README.md) · [Issue #6](https://github.com/NahuelGenchi/arbor/issues/6) · [M7 — Interface](https://github.com/NahuelGenchi/arbor/milestone/8)
 
 > [!NOTE]
-> **No interface exists yet.** This brief decides what Mission Control shows and how a person directs agents through it, before a toolkit is chosen ([#8](https://github.com/NahuelGenchi/arbor/issues/8)) or any code is written ([#9](https://github.com/NahuelGenchi/arbor/issues/9)). The pictures are wireframes with made-up data, and its targets are for later issues to measure: none of them is a result.
+> **No interface exists yet.** This brief decides what Mission Control shows and how a person directs agents through it, before any code is written ([#9](https://github.com/NahuelGenchi/arbor/issues/9)). The pictures are wireframes with made-up data, and its targets are for later issues to measure: none of them is a result for the app. [#8](https://github.com/NahuelGenchi/arbor/issues/8) measured a small test program, not the app, in five toolkits, and GTK 4 was chosen ([The toolkits measured](#the-toolkits-measured)).
 
 Mission Control is the screen where people direct agents. It shows what agents are changing, what they want to send out and what they have spent, and it asks for a person only when a person is needed. Today's desktops were built for one person and a handful of windows. Mission Control has to make hundreds of agents legible to one person at a glance, and spend that person's attention as carefully as money.
 
@@ -178,7 +178,7 @@ The one-second wait on Now is armed by a change, never by a clock, so a quiet sy
 
 ## Targets
 
-These are targets for the issues that build and measure Mission Control. **None of them has been measured.** Each issue records its numbers, marked **M**, with the machine and its conditions.
+These are targets for the issues that build and measure Mission Control. **The app has not been measured against any of them yet**; #8's test program was ([The toolkits measured](#the-toolkits-measured)). Each issue records its numbers, marked **M**, with the machine and its conditions.
 
 - **Missed frames.** *Target:* none with the machine idle, and at most 1 in 1,000 under load (300 agents in cells plus a memory spike), at 60 Hz and at 120 Hz. Checked by the frame-pacing rows of [#7](https://github.com/NahuelGenchi/arbor/issues/7), then by [#9](https://github.com/NahuelGenchi/arbor/issues/9) to [#12](https://github.com/NahuelGenchi/arbor/issues/12) with 300 agents.
 - **Work per frame.** *Target:* the app's own work for a frame takes at most 4 ms for 99% of frames: a quarter of a frame at 60 Hz (16.7 ms) and half of one at 120 Hz (8.3 ms), so the compositor and the GPU keep the rest. Checked by the test program of [#8](https://github.com/NahuelGenchi/arbor/issues/8), then by [#9](https://github.com/NahuelGenchi/arbor/issues/9).
@@ -188,9 +188,66 @@ These are targets for the issues that build and measure Mission Control. **None 
 - **Memory.** *Target:* at most 128 MiB RSS and 64 MiB PSS with 300 agents and every view opened once, under a tenth of the Electron UI measured today (1,354 MiB RSS, M, [OPTIMIZATION.md §1](../OPTIMIZATION.md#1-ram-cpu-gpu)); within 10% of the same app with 3 agents; and no growth over an hour of updates. Checked by [#8](https://github.com/NahuelGenchi/arbor/issues/8) and [#9](https://github.com/NahuelGenchi/arbor/issues/9).
 - **First frame.** *Target:* at most 200 ms from launch to the first frame that shows real state, with warm caches. Checked by [#8](https://github.com/NahuelGenchi/arbor/issues/8).
 
+## The toolkits measured
+
+[#8](https://github.com/NahuelGenchi/arbor/issues/8) measured the same small test program in five toolkits that draw on the GPU and run on today's Wayland desktops: GTK 4, Qt Quick, Slint, iced and Flutter. The program is one window with a heading, a card and a list of 300 rows that change, an animation of the card, then a still screen, all with made-up data ([`bench/toolkits/`](../bench/toolkits/README.md)). It is not Mission Control: the numbers show what each toolkit costs before any app code. `ONLY=toolkits bench/run.sh` measures them again ([`bench/README.md`](../bench/README.md)).
+
+**Machine and conditions.** Intel Core i7-14700KF (8 P-cores and 12 E-cores, 28 threads), 15 GiB of RAM, an AMD Radeon R9 380 with Mesa 26.0.8, Ubuntu 26.04.1 with kernel 7.0 and GNOME on Wayland at 60 Hz. There were five `ONLY=toolkits` runs on 17 October 2026, between 19:54 and 22:28, each from an ordinary process (a systemd user unit). They started at load averages of 0.02 to 0.57. Each figure is the median of 3 or 4 clean samples, with their range in brackets. A sample is clean when:
+
+- no key or mouse was used;
+- the window kept the focus and was shown for at least 90% of the refreshes;
+- the other programs used less than one CPU thread in all;
+- on the still screen, the compositor woke fewer than 400 times a second;
+- the load average was under 1 at its start.
+
+Samples taken while a game was open in another window, someone was at the PC or another session was compiling were left out, and the suite now fails such rows itself. In the clean samples, the busiest other program, a desktop app, used about 10% of one CPU thread. The renderers are the ones each toolkit picked on this PC: GTK's OpenGL renderer (it turns Vulkan down here), Qt's scene graph on OpenGL, FemtoVG on OpenGL for Slint, wgpu on Vulkan for iced, and Impeller on OpenGL ES for Flutter.
+
+| Measure (M: every number in the row) | GTK 4 | Qt Quick | Slint | iced | Flutter | Target |
+| :--- | ---: | ---: | ---: | ---: | ---: | :--- |
+| First frame, ms (M) | 170 (167–180) | 147 (131–148) | 93 (92–98) | 99 (96–106) | 199 (197–214) | at most 200 |
+| Memory 2.5 s after the start, RSS / PSS, MiB (M) | 140 / 118 | 162 / 138 | 94 / 80 | 95 / 84 | 174 / 139 | |
+| Memory after a minute of still screen, RSS / PSS, MiB (M) | 163 / 140 | 165 / 141 | 94 / 80 | 95 / 84 | 155 / 132 | at most 128 / 64 for the whole app |
+| Still screen: CPU, % of one core (M) | 0.00 (0.00–0.13) | 0.00 (0.00–0.02) | 0.02 (0.00–0.02) | 0.02 (0.00–0.02) | 0.00 (0.00–0.02) | at most 0.1 |
+| Still screen: wakeups a second (M) | 0.10 (0.10–0.55) | 0.05 (0.05–0.05) | 2.0 (2.0–2.0) | 4.0 (4.0–4.0) | 0.30 (0.30–0.32) | at most 0.1 |
+| Animation, machine idle: frames missed, % (M) | 0.25 (0.17–0.33) | 0.25 (0.17–0.42) | 0.33 (0.25–0.33) | 0.25 (0.17–0.25) | 0.25 (0.25–0.42) | none |
+| Animation, machine idle: slowest 1% of frame times, ms (M) | 16.7 | 16.7 | 16.7 | 16.7 | 16.7 | |
+| Animation: work per frame, slowest 1%, ms (M) | 0.97 (0.88–0.99) | 0.66 (0.56–0.69) | 0.92 (0.91–1.02) | 1.64 (1.44–1.85) | 2.59 (2.35–2.80) | at most 4 |
+| Animation under load: frames missed, % (M) | 2.2 (1.3–10.8) | 11.4 (10.1–16.1) | 83.3 (83.3–83.3) | 16.3 (14.1–16.7) | 4.3 (3.2–6.1) | at most 0.1 |
+| Animation under load: slowest 1% of frame times, ms (M) | 33.3 | 33.3 | 133 (117–150) | 33.3 | 33.3 | |
+| Objects on the accessibility bus (M) | 127 | 109 | 69 | 0 | 42 | |
+| Heading, card and the rows' words readable on AT-SPI | yes | yes, with Qt Quick Controls' `Label` | yes, through AccessKit | no: not on the bus | yes, through its GTK 3 runner | every control |
+| The animation runs on | the main thread, from the window's frame clock | the render thread (Qt Quick's Animators) | the main thread | the main thread, which builds the whole view again each frame | the UI thread (Dart) ticks it, the raster thread draws | |
+| Licence | LGPL-2.1-or-later | LGPL-3.0 or GPL-2.0, or commercial | GPL-3.0-only, or Slint's royalty-free or commercial licence | MIT | BSD-3-Clause | |
+| Versions | GTK 4.22.4, C | Qt 6.10.2, C++ and QML | Slint 1.18.1, Rust | iced 0.14.0, Rust | Flutter 3.47.7, Dart 3.13.5 | |
+
+"Under load" is the screen section's load: a busy cell on every CPU thread (28 here) and a memory spike. Measured the same way on this PC, that section's own minimal Wayland client missed 0.13% of its frames idle and 8.35% under load (M, [`bench/lib/reference.py`](../bench/lib/reference.py)). The targets are for the whole app with 300 agents, and the test program is far smaller, so they bound it only from below. A toolkit that misses a target here would miss it in the app as well.
+
+What the table shows:
+
+- **No toolkit hands an animation to the compositor.** Each one commits a new buffer for every frame: about 1,197 commits in the 1,199 refreshes of each idle run.
+- **Machine idle, every toolkit keeps up.** Each misses 2 to 5 of about 1,200 refreshes, close to the minimal client's 0.13%, so none meets "none".
+- **Under load, none meets 1 in 1,000.** GTK 4 (2.2%) and Flutter (4.3%) missed fewer frames than the minimal client did, and Qt Quick (11.4%) and iced (16.3%) missed more. Slint fell to 10 frames a second, the rate of the program's 100 ms timer for the rows. Counting its commits without the probe (`WAYLAND_DEBUG`) gave the same 10 a second. Keeping time and memory for the screen is [#10](https://github.com/NahuelGenchi/arbor/issues/10)'s work, and it may change these numbers for every toolkit.
+- **On a still screen, only GTK 4 and Qt Quick meet the wakeup target.** Flutter wakes 0.3 times a second. Slint and iced wake 2 and 4 times a second, from threads named `blocking` that each wake every 500 ms. The `blocking` crate starts them for zbus, the D-Bus library that Slint uses for AccessKit and iced for reading the desktop's settings. All five stay under 0.1% of a core.
+- **Memory.** Only Slint (94 MiB RSS) and iced (95 MiB) fit within the whole app's RSS target. GTK 4, Qt Quick and Flutter use 155 to 165 MiB for the test program alone. None is within 64 MiB of PSS. In the run of 21:33, files mapped into each program (libraries, Mesa's driver among them) made up 52 to 97 MiB of its PSS (M).
+- **Work per frame** is within 4 ms for all five, from 0.66 ms (Qt Quick) to 2.59 ms (Flutter). **The first frame** takes under 200 ms for all five, though Flutter is at the limit.
+- **Accessibility.** iced 0.14 puts nothing on the accessibility bus, which rules it out under [Accessibility](#accessibility). With Qt 6.10, a plain `Text` in Qt Quick does not reach the bus; `Label` does ([`bench/toolkits/README.md`](../bench/toolkits/README.md#accessibility)).
+
+**Decided: GTK 4**, through the gtk4-rs bindings, since arbor's prototype is written in Rust. The owner chose it on 17 October 2026, from this table. GTK 4 is the only toolkit here that meets the still-screen target and also missed the fewest frames under load. Its support for AT-SPI is complete, its licence is the LGPL, and it is the desktop's own toolkit on GNOME.
+
+Two points stay open for [#9](https://github.com/NahuelGenchi/arbor/issues/9):
+
+- **Memory.** The test program alone uses 163 MiB of RSS and 140 MiB of PSS, above the target of 128 MiB and 64 MiB before any app code. #9 has to measure the app against that target.
+- **The bindings.** gtk4-rs was not measured: the test program is written in C. #9 measures what the bindings add.
+
+The alternatives, not chosen:
+
+- **Slint** is the lightest in memory and the fastest to start. Its 10 frames a second under load and its wakeups on a still screen would need fixing, upstream or in arbor, first.
+- **Qt Quick** does the least work per frame and has the quietest still screen. It uses the most memory and missed 11% of frames under load.
+- **Flutter** came second under load. It wakes 0.3 times a second on a still screen and is at the limit for the first frame. It adds Dart and a GTK 3 runner.
+
 ## Not decided here
 
-The rendering stack ([#8](https://github.com/NahuelGenchi/arbor/issues/8)), the app itself ([#9](https://github.com/NahuelGenchi/arbor/issues/9)), keeping the screen ahead of agents with reserved time and memory ([#10](https://github.com/NahuelGenchi/arbor/issues/10)), the code of the views ([#11](https://github.com/NahuelGenchi/arbor/issues/11), [#12](https://github.com/NahuelGenchi/arbor/issues/12)), arbor's own compositor ([#13](https://github.com/NahuelGenchi/arbor/issues/13)), and a visual brand. The wireframes borrow the README's paper, ink and typefaces so the pictures read as one family; that is not a chosen look.
+The app itself ([#9](https://github.com/NahuelGenchi/arbor/issues/9)), keeping the screen ahead of agents with reserved time and memory ([#10](https://github.com/NahuelGenchi/arbor/issues/10)), the code of the views ([#11](https://github.com/NahuelGenchi/arbor/issues/11), [#12](https://github.com/NahuelGenchi/arbor/issues/12)), arbor's own compositor ([#13](https://github.com/NahuelGenchi/arbor/issues/13)), and a visual brand. The wireframes borrow the README's paper, ink and typefaces so the pictures read as one family; that is not a chosen look.
 
 ## Open questions
 
