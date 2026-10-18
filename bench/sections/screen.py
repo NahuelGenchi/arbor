@@ -204,8 +204,14 @@ def pacing(p, seconds):
     out, err = p.communicate(timeout=WARMUP + seconds + 30)
     if p.returncode != 0:
         raise RuntimeError(f'the test client failed: {last_line(err)}')
+    return pacing_of(out.decode(), seconds)
+
+
+def pacing_of(text, seconds, until=None):
+    """The same from frames.c's lines (src/probe.c writes them for other programs). until: leave out the frames shown
+    more than that many seconds after the warm-up, for a program that keeps drawing until it is stopped."""
     shown, discarded, focus, clock = [], [], None, None
-    for line in out.decode().splitlines():
+    for line in text.splitlines():
         f = line.split()
         if f[0] == 'p':  # frame, commit, present, refresh, seq, flags
             shown.append([int(x) for x in f[1:]])
@@ -218,7 +224,7 @@ def pacing(p, seconds):
     if len(shown) < 2:
         raise RuntimeError('the compositor showed no frames of the test window')
     start = shown[0][2] + WARMUP * 1e9
-    shown = [s for s in shown if s[2] >= start]
+    shown = [s for s in shown if s[2] >= start and (until is None or s[2] <= start + until * 1e9)]
     pairs = list(zip(shown, shown[1:]))
     if not pairs:
         raise RuntimeError('the compositor stopped showing the test window after its first second')
@@ -257,42 +263,62 @@ def meminfo(field):
         return int(re.search(rf'^{field}:\s*(\d+)', f.read(), re.M).group(1)) * 1024
 
 
-def loaded(binary, seconds):
+def start_cells(procs, n):
+    """Starts n busy cells, adding them to procs, and checks a second later that they still run."""
     bwrap = shutil.which('bwrap')
     if not bwrap:
         raise RuntimeError('bwrap not found: the cells run in bwrap')
+    cells = []
+    for _ in range(n):
+        cells.append(subprocess.Popen([bwrap, *CELL], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.PIPE, preexec_fn=die_with_us))
+        procs.append(cells[-1])
+    time.sleep(1)
+    ended = [p for p in cells if p.poll() is not None]
+    if ended:
+        raise RuntimeError(f'{len(ended)} of {n} cells ended at once: {last_line(ended[0].stderr.read())}')
+
+
+def spike_mib():
+    """The size of the memory spike, and the memory available before it."""
+    available = meminfo('MemAvailable')
+    return int(env('FRAMES_SPIKE_MIB') or max(256, available // 2**20 - LEAVE_MIB)), available
+
+
+def start_spike(mib, hold_s):
+    return subprocess.Popen([sys.executable, '-I', '-S', '-c', SPIKE, str(mib), str(hold_s)], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=die_with_us)
+
+
+def spike_ended(spike, mib):
+    """Seconds the spike took to touch its memory, once it is stopped; raises if it failed."""
+    spike.kill()
+    out, err = spike.communicate()
+    if spike.returncode != -signal.SIGKILL and not out.strip():
+        raise RuntimeError(f'the memory spike of {mib:,} MiB failed: {last_line(err)}')
+    touched = out.decode().split()
+    return float(touched[0]) if touched else None
+
+
+def loaded(binary, seconds):
     n = int(env('FRAMES_CELLS') or os.cpu_count())
     before, procs = load1(), []
     try:
-        for _ in range(n):
-            procs.append(subprocess.Popen([bwrap, *CELL], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.PIPE, preexec_fn=die_with_us))
-        time.sleep(1)
-        ended = [p for p in procs if p.poll() is not None]
-        if ended:
-            raise RuntimeError(f'{len(ended)} of {n} cells ended at once: {last_line(ended[0].stderr.read())}')
-        available = meminfo('MemAvailable')
-        mib = int(env('FRAMES_SPIKE_MIB') or max(256, available // 2**20 - LEAVE_MIB))
+        start_cells(procs, n)
+        mib, available = spike_mib()
         p = client(binary, seconds)
         procs.append(p)
         time.sleep(WARMUP + SPIKE_AT)
         t_spike = time.monotonic_ns()  # CLOCK_MONOTONIC, the clock the compositor's timestamps use here (clock 1)
-        spike = subprocess.Popen([sys.executable, '-I', '-S', '-c', SPIKE, str(mib), str(seconds + 10)],
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 preexec_fn=die_with_us)
+        spike = start_spike(mib, seconds + 10)
         procs.append(spike)
         res = pacing(p, seconds)
-        spike.kill()
-        out, err = spike.communicate()
-        if spike.returncode != -signal.SIGKILL and not out.strip():
-            raise RuntimeError(f'the memory spike of {mib:,} MiB failed: {last_line(err)}')
-        touched = out.decode().split()
+        spike_s = spike_ended(spike, mib)
     finally:
         for q in procs:
             q.kill()
         for q in procs:
             q.wait()
-    spike_s = float(touched[0]) if touched else None
     during = None
     if res['clock'] == time.CLOCK_MONOTONIC and spike_s is not None:
         during = sum(c - 1 for t, c in res['steps'] if t_spike <= t <= t_spike + spike_s * 1e9)

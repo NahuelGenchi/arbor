@@ -1,0 +1,12 @@
+name: flutter_bench
+description: "The Mission Control test program of issue #8, in Flutter"
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.5
+
+# Flutter's widgets only: no Material, no packages from pub.dev beyond the ones Flutter itself pins.
+dependencies:
+  flutter:
+    sdk: flutter
