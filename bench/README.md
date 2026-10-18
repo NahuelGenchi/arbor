@@ -121,7 +121,9 @@ heap test loads the transcript of M's exact byte size. The files read in parts a
   again unless a cell that is not the section's runs in it by then. The window is measured as the toolkits' programs
   are, with the same probe and accessibility check, and reads only that state folder. To time Release and Refuse,
   a try of a made-up folder asks for `MISSION_ANSWERS` effects that run `echo published` there, and the window
-  answers them with its own buttons; the try is thrown away after. Its rooms, windows, cells and spike end with the
+  answers them with its own buttons; to time See changes, Keep and Undo, a try of another made-up folder changes
+  one file there and adds one, and the window keeps it and undoes the keep three times with its own buttons, writing
+  only that folder; both tries are thrown away after. Its rooms, windows, cells and spike end with the
   section, also on a timeout or Ctrl-C.
 - **The five goals.** The `goals` section, only with `ONLY=goals`, makes one temp folder on disk, in `GOALS_TMP`
   (`bench/results/` unless set), so that builds write a real disk, and removes it at the end, also on a timeout or

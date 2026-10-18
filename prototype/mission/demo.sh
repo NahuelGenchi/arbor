@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Opens Mission Control on made-up worlds, so it can be tried, and pictured, without showing a real computer's folders:
 #   mission/demo.sh [shot OUT.png [light|dark] [WIDTHxHEIGHT] [SCENE]]
-# In a temp folder it makes a home with four small projects, an arbor state folder with a try of each and four more
-# tries of one of them, a room working in each of those, two decisions waiting and a kept try, then opens the window there (or, with `shot`, draws it
+# In a temp folder it makes a home with five small projects, an arbor state folder with a try of each and four more
+# tries of one of them, a room working in each of those, two decisions waiting, a kept try and one whose own folder
+# changed after it began, then opens the window there (or, with `shot`, draws it
 # into OUT.png). Closing the window stops the rooms and removes the temp folder. It needs bwrap 0.10+ and, for the
 # rooms' memory and CPU, a systemd user manager: it starts `arbor serve` if it is not running, and stops it again.
 # It runs target/release/arbor and arbor-mission (`cargo build --release -p arbor -p mission` in prototype/).
@@ -34,7 +35,7 @@ trap cleanup EXIT
 
 export HOME="$T/home" ARBOR_HOME="$T/state"
 a() { "$BIN/arbor" "$@"; }
-mkdir -p "$HOME/projects"/{help-pages,shop,site,notes}
+mkdir -p "$HOME/projects"/{help-pages,shop,site,notes,letters}
 cd "$HOME/projects"
 printf '# Help pages\n' >help-pages/README.md
 printf '#!/bin/sh\n# translates the help pages into one language (here: holds some memory and waits)\nexec python3 -c "import time; b = bytearray($1 * 1000000); time.sleep(3600)"\n' >help-pages/translate
@@ -45,12 +46,14 @@ printf '<h1>Shop</h1>\n' >site/index.html
 printf '#!/bin/sh\nsleep 2\necho "deployed the gallery to the test site: 3 pages, 12 images"\n' >site/deploy
 chmod +x site/deploy
 printf 'call the bookkeeper\n' >notes/todo.txt
+printf 'Dear neighbours,\nthank you for the plants.\n' >letters/thanks.txt
 
 a new help-pages --from ~/projects/help-pages >/dev/null
 for lang in es fr de it; do a new "help-$lang" --from ~/projects/help-pages >/dev/null; done
 a new shop --from ~/projects/shop >/dev/null
 a new site --from ~/projects/site >/dev/null
 a new notes --from ~/projects/notes >/dev/null
+a new letters --from ~/projects/letters >/dev/null
 a key new translate --for 6h >/dev/null
 a run shop -- sh -c 'printf "fn total() -> u32 { 0 }\n" > cart.rs; mkdir -p tests; echo "#[test] fn t() {}" > tests/cart.rs' >/dev/null
 a run shop -- arbor effect --cost 0.40 --why 'publish the fix for rounding the total' -- git push origin fix >/dev/null
@@ -58,6 +61,9 @@ a run site -- sh -c 'echo "<img loading=lazy>" >> index.html' >/dev/null
 a run site -- arbor effect --why 'deploy the faster gallery to the test site' -- ./deploy --to test-site >/dev/null
 a run notes -- sh -c 'echo "call the bookkeeper on Monday" > todo.txt' >/dev/null
 a keep notes >/dev/null
+# A try whose real folder changed after it began: keeping it is refused.
+a run letters -- sh -c 'printf "Dear neighbours,\nthank you for the plants and the seeds.\n" > thanks.txt' >/dev/null
+printf 'Dear neighbours,\nthank you so much for the plants.\n' >letters/thanks.txt
 # A room in each translation's try (a world runs one command at a time). A limit gives each a cgroup of its own,
 # so its memory and CPU can be read; the first one starts `arbor serve` if it is not running.
 a run help-pages --pids 64 -- true >/dev/null

@@ -26,8 +26,15 @@ the compositor's presentation time of each frame, in ms, the median of the press
   ui.T.release_ms         from pressing Release now to the frame that shows the receipt: `arbor release` started,
                           ran the effect's command and ended, and the window read the effect back and showed it
   ui.T.refuse_ms          the same for Refuse and `arbor refuse`
-The input's way in, from the device through the compositor to the window, is not in them. The try is thrown away
-after, which refuses whatever it asked for that is still waiting.
+And from `arbor-mission --bench keep keeps` (#83): a try `keeps` of a folder of its own changes one file and adds
+another, and the window, three times, shows what it changed, keeps it and undoes the keep, with its own buttons:
+  ui.T.changes_ms         from pressing See changes to the frame that shows the files and their lines: the window
+                          read the try's changes and conflicts and ran `arbor diff --patch`
+  ui.T.keep_ms            from pressing Keep in its confirmation to the frame that shows "Kept": `arbor keep` ran
+                          and the window read the try back
+  ui.T.undo_ms            the same for Undo the keep and `arbor undo`
+The input's way in, from the device through the compositor to the window, is not in them. The tries are thrown away
+after, which refuses whatever they asked for that is still waiting.
 The AT-SPI check looks for the window's own words: its heading, the two effects' commands and the tries' names, and the
 names of the first decision's buttons. The
 cells need a systemd user manager for their cgroups: the section starts `arbor serve` if it is not running and stops it
@@ -54,6 +61,7 @@ PAUSE_S = 0.2  # between the short commands of the busy state, each of which rec
 METRICS = toolkits.METRICS + ['still_frames_s']
 ANSWER_METRICS = ['confirm_ms', 'release_ms', 'refuse_ms']
 ANSWERS = int(env('MISSION_ANSWERS', '6'))
+KEEP_METRICS = ['changes_ms', 'keep_ms', 'undo_ms']
 
 
 def build():
@@ -179,6 +187,33 @@ def answers(t, mission, a):
         emit(f'ui.{t}.{kind}_ms', median(ms), {'presses_ms': [round(x, 1) for x in ms], 'load1': load})
 
 
+def keeps(t, mission, a):
+    """The window shows what a try made for it changed, keeps it and undoes the keep, three times, with its own
+    buttons: changes_ms, keep_ms and undo_ms."""
+    base = os.path.join(D, 'projects', 'keeps')
+    os.makedirs(base, exist_ok=True)
+    with open(os.path.join(base, 'thanks.txt'), 'w') as f:
+        f.write('thank you\n')
+    a('new', 'keeps', '--from', base)
+    try:
+        a('run', 'keeps', '--', 'sh', '-c', 'echo "thank you, all" > thanks.txt; mkdir drafts; echo hi > drafts/a.txt')
+        r = run([mission, '--bench', 'keep', 'keeps'], timeout=120, env=toolkits.program_env(),
+                cwd=os.path.dirname(mission))
+        got = [json.loads(x) for x in r.stdout.decode(errors='replace').splitlines() if x.startswith('{')]
+    finally:
+        a('discard', 'keeps')
+    if len(got) < 9:
+        raise RuntimeError(f'the window did {len(got)} of 9 acts: ' + screen.last_line(r.stderr))
+    failed = [g['act'] for g in got if g['failed'] or g['open_ms'] is None
+              or (g['act'] != 'changes' and g['result_ms'] is None)]
+    if failed:
+        raise RuntimeError(f'{failed} did not end, or their frames were not shown')
+    load = screen.load1()
+    for kind, field in (('changes', 'open_ms'), ('keep', 'result_ms'), ('undo', 'result_ms')):
+        ms = [g[field] for g in got if g['act'] == kind]
+        emit(f'ui.{t}.{kind}_ms', median(ms), {'presses_ms': [round(x, 1) for x in ms], 'load1': load})
+
+
 def measure(t, argv, comp, expect, answer=None):
     seconds, launches = float(env('FRAMES_S', '20')), int(env('TOOLKITS_LAUNCHES', '5'))
     still_s = float(env('TOOLKITS_STILL_S', '60'))
@@ -191,6 +226,7 @@ def measure(t, argv, comp, expect, answer=None):
              (['missed_load_pct', 'frame_p99_load_ms'], lambda: toolkits.pacing(t, argv, seconds, True))]
     if answer:  # before the loaded run, whose cells and spike leave the load average high
         steps.insert(4, (ANSWER_METRICS, lambda: answers(t, argv[0], answer)))
+        steps.insert(5, (KEEP_METRICS, lambda: keeps(t, argv[0], answer)))
     for metrics, step in steps:
         try:
             step()
@@ -207,7 +243,7 @@ def main():
     os.makedirs(D, exist_ok=True)
     os.makedirs(os.path.join(toolkits.D, 'logs'), exist_ok=True)
     keys = [k for t in ('mission', 'mission_cairo', 'mission_busy') for k in toolkits.rows(t, METRICS)]
-    keys += [k for t in ('mission', 'mission_busy') for k in toolkits.rows(t, ANSWER_METRICS)]
+    keys += [k for t in ('mission', 'mission_busy') for k in toolkits.rows(t, ANSWER_METRICS + KEEP_METRICS)]
     try:
         comp = screen.compositor()
         binary, mission = build()
@@ -240,7 +276,7 @@ def main():
         try:
             expect = busy_state(a, procs)
         except Exception as e:
-            return fail(toolkits.rows('mission_busy', METRICS + ANSWER_METRICS), e)
+            return fail(toolkits.rows('mission_busy', METRICS + ANSWER_METRICS + KEEP_METRICS), e)
         toolkits.settle_down(settle)
         measure('mission_busy', argv, comp, expect, answer=a)
     finally:

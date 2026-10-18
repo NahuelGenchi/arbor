@@ -9,7 +9,8 @@ use std::path::Path;
 use arbor::ledger::Step;
 use arbor::outbox::{self, Effect};
 
-use crate::act::{Answer, Ask};
+pub use crate::act::Do;
+use crate::act::{Answer, Ask, Done, Look};
 use crate::state::{Room, Snapshot, Try, shown_path};
 
 /// The mark at the start of a line. Each state has a word and a shape of its own, never a colour alone.
@@ -31,13 +32,6 @@ pub enum Mark {
     Failed,
     /// None: a folded line, or a step of history.
     None,
-}
-
-/// What a button on a line does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Do {
-    Release,
-    Refuse,
 }
 
 /// A button on a line, and the confirmation it asks for before anything happens.
@@ -268,15 +262,265 @@ pub fn try_line(t: &Try, rooms: usize, now_ns: u64) -> Line {
     };
     line.aside = format!("copy of {base}, made at {since}");
     line.tip = format!(
-        "World {} over {base}. `arbor diff {}` lists its changes.",
-        t.name, t.name
+        "World {} over {base}. `arbor diff {}` lists its changes; Keep runs `arbor keep {}`, and Undo the keep \
+         `arbor undo {}`.",
+        t.name, t.name, t.name, t.name
     );
+    line.acts = try_acts(t, &base);
     line.said = format!(
         "Try {}, a copy of {base} made at {since}: {}.",
         t.name, line.detail
     )
     .replace(" · ", ", ");
     line
+}
+
+/// The buttons of a try: See changes and Keep while it is open and has changes, Undo the keep once kept.
+fn try_acts(t: &Try, base: &str) -> Vec<Act> {
+    let name = &t.name;
+    match (t.kept_ns, t.changes) {
+        (Some(_), _) => vec![Act {
+            what: Do::Undo,
+            label: "Undo the keep…".into(),
+            name: format!("Undo the keep of try {name}"),
+            ask: "Undo the keep?".into(),
+            says: format!(
+                "What keeping try {name} put into {base} comes back out, and the try is open again. It is \
+                 refused if any of those files changed there since."
+            ),
+            go: "Undo the keep".into(),
+            reason: None,
+        }],
+        (None, Some(n)) if n > 0 => vec![
+            Act {
+                what: Do::Changes,
+                label: "See changes".into(),
+                name: format!("See what try {name} changed"),
+                ask: String::new(),
+                says: String::new(),
+                go: String::new(),
+                reason: None,
+            },
+            Act {
+                what: Do::Keep,
+                label: "Keep…".into(),
+                name: format!("Keep try {name}"),
+                ask: "Keep it?".into(),
+                says: format!(
+                    "{} {} into {base}, all at once: {}. You can undo the keep later, as long as those files \
+                     are not changed there meanwhile.",
+                    capital(&files(n)),
+                    if n == 1 { "goes" } else { "go" },
+                    counted(t.counts)
+                ),
+                go: "Keep".into(),
+                reason: None,
+            },
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// `1 file`, `3 files`.
+fn files(n: usize) -> String {
+    match n {
+        1 => "1 file".into(),
+        n => format!("{n} files"),
+    }
+}
+
+/// `2 added, 1 changed`, leaving out what is none.
+fn counted([a, m, d]: [usize; 3]) -> String {
+    let parts: Vec<String> = [(a, "added"), (m, "changed"), (d, "removed")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, w)| format!("{n} {w}"))
+        .collect();
+    match parts.as_slice() {
+        [] => "no files".into(),
+        _ => parts.join(", "),
+    }
+}
+
+fn capital(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+        .unwrap_or_default()
+}
+
+/// Why a file stops a keep or an undo, as arbor says it, in fewer words: `cart.rs (changed)`.
+fn plain(problem: &str) -> String {
+    let (path, why) = problem.split_once(": ").unwrap_or((problem, ""));
+    let short = if why.contains("folder is gone") {
+        "its folder is gone"
+    } else if why.contains("folder") {
+        "its folder changed"
+    } else if why.contains("made again") {
+        "made again"
+    } else if why.contains("deleted") {
+        "deleted"
+    } else {
+        "changed"
+    };
+    format!("{path} ({short})")
+}
+
+/// A list of problems in plain words, cut after a few.
+fn plain_list(problems: &[String]) -> String {
+    let mut shown: Vec<String> = problems.iter().take(5).map(|p| plain(p)).collect();
+    if problems.len() > 5 {
+        shown.push(format!("and {} more", problems.len() - 5));
+    }
+    shown.join(", ")
+}
+
+/// A keep or an undo on its way.
+pub fn keeping(name: &str, what: Do, now_ns: u64) -> Line {
+    let title = match what {
+        Do::Undo => format!("Undoing the keep of try {name}"),
+        _ => format!("Keeping try {name}"),
+    };
+    let mut line = Line::new(format!("try {name}"), Mark::Work, title);
+    line.aside = format!("at {}", clock(now_ns, now_ns));
+    line.said = format!("{}.", line.title);
+    line
+}
+
+/// A keep or an undo, done, or why arbor did not do it.
+pub fn kept(d: &Done, now_ns: u64) -> Line {
+    let (name, base) = (&d.name, shown_path(&d.base));
+    let n: usize = d.counts.iter().sum();
+    let (mark, title, detail) = match (d.what, &d.failed, d.problems.is_empty()) {
+        (Do::Undo, None, _) => (
+            Mark::Done,
+            format!("Undid the keep of try {name}: it is open again"),
+            format!(
+                "{} taken back out of {base}: {}",
+                files(n),
+                counted(d.counts)
+            ),
+        ),
+        (_, None, _) => (
+            Mark::Done,
+            format!("Kept try {name}: its changes are in {base}"),
+            format!("{}: {}", capital(&files(n)), counted(d.counts)),
+        ),
+        (Do::Undo, Some(_), false) => (
+            Mark::Failed,
+            format!("Not undone: files changed in {base} since the keep"),
+            format!(
+                "{}. Undoing would lose those changes, so nothing was undone.",
+                capital(&plain_list(&d.problems))
+            ),
+        ),
+        (_, Some(_), false) => (
+            Mark::Failed,
+            format!("Not kept: your own files changed since try {name} began"),
+            format!(
+                "In {base}: {}. Keeping would overwrite them, so nothing was kept.",
+                plain_list(&d.problems)
+            ),
+        ),
+        (Do::Undo, Some(why), true) => (Mark::Failed, format!("Not undone: {why}"), String::new()),
+        (_, Some(why), true) => (Mark::Failed, format!("Not kept: {why}"), String::new()),
+    };
+    let mut line = Line::new(format!("try {name}"), mark, title);
+    line.detail = detail;
+    line.aside = format!("at {}", clock(now_ns, now_ns));
+    line.tip = match d.what {
+        Do::Undo => format!("`arbor undo {name}` on world {name}."),
+        _ => format!("`arbor keep {name}` on world {name}."),
+    };
+    line.said = match line.detail.as_str() {
+        "" => format!("{}.", line.title),
+        detail => format!("{}. {detail}", line.title),
+    };
+    line
+}
+
+/// One file in the view of what a try changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileLine {
+    /// `added`, `changed`, `removed`.
+    pub word: String,
+    /// Its name within its folder.
+    pub name: String,
+    /// The lines that changed, when it is text.
+    pub patch: Option<String>,
+    /// The button's name on the accessibility bus.
+    pub show: String,
+}
+
+/// The view of what a try changed: a note when a keep would be refused, then the files by folder.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Changes {
+    pub note: Option<String>,
+    pub groups: Vec<(String, Vec<FileLine>)>,
+    /// What an announcement says when it opens.
+    pub news: String,
+}
+
+pub fn changes(name: &str, base: &Path, look: &Look) -> Changes {
+    let base = shown_path(base);
+    if let Some(why) = &look.failed {
+        return Changes {
+            note: Some(format!("Its changes could not be read: {why}")),
+            news: format!("The changes of try {name} could not be read"),
+            ..Changes::default()
+        };
+    }
+    let note = (!look.conflicts.is_empty()).then(|| {
+        format!(
+            "Keep would be refused: since this try began, these changed in {base}: {}. Keeping would \
+             overwrite them.",
+            plain_list(&look.conflicts)
+        )
+    });
+    let mut groups: Vec<(String, Vec<FileLine>)> = Vec::new();
+    for c in &look.files {
+        let path = c.path.trim_end_matches('/');
+        let (dir, file) = match path.rsplit_once('/') {
+            Some((d, f)) => (format!("in {d}/"), f.to_string()),
+            None => (format!("at the top of {base}"), path.to_string()),
+        };
+        let word = match c.mark {
+            'A' => "added",
+            'M' => "changed",
+            'D' => "removed",
+            _ => "special, not kept",
+        };
+        let patch = look.patches.get(&c.path).map(|p| match p.more {
+            0 => p.text.clone(),
+            n => format!(
+                "{}\n… {n} more lines: `arbor diff {name} --patch` shows them all",
+                p.text
+            ),
+        });
+        let line = FileLine {
+            word: word.into(),
+            name: file + if c.path.ends_with('/') { "/" } else { "" },
+            patch,
+            show: format!("Show the change to {path}"),
+        };
+        match groups.iter_mut().find(|(d, _)| *d == dir) {
+            Some((_, files)) => files.push(line),
+            None => groups.push((dir, vec![line])),
+        }
+    }
+    // The top of the folder first, then each folder by name.
+    groups.sort_by_key(|(d, _)| (!d.starts_with("at the top"), d.clone()));
+    let n = look.files.len();
+    let news = format!(
+        "{} changed in try {name}{}",
+        capital(&files(n)),
+        if note.is_some() {
+            "; keep would be refused"
+        } else {
+            ""
+        }
+    );
+    Changes { note, groups, news }
 }
 
 /// A room: a command running in a try.
@@ -638,6 +882,7 @@ mod tests {
             since_ns: 0,
             kept_ns: kept.then_some(0),
             changes,
+            counts: [changes.unwrap_or(0), 0, 0],
         }
     }
 
@@ -695,6 +940,32 @@ mod tests {
         let kept = try_line(&try_named("notes", true, None), 0, 0);
         assert_eq!(kept.mark, Mark::Kept);
         assert!(kept.detail.starts_with("kept at "));
+    }
+
+    #[test]
+    fn a_try_keeps_after_one_confirmation() {
+        let acts = |t: &Try| try_line(t, 0, 0).acts;
+        let open = acts(&try_named("site", false, Some(1)));
+        let whats: Vec<Do> = open.iter().map(|a| a.what).collect();
+        assert_eq!(whats, [Do::Changes, Do::Keep]);
+        assert_eq!(open[0].ask, "", "seeing the changes needs no confirmation");
+        assert_eq!(
+            (open[1].ask.as_str(), open[1].go.as_str()),
+            ("Keep it?", "Keep")
+        );
+        assert!(
+            open[1]
+                .says
+                .starts_with("1 file goes into /nowhere/site, all at once: 1 added.")
+        );
+        let many = acts(&try_named("shop", false, Some(3)));
+        assert!(many[1].says.starts_with("3 files go into /nowhere/shop"));
+        assert!(acts(&try_named("help", false, Some(0))).is_empty());
+        let kept = acts(&try_named("notes", true, None));
+        assert_eq!(
+            (kept.len(), kept[0].what, kept[0].go.as_str()),
+            (1, Do::Undo, "Undo the keep")
+        );
     }
 
     #[test]

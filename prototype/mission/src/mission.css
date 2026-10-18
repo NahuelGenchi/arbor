@@ -91,5 +91,14 @@ row.room .title { font-weight: 500; }
   margin-top: 4px; padding: 6px 10px; border-radius: 6px; background-color: var(--paper); border: 1px solid var(--rule);
   color: var(--ink); font-size: 0.9em;
 }
+/* What a try changed, under its line: a note when a keep would be refused, then the files by folder. */
+.changes {
+  margin-top: 8px; padding: 10px 14px; border: 1px solid var(--rule); border-radius: 10px;
+  background-color: var(--paper);
+}
+.changes .warn { color: var(--ink); font-weight: 600; margin-bottom: 4px; }
+.changes .folder { color: var(--ink-2); font-size: 0.93em; margin-top: 6px; }
+.changes .word { color: var(--ink-2); min-width: 64px; }
+.changes button.small { min-height: 24px; padding: 0 10px; font-size: 0.93em; }
 
 .newer { border: 1px dashed var(--ink-3); border-radius: 8px; padding: 6px 6px 6px 10px; margin: 4px 0; }

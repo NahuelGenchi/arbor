@@ -30,6 +30,8 @@ pub struct Try {
     pub kept_ns: Option<u64>,
     /// Files added, changed and deleted, while it is open; `None` when they could not be read.
     pub changes: Option<usize>,
+    /// Of those, how many were added, changed and deleted.
+    pub counts: [usize; 3],
 }
 
 /// A running cell, with what it used when it was read.
@@ -241,7 +243,7 @@ impl Reader {
                 && working.contains(t.name.as_str())
                 && let Some(w) = self.worlds.get(&t.name)
             {
-                t.changes = changes(w);
+                (t.changes, t.counts) = changes(w);
             }
         }
     }
@@ -341,6 +343,10 @@ impl Reader {
 }
 
 fn try_of(w: &World) -> Try {
+    let (changes, counts) = match w.state {
+        State::Open => changes(w),
+        State::Kept => (None, [0; 3]),
+    };
     Try {
         name: w.name.clone(),
         base: w.base.clone(),
@@ -349,18 +355,23 @@ fn try_of(w: &World) -> Try {
             State::Open => None,
             State::Kept => Some(w.kept_ns.unwrap_or(w.since_ns)),
         },
-        changes: match w.state {
-            State::Open => changes(w),
-            State::Kept => None,
-        },
+        changes,
+        counts,
     }
 }
 
-fn changes(w: &World) -> Option<usize> {
-    tree::entries(w)
-        .and_then(|e| tree::changes(w, &e))
-        .ok()
-        .map(|c| c.len())
+/// How many files a world changes, and how many of them it adds, changes and deletes.
+fn changes(w: &World) -> (Option<usize>, [usize; 3]) {
+    match tree::entries(w).and_then(|e| tree::changes(w, &e)) {
+        Ok(c) => (Some(c.len()), counts(&c)),
+        Err(_) => (None, [0; 3]),
+    }
+}
+
+/// Added, changed and deleted, in a list of changes.
+pub fn counts(changes: &[tree::Change]) -> [usize; 3] {
+    let n = |m| changes.iter().filter(|c| c.mark == m).count();
+    [n('A'), n('M'), n('D')]
 }
 
 fn waiting() -> Result<Vec<Effect>> {
