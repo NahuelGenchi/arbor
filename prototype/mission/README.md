@@ -8,7 +8,7 @@ The window shows, from arbor's own state folder:
 
 - **Needs you**: the effects waiting in the outbox for a person, each with its command, where it runs, what it says it costs and why, in the agent's own words and marked as not checked, and **Release** and **Refuse**.
 - **Done here**: what you did from the window, newest first: a released command's receipt (how it ended, how long it took, how much it printed and the first lines of it), the refusal and your reason, or a try kept or its keep undone, and, when arbor would not, why.
-- **Tries**: every world, working ones first, with the rooms working in each (the cells running there), their command, key, memory and share of a processor, and what changed in words (*3 files changed*), with **See changes** and **Keep** on an open try that changed something, and **Undo the keep** on a kept one. Past 12 tries, and past 3 rooms in a try, the rest fold into one line.
+- **Tries**: every world: first the ones you acted on from the window, then open ones with changes and nothing running, which wait for you to keep them, then working ones, then the rest, with the rooms working in each (the cells running there), their command, key, memory and share of a processor, and what changed in words (*3 files changed*), with **See changes** and **Keep** on an open try that changed something, and **Undo the keep** on a kept one. Past 12 tries, and past 3 rooms in a try, the rest fold into one line.
 - **History**: the ledger's last 8 steps, newest first. A step that arrives later does not push the list down under the reader's eyes: a line says *There are 2 newer steps*, and a button shows them.
 
 ## Build and run

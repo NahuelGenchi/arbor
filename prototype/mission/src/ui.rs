@@ -229,6 +229,8 @@ struct Ui {
     answered: RefCell<Vec<Line>>,
     /// For the suite's `--bench answer` and `--bench keep`: the frame that shows each result, by its line's key.
     result_frame: RefCell<HashMap<String, i64>>,
+    /// The tries acted on from this window, which Tries shows first.
+    pinned: RefCell<HashSet<String>>,
 }
 
 /// Gives a button its own name on the accessibility bus. A button is labelled by its label child, which comes before
@@ -843,6 +845,7 @@ impl Ui {
             hidden: RefCell::new(HashSet::new()),
             answered: RefCell::new(Vec::new()),
             result_frame: RefCell::new(HashMap::new()),
+            pinned: RefCell::new(HashSet::new()),
         });
         me.replace(Rc::downgrade(&ui));
 
@@ -1129,7 +1132,8 @@ impl Ui {
         }
         // An answer is the person's own doing: it shows at once, without motion.
         self.answers.show(self.answered.borrow().clone(), false);
-        self.tries.show(try_lines(&snap), arrive);
+        let lines = try_lines(&snap, &self.pinned.borrow());
+        self.tries.show(lines, arrive);
         self.show_steps(&snap, false);
     }
 
@@ -1239,6 +1243,7 @@ impl Ui {
             return;
         }
         panel.set_visible(false);
+        self.pinned.borrow_mut().insert(name.clone());
         let done_key = format!("try {name}");
         self.put_answer(words::keeping(&name, what, world::now_ns()));
         self.answers.focus(&done_key);
@@ -1674,7 +1679,7 @@ fn fill(panel: &gtk::Box, view: &words::Changes) {
                     .label("Show the change")
                     .css_classes(["act", "small"])
                     .build();
-                show.update_property(&[gtk::accessible::Property::Label(&f.show)]);
+                named(&show, &f.show);
                 let shown = lines.clone();
                 show.connect_clicked(move |b| {
                     let open = !shown.is_visible();
@@ -1710,10 +1715,12 @@ fn open_first_change(panel: &gtk::Box) {
     }
 }
 
-/// The tries, with what is working first: tries with rooms running, then open ones, then kept ones, each band by
-/// name. Each try is followed by its first rooms, oldest first, and one line for the rest; past `TRIES_SHOWN`, the
-/// tries fold into one line that counts them.
-fn try_lines(snap: &Snapshot) -> Vec<Line> {
+/// The tries, with what a person may act on first: the ones acted on from this window (`pinned`), then open ones with
+/// changes and no room running, which wait for a keep, then tries with rooms running, then the other open ones, then
+/// kept ones, each band by name. So a try that can be kept, or was just kept, never folds away behind hundreds of
+/// working ones. Each try is followed by its first rooms, oldest first, and one line for the rest; past
+/// `TRIES_SHOWN`, the tries fold into one line that counts them.
+fn try_lines(snap: &Snapshot, pinned: &HashSet<String>) -> Vec<Line> {
     // Each try's rooms, gathered once: hundreds of tries and rooms would otherwise be compared pair by pair.
     let mut rooms_in: HashMap<&str, Vec<&state::Room>> = HashMap::new();
     for r in &snap.rooms {
@@ -1721,9 +1728,11 @@ fn try_lines(snap: &Snapshot) -> Vec<Line> {
     }
     let working = |t: &state::Try| rooms_in.contains_key(t.name.as_str());
     let band = |t: &state::Try| match (t.kept_ns, working(t)) {
-        (None, true) => 0,
-        (None, false) => 1,
-        (Some(_), _) => 2,
+        _ if pinned.contains(&t.name) => 0,
+        (None, false) if t.changes.unwrap_or(0) > 0 => 1,
+        (None, true) => 2,
+        (None, false) => 3,
+        (Some(_), _) => 4,
     };
     let mut tries: Vec<&state::Try> = snap.tries.iter().collect();
     tries.sort_by(|a, b| band(a).cmp(&band(b)).then(a.name.cmp(&b.name)));
