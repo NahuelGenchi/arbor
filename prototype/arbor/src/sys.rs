@@ -1,15 +1,16 @@
 //! Thin wrappers for the few Linux calls the standard library lacks: locks, atomic renames, extended attributes,
-//! whiteouts, the session keyring, process and folder watches, threads that leave signals to the main one, and
-//! deferred interrupts. Path calls never follow a final symlink.
+//! whiteouts, private temporary folders, lookups from an open folder, the session keyring, process and folder
+//! watches, threads that leave signals to the main one, and deferred interrupts. Path calls never follow a final
+//! symlink.
 
-use std::ffi::CString;
+use std::ffi::{CString, OsString};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -146,6 +147,38 @@ pub fn remove_xattr(path: &Path, name: &str) -> io::Result<()> {
 pub fn make_whiteout(path: &Path) -> io::Result<()> {
     let p = cpath(path)?;
     check(unsafe { libc::mknod(p.as_ptr(), libc::S_IFCHR, libc::makedev(0, 0)) })
+}
+
+/// Makes a new folder that only its owner may enter, named `prefix` and six random characters, and returns its path.
+pub fn make_temp_dir(prefix: &Path) -> io::Result<PathBuf> {
+    let mut template = prefix.as_os_str().as_bytes().to_vec();
+    template.extend_from_slice(b"XXXXXX\0");
+    if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    template.pop();
+    Ok(PathBuf::from(OsString::from_vec(template)))
+}
+
+/// Which of `names` there are in the folder `dir`, by their place in `names`. Each is looked up from the open folder,
+/// not along the whole path, since a cell looks for a few names in many folders when it starts.
+pub fn present(dir: &Path, names: &[CString]) -> Vec<usize> {
+    let Ok(folder) = cpath(dir) else {
+        return Vec::new();
+    };
+    let flags = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let fd = unsafe { libc::open(folder.as_ptr(), flags) };
+    if fd < 0 {
+        return Vec::new();
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    (0..names.len())
+        .filter(|&i| {
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            let at = libc::AT_SYMLINK_NOFOLLOW;
+            unsafe { libc::fstatat(fd.as_raw_fd(), names[i].as_ptr(), &mut st, at) == 0 }
+        })
+        .collect()
 }
 
 /// True for an overlayfs whiteout: a character device numbered 0:0.

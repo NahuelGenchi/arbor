@@ -19,7 +19,7 @@ for f in run.sh config.sh check.sh toolkits/build.sh; do check "bash -n $f" bash
 PYTHONPYCACHEPREFIX="$(mktemp -d)"
 export PYTHONPYCACHEPREFIX
 trap 'rm -rf "$PYTHONPYCACHEPREFIX"' EXIT
-for f in lib/*.py sections/*.py; do check "py_compile $f" python3 -m py_compile "$f"; done
+for f in lib/*.py sections/*.py sessions/*.py; do check "py_compile $f" python3 -m py_compile "$f"; done
 
 for f in lib/*.js sections/*.js; do check "node --check $f" node --check "$f"; done
 
