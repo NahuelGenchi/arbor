@@ -14,20 +14,20 @@ offered as a tool of its own, by look_mcp.py. Each task runs --reps times per ar
   models' API and its list of models) and that world only. Its settings, there alone, allow only OpenCode's own
   provider, name the free model for every call, the background ones included, and turn off updates, language servers
   and formatters. In the tool arm they also start look_mcp.py, copied into that home, as a local MCP server whose
-  tool is called directly, not through Code Mode. No login goes in: the free model needs none, so no plan's quota can
-  be reached;
+  tool the agent can call directly, not only from Code Mode. No login goes in: the free model needs none, so no plan's
+  quota can be reached;
 - `opencode models`, which fetches the list of models into that home, then
   `opencode run --standalone --auto -m MODEL PROMPT`, its input closed.
 
 When it ends, or after AB_TIMEOUT seconds (900 when unset, counted a failure), the session is counted from OpenCode's
 own records, its database in the key's home, read-only and from the session tables only, never the one with logins:
 each model call (a step) with its input, cache-read, cache-write, output and reasoning tokens, the tools it called,
-the commands it ran in the shell and the queries it gave the `arbor look` tool, and its last answer. The task's check
-then decides success, from that answer or from the files left in the world. A session that OpenCode ends with an
-error of the provider's, such as the free model's rate limit, runs again, at most twice; the attempts stay in the
-records. When the provider ends every attempt, the run stops, since the rate limit lasts a while: `--resume` goes on
-later, running again that session, any other whose every attempt the provider ended, and those the run did not
-reach. Then the key is taken back, which deletes its home, and the world is thrown away.
+the commands it ran in the shell, the queries it gave the `arbor look` tool, the code it gave Code Mode, and its last
+answer. The task's check then decides success, from that answer or from the files left in the world. A session that
+OpenCode ends with an error of the provider's, such as the free model's rate limit, runs again, at most twice; the
+attempts stay in the records. When the provider ends every attempt, the run stops, since the rate limit lasts a
+while: `--resume` goes on later, running again that session, any other whose every attempt the provider ended, and
+those the run did not reach. Then the key is taken back, which deletes its home, and the world is thrown away.
 
 The run stops if a step names another model or records a cost other than 0, or if MODEL is not one of the free ones
 (its name ends in `-free`). arbor runs with ARBOR_HOME in the temp folder, so none of the person's worlds, keys or
@@ -212,6 +212,10 @@ def count(db, folder):
             elif tool in (LOOK_TOOL, T.TOOL['name']):
                 rec['commands'].append(f'{tool} {json.dumps(given.get("queries"))}'.replace(folder, '.')[:300])
                 rec['arbor_look'] += 1
+            elif tool == 'execute':  # Code Mode, whose code may call the shell or the tool as `tools.arbor.look`
+                code = str(given.get('code') or '')
+                rec['commands'].append(f'execute {code}'.replace(folder, '.')[:300])
+                rec['arbor_look'] += code.count('arbor look') + code.count(f'.{MCP}.{T.TOOL["name"]}(')
         if sid == main:
             rec['context_last'] = ctx
             if text:

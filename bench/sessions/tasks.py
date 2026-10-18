@@ -42,8 +42,9 @@ Read with `arbor look`, in the shell, instead of reading whole files:
 # Arms C and D (#74), written before their runs: B's agent took more steps, walking folders where A's used grep,
 # reading an outline and its lines in two calls, asking `arbor look` what it answers. C and D say to find with grep
 # first and then make every read in one call, and describe the queries in full. C runs `arbor look` in the shell; D
-# calls it as a tool of its own (TOOL), not through the shell or Code Mode, and finds the queries in the tool's
-# description.
+# calls it as a tool of its own (TOOL), not through the shell, and finds the queries in the tool's description. Before
+# the runs, a smoke test's agent in D sent `grep` to `arbor look` as a query: both now name the grep tool, and say that
+# `arbor look` has no search.
 QUERIES = """\
 - `outline FILE`: the definitions in a Rust, Python, JavaScript, TypeScript or shell file, or a Markdown file's
   headings, each with the lines it spans, its comments and attributes included. `lines FILE LINE-END` then reads one
@@ -52,8 +53,8 @@ QUERIES = """\
 - `files [DIR]`: what a folder holds.
 - `status`, and `log [REV] [PATH]...`: what changed in the git repository, and its commits.
 
-After a query, `-n ROWS` says how many rows it gives (0 for all). Each answer starts with a line `# QUERY`, which says
-what was cut or why the query failed.
+There is no query that searches: find with the grep tool. After a query, `-n ROWS` says how many rows it gives (0
+for all). Each answer starts with a line `# QUERY`, which says what was cut or why the query failed.
 """
 
 C_LOOK = """
@@ -61,7 +62,7 @@ C_LOOK = """
 
 Read with `arbor look`, in the shell, in as few steps as you can:
 
-- Find where things are with grep first, rather than by listing folders.
+- Find where things are with the grep tool first, rather than by listing folders.
 - Then make every read the task needs in one call, joined by `+`:
   `arbor look outline src/a.rs + lines src/a.rs 120-160 + lines src/b.py 40-80`. Read a large file by its outline
   and the lines you need, not whole.
@@ -75,7 +76,7 @@ D_LOOK = """
 
 Read with the `arbor_look` tool, in as few steps as you can:
 
-- Find where things are with grep first, rather than by listing folders.
+- Find where things are with the grep tool first, rather than by listing folders.
 - Then make every read the task needs in one `arbor_look` call, one query per item:
   `["outline src/a.rs", "lines src/a.rs 120-160", "lines src/b.py 40-80"]`. Read a large file by its outline and
   the lines you need, not whole.

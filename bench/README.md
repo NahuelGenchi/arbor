@@ -212,11 +212,11 @@ of 10 rounds took about 48 minutes (**M**).
   before the runs, decides success from the agent's last answer or from the files it left in the world.
 - **The arms** differ only in the world's `AGENTS.md` and, for D, one tool: **A** describes the repository; **B** adds
   a paragraph that says to read with `arbor look`, a large file by its outline and lines, several reads in one call.
-  **C** and **D** (#74) aim at the steps B added: find with grep first, rather than by listing folders, then make every
-  read the task needs in one call, with the queries described in full. C runs `arbor look` in the shell. D calls it as
-  a tool of its own, `arbor_look`, which takes a list of queries: `sessions/look_mcp.py`, a local MCP server that
-  OpenCode starts in the cell from the key's settings, called directly rather than through Code Mode, with the
-  queries in its description.
+  **C** and **D** (#74) aim at the steps B added: find with the grep tool first, rather than by listing folders, then
+  make every read the task needs in one call, with the queries described in full. C runs `arbor look` in the shell. D
+  calls it as a tool of its own, `arbor_look`, which takes a list of queries: `sessions/look_mcp.py`, a local MCP
+  server that OpenCode starts in the cell from the key's settings, with the queries in its description. The agent can
+  call it directly, and Code Mode also offers it, as `tools.arbor.look`.
 - **Each session starts afresh**: a copy of the arm's repository at the same path, a new world over it, and a new key
   with a home folder of its own that opens OpenCode's program, its two hosts and that world. The arms take turns (AB,
   then BA; ACD, CDA, then DAC).
