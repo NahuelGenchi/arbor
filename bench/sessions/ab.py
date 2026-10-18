@@ -244,10 +244,11 @@ def session(arbor, work, task, arm, n):
     for name, data in {'opencode.json': json.dumps(settings).encode(), **files}.items():
         arbor('run', WORLD, '--key', key, '--', 'sh', '-c', f'mkdir -p ~/{MCP_DIR} && cat > ~/{MCP_DIR}/{name}',
               input=data)
-    for _ in range(3):  # a new home fetches the list of models in the background; ask again until MODEL is there
+    for attempt in range(5):  # a new home fetches the list of models in the background, and it can miss for a while
         listed = arbor('run', WORLD, '--key', key, '--', OPENCODE, 'models', '--standalone', check=False)
         if MODEL in listed.stdout.decode(errors='replace').split():
             break
+        time.sleep(5 * (attempt + 1))
     else:
         raise RuntimeError(f'{MODEL} is not among the models OpenCode lists')
     rec = {'n': n, 'task': task, 'arm': arm, 'started': datetime.datetime.now().isoformat(timespec='seconds'),
