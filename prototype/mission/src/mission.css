@@ -6,6 +6,8 @@ window.mission {
   --paper: #fcfbf8; --wash: #f4f1ea; --rule: #e6e2d8;
   --ink: #1c1b18; --ink-2: #4b4841; --ink-3: #6f6b61;
   --green: #1d8a5a; --amber: #a86f0c; --amber-ink: #8a5a00; --amber-wash: #fbf0dc;
+  /* Release's button: white on a darker green, 5.3:1 (white on --green is 4.3:1, under AA for its text). */
+  --go: #187a4f; --go-ink: #ffffff;
   background-color: var(--wash);
 }
 /* The title bar keeps the desktop's own colours. */
@@ -16,6 +18,7 @@ window.mission scrolledwindow { color: var(--ink); }
     --paper: #141917; --wash: #1b221f; --rule: #2a332e;
     --ink: #ece9e1; --ink-2: #c0bcb1; --ink-3: #8f8b81;
     --green: #2f9e6c; --amber: #c98500; --amber-ink: #e6ad45; --amber-wash: #2e2512;
+    --go: #2f9e6c; --go-ink: #141917; /* 5.3:1 */
   }
 }
 
@@ -60,6 +63,9 @@ row.room .title { font-weight: 500; }
 .mark.work { background-color: var(--green); }
 .mark.idle { min-width: 5px; min-height: 5px; border: 1.5px solid var(--ink-3); }
 .mark.kept { background-color: var(--ink-3); border-radius: 2px; }
+.mark.done { min-width: 7px; min-height: 7px; background-color: var(--green); border-radius: 1px; transform: rotate(45deg); }
+.mark.no { min-width: 10px; min-height: 2px; margin-top: 3px; background-color: var(--ink-3); border-radius: 1px; }
+.mark.failed { min-width: 5px; min-height: 5px; border: 2px solid var(--amber); border-radius: 1px; }
 .pill {
   background-color: var(--amber-wash); color: var(--amber-ink); border-radius: 99px; padding: 2px 9px 2px 7px;
   font-weight: 600; font-size: 0.85em; margin-top: -3px;
@@ -69,4 +75,21 @@ row.room .title { font-weight: 500; }
 .side {
   background-color: var(--paper); border: 1px solid var(--rule); border-radius: 12px; padding: 16px 18px;
 }
+/* Buttons on a line, and the confirmation that opens under it. */
+.acts { margin-top: 6px; }
+.acts button, .confirm button { min-height: 28px; padding: 2px 14px; }
+.confirm {
+  margin-top: 8px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 10px;
+  background-color: var(--paper);
+}
+.confirm .ask { font-weight: 700; }
+.confirm .detail { color: var(--ink); }
+.confirm button.go { font-weight: 600; }
+.confirm button.go.release { background: var(--go); color: var(--go-ink); }
+.confirm button.go.refuse { background: var(--ink); color: var(--paper); }
+.output {
+  margin-top: 4px; padding: 6px 10px; border-radius: 6px; background-color: var(--paper); border: 1px solid var(--rule);
+  color: var(--ink); font-size: 0.9em;
+}
+
 .newer { border: 1px dashed var(--ink-3); border-radius: 8px; padding: 6px 6px 6px 10px; margin: 4px 0; }

@@ -9,6 +9,7 @@ use std::path::Path;
 use arbor::ledger::Step;
 use arbor::outbox::{self, Effect};
 
+use crate::act::{Answer, Ask};
 use crate::state::{Room, Snapshot, Try, shown_path};
 
 /// The mark at the start of a line. Each state has a word and a shape of its own, never a colour alone.
@@ -22,8 +23,37 @@ pub enum Mark {
     Idle,
     /// Kept: a small square.
     Kept,
+    /// Released, and it finished: a green diamond.
+    Done,
+    /// Refused: a short bar.
+    No,
+    /// It failed, or arbor could not do what was asked: a hollow amber square.
+    Failed,
     /// None: a folded line, or a step of history.
     None,
+}
+
+/// What a button on a line does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Do {
+    Release,
+    Refuse,
+}
+
+/// A button on a line, and the confirmation it asks for before anything happens.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Act {
+    pub what: Do,
+    /// On the button: `Release…`.
+    pub label: String,
+    /// The button's name on the accessibility bus, which says what it acts on: `Release git push origin fix`.
+    pub name: String,
+    /// The confirmation: its question, the sentence that says what will happen, and the button that does it.
+    pub ask: String,
+    pub says: String,
+    pub go: String,
+    /// It offers a reason to give, in a box with this hint.
+    pub reason: Option<String>,
 }
 
 /// One line of a list, everything the window shows of it.
@@ -42,8 +72,12 @@ pub struct Line {
     pub detail: String,
     /// On the right: when, or where.
     pub aside: String,
-    /// The asker's own words, which nobody checked, marked as such.
+    /// The asker's own words, which nobody checked, marked as such, or the person's own reason.
     pub note: Option<String>,
+    /// What a command printed, as it printed it.
+    pub output: Option<String>,
+    /// The buttons on the line.
+    pub acts: Vec<Act>,
     /// Arbor's own terms, one step down.
     pub tip: String,
     /// The whole line as one sentence, for a screen reader.
@@ -62,6 +96,8 @@ impl Line {
             detail: String::new(),
             aside: String::new(),
             note: None,
+            output: None,
+            acts: Vec::new(),
             tip: String::new(),
             said: String::new(),
         }
@@ -112,7 +148,8 @@ pub fn lead(s: &Snapshot) -> String {
 /// A decision: an effect waiting for a person.
 pub fn decision(e: &Effect, now_ns: u64) -> Line {
     let cmd = e.shown();
-    let folder = shown_path(&e.folder());
+    // Without a trailing slash when the asker stood at the top of the folder.
+    let folder = shown_path(&e.folder().components().collect::<std::path::PathBuf>());
     let asked = clock(e.asked_ns, now_ns);
     let mut line = Line::new(format!("effect {}", e.id), Mark::Wait, cmd.clone());
     line.badge = Some("decision".into());
@@ -147,11 +184,56 @@ pub fn decision(e: &Effect, now_ns: u64) -> Line {
         ));
     }
     line.tip = format!(
-        "Effect {id} in arbor's outbox, asked by cell {cell} {from}. `arbor outbox {id}` shows all of it; \
-         `arbor release {id}` or `arbor refuse {id}` answers it.",
+        "Effect {id} in arbor's outbox, asked by cell {cell} {from}. `arbor outbox {id}` shows all of it. \
+         Release runs `arbor release {id}`, and Refuse `arbor refuse {id}`.",
         id = e.id,
         cell = e.cell,
     );
+    let mut runs = format!(
+        "It runs once, now: {cmd}, as you, with the network, in {folder}. Arbor cannot take back what it does \
+         outside this computer."
+    );
+    if e.back {
+        runs += &format!(" What it prints goes back to try {}.", e.world);
+    }
+    if let Some(c) = e.cost {
+        runs += &format!(
+            " It says it costs {}, which nobody checked.",
+            outbox::money(c)
+        );
+    }
+    line.acts = vec![
+        Act {
+            what: Do::Release,
+            label: "Release…".into(),
+            name: format!("Release {cmd}"),
+            ask: "Release it?".into(),
+            says: runs,
+            go: "Release now".into(),
+            reason: None,
+        },
+        Act {
+            what: Do::Refuse,
+            label: "Refuse…".into(),
+            name: format!("Refuse {cmd}"),
+            ask: "Refuse it?".into(),
+            says: match e.back {
+                true => format!(
+                    "{cmd} will not run. Try {} waits for your answer, and is told no.",
+                    e.world
+                ),
+                false => format!("{cmd} will not run. The refusal is kept in history."),
+            },
+            go: "Refuse".into(),
+            reason: Some(match e.back {
+                true => format!(
+                    "Your reason, if you want to give one: try {} is told",
+                    e.world
+                ),
+                false => "Your reason, if you want to give one: it is kept with the refusal".into(),
+            }),
+        },
+    ];
     line.said = format!(
         "Decision waiting since {asked}: run {cmd}, as you, with the network, in {folder}, asked {from}.{}",
         line.note
@@ -260,6 +342,145 @@ pub fn more_tries(n: usize, working: usize) -> Line {
     line.tip = "`arbor worlds` lists every world, and `arbor ps` every cell.".into();
     line.said = format!("{}.", line.title);
     line
+}
+
+/// An answer on its way: the command that answers it runs.
+pub fn answering(e: &Effect, ask: &Ask, now_ns: u64) -> Line {
+    let cmd = e.shown();
+    let at = clock(now_ns, now_ns);
+    let (mark, title) = match ask {
+        Ask::Release => (Mark::Work, format!("Releasing: running since {at}")),
+        Ask::Refuse(_) => (Mark::Work, "Refusing".to_string()),
+    };
+    let mut line = Line::new(format!("answer {}", e.id), mark, title);
+    line.command = Some(cmd.clone());
+    line.detail = match ask {
+        Ask::Release => "It goes on if you close this window.".into(),
+        Ask::Refuse(_) => String::new(),
+    };
+    line.tip = format!("{cmd}\nEffect {} in arbor's outbox.", e.id);
+    line.said = format!("{}: {cmd}. {}", line.title, line.detail)
+        .trim_end()
+        .to_string();
+    line
+}
+
+/// An answer, done: the receipt of a released command, a refusal, or why arbor did neither. `e` is the effect as it
+/// was when the person answered it.
+pub fn answered(e: &Effect, a: &Answer, now_ns: u64) -> Line {
+    let cmd = e.shown();
+    let after = a.effect.as_ref();
+    let at = clock(after.and_then(|x| x.answered_ns).unwrap_or(now_ns), now_ns);
+    let verb = match a.ask {
+        Ask::Release => "released",
+        Ask::Refuse(_) => "refused",
+    };
+    let mut detail = Vec::new();
+    let (mark, title) = match (
+        after.map(|x| x.state),
+        after.and_then(|x| x.receipt.as_ref()),
+    ) {
+        _ if a.failed.is_some() => (
+            Mark::Failed,
+            format!("Not {verb}: {}", a.failed.as_deref().unwrap_or_default()),
+        ),
+        (Some(outbox::State::Done), Some(r)) => {
+            detail.push(took(r.ms));
+            detail.push(printed(r.output));
+            match r.exit {
+                0 => (Mark::Done, "Released: it finished".to_string()),
+                -1 => (
+                    Mark::Failed,
+                    "Released: how it ended is not known".to_string(),
+                ),
+                c => (
+                    Mark::Failed,
+                    format!("Released: it failed with exit code {c}"),
+                ),
+            }
+        }
+        (Some(outbox::State::Refused), _) => (
+            Mark::No,
+            match a.ask {
+                Ask::Refuse(_) => "Refused: it did not run".to_string(),
+                Ask::Release => "Not released: it was refused first".to_string(),
+            },
+        ),
+        (Some(outbox::State::Running), _) => (
+            Mark::Failed,
+            "Released, but arbor stopped while it ran, so what it did is not known".to_string(),
+        ),
+        _ => (
+            Mark::Failed,
+            format!("Not {verb}: its record cannot be read"),
+        ),
+    };
+    let mut line = Line::new(format!("answer {}", e.id), mark, title);
+    line.command = Some(cmd.clone());
+    line.aside = format!("at {at}");
+    line.detail = detail.join(" · ");
+    if let Some(x) = after
+        && x.state == outbox::State::Refused
+        && !x.refusal.is_empty()
+    {
+        line.note = Some(match a.ask {
+            Ask::Refuse(_) => format!("Your reason: “{}”", x.refusal),
+            Ask::Release => format!("Why: {}", x.refusal),
+        });
+    }
+    line.output = a.output.clone();
+    line.tip = match after.and_then(|x| x.receipt.as_ref()) {
+        Some(r) => format!(
+            "{cmd}\nEffect {id}'s receipt: exit {}, {} printed, SHA-256 {}…, {} ms, {} ms of processor. \
+             `arbor outbox {id}` shows all of it.",
+            r.exit,
+            size_exact(r.output),
+            &r.sha256[..r.sha256.len().min(16)],
+            r.ms,
+            r.cpu_ms,
+            id = e.id
+        ),
+        None => format!(
+            "{cmd}\nEffect {id} in arbor's outbox. `arbor outbox {id}` shows all of it.",
+            id = e.id
+        ),
+    };
+    let mut said = format!("{} at {at}: {cmd}", line.title);
+    if !line.detail.is_empty() {
+        said += &format!(", {}", line.detail.replace(" · ", ", "));
+    }
+    said.push('.');
+    if let Some(n) = &line.note {
+        said += &format!(" {n}.");
+    }
+    line.said = said;
+    line
+}
+
+/// What an announcement says of an answer once it is done: short, since the line says the rest.
+pub fn answer_news(line: &Line) -> String {
+    match (&line.command, line.title.split_once(": ")) {
+        (Some(c), Some((head, tail))) => format!("{head} {c}: {tail}"),
+        (Some(c), None) => format!("{}: {c}", line.title),
+        (None, _) => line.title.clone(),
+    }
+}
+
+/// How much a command printed.
+fn printed(bytes: u64) -> String {
+    match bytes {
+        0 => "printed nothing".into(),
+        _ => format!("printed {}", size_exact(bytes)),
+    }
+}
+
+/// Bytes, counted one by one below a kB.
+fn size_exact(bytes: u64) -> String {
+    match bytes {
+        1 => "1 byte".into(),
+        0..1000 => format!("{bytes} bytes"),
+        _ => size(bytes),
+    }
 }
 
 /// A step of history.
@@ -488,6 +709,50 @@ mod tests {
         let idle = room(&room_in("shop", Some(0.1)), 0);
         assert_eq!(idle.mark, Mark::Idle);
         assert!(idle.detail.ends_with("· idle"));
+    }
+
+    fn waiting(back: bool) -> Effect {
+        serde_json::from_value(serde_json::json!({
+            "id": 4, "world": "shop", "cell": "0a1b", "base": "/nowhere/shop", "cmd": ["git", "push", "origin", "fix"],
+            "cost": 40, "why": "publish the fix", "back": back, "asked_ns": 0, "state": "waiting",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_decision_asks_before_it_answers() {
+        let d = decision(&waiting(false), 0);
+        let [release, refuse] = &d.acts[..] else {
+            panic!("{:?}", d.acts)
+        };
+        assert_eq!(
+            (release.what, release.label.as_str(), release.name.as_str()),
+            (Do::Release, "Release…", "Release git push origin fix")
+        );
+        assert_eq!(
+            release.says,
+            "It runs once, now: git push origin fix, as you, with the network, in /nowhere/shop. Arbor cannot \
+             take back what it does outside this computer. It says it costs $0.40, which nobody checked."
+        );
+        assert_eq!(release.reason, None);
+        assert_eq!(refuse.what, Do::Refuse);
+        assert!(refuse.says.ends_with("The refusal is kept in history."));
+        // An asker that waits for the answer gets what the command prints, or the refusal.
+        let d = decision(&waiting(true), 0);
+        assert!(d.acts[0].says.ends_with(
+            "What it prints goes back to try shop. It says it costs $0.40, which nobody checked."
+        ));
+        assert!(
+            d.acts[1]
+                .says
+                .ends_with("Try shop waits for your answer, and is told no.")
+        );
+        let busy = answering(&waiting(false), &Ask::Release, 0);
+        assert_eq!(
+            (busy.key.as_str(), busy.mark, busy.command.as_deref()),
+            ("answer 4", Mark::Work, Some("git push origin fix"))
+        );
+        assert!(busy.title.starts_with("Releasing: running since "));
     }
 
     fn step_of(act: &str, out: &str) -> Step {

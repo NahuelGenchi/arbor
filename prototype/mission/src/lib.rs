@@ -1,6 +1,7 @@
-//! Mission Control, the first window onto arbor's state (docs/INTERFACE.md): what needs a person, the tries with
-//! the rooms working in them, and the last steps of history, read-only, in GTK 4.
+//! Mission Control, the first window onto arbor's state (docs/INTERFACE.md): what needs a person, with Release and
+//! Refuse on each decision, the tries with the rooms working in them, and the last steps of history, in GTK 4.
 
+pub mod act;
 pub mod shift;
 pub mod state;
 pub mod ui;

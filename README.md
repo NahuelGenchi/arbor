@@ -253,7 +253,7 @@ arbor is planned in steps. The first prototype is a layer on top of Linux, so to
 - 🟢 **[M4 · Agent layer](https://github.com/NahuelGenchi/arbor/milestone/5)** — agents that reread less: tools described on demand, short typed answers, one shared service. *In the prototype: `arbor look`, several reads in one call, each a short table*
 - ⚪ **[M5 · Lean system](https://github.com/NahuelGenchi/arbor/milestone/6)** — memory, starting up and energy: no swapping to disk, no waiting at boot, nothing that polls
 - 🟢 **[M6 · Outbox and ledger](https://github.com/NahuelGenchi/arbor/milestone/7)** — effects that wait for a yes, budgets, and the record of every step. *In the prototype: the outbox, budgets in money, and the ledger*
-- 🟢 **[M7 · Interface](https://github.com/NahuelGenchi/arbor/milestone/8)** — Mission Control, the screen where people direct agents ([the brief](docs/INTERFACE.md)). *In the prototype: a first window, in GTK 4, that shows the tries, the rooms working in them, the decisions waiting and the last steps, and cannot answer yet*
+- 🟢 **[M7 · Interface](https://github.com/NahuelGenchi/arbor/milestone/8)** — Mission Control, the screen where people direct agents ([the brief](docs/INTERFACE.md)). *In the prototype: a first window, in GTK 4, that shows the tries, the rooms working in them, the decisions waiting and the last steps, and releases or refuses a decision once you confirm*
 
 <sub>🟢 in progress &nbsp;·&nbsp; ⚪ planned</sub>
 
@@ -279,7 +279,7 @@ arbor is planned in steps. The first prototype is a layer on top of Linux, so to
 | [`OPTIMIZATION.md`](OPTIMIZATION.md) | The report: the waste measured today, the top 10 changes for the prototype, and every source |
 | [`bench/`](bench/) | The suite that measures it all again, section by section, and the prototype the same way; also an A/B of whole agent sessions with and without `arbor look` |
 | [`prototype/`](prototype/) | The first prototype, on today's Linux: one program, `arbor`, with worlds, sealed commands, keys, limits, a network open only to the hosts a key names, the outbox, the ledger and short answers for agents; and [Mission Control](prototype/mission/README.md), a first window that shows what it is doing |
-| [`docs/INTERFACE.md`](docs/INTERFACE.md) | The design brief for Mission Control, the screen where people will direct agents. Only its first, read-only window exists |
+| [`docs/INTERFACE.md`](docs/INTERFACE.md) | The design brief for Mission Control, the screen where people will direct agents. Only its first window exists, which answers decisions |
 | [`docs/images/`](docs/images/) | The pictures on this page, and the pages they are drawn from |
 
 Work is tracked from issue to branch to milestone to pull request; see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/TRACKING.md](docs/TRACKING.md).

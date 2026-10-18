@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Opens Mission Control on made-up worlds, so it can be tried, and pictured, without showing a real computer's folders:
-#   mission/demo.sh [shot OUT.png [light|dark] [WIDTHxHEIGHT]]
+#   mission/demo.sh [shot OUT.png [light|dark] [WIDTHxHEIGHT] [SCENE]]
 # In a temp folder it makes a home with four small projects, an arbor state folder with a try of each and four more
 # tries of one of them, a room working in each of those, two decisions waiting and a kept try, then opens the window there (or, with `shot`, draws it
 # into OUT.png). Closing the window stops the rooms and removes the temp folder. It needs bwrap 0.10+ and, for the
@@ -41,6 +41,9 @@ printf '#!/bin/sh\n# translates the help pages into one language (here: holds so
 chmod +x help-pages/translate
 printf 'fn total() {}\n' >shop/cart.rs
 printf '<h1>Shop</h1>\n' >site/index.html
+# What the site's decision runs once released: it takes a moment, then says what it did (made up; nothing leaves).
+printf '#!/bin/sh\nsleep 2\necho "deployed the gallery to the test site: 3 pages, 12 images"\n' >site/deploy
+chmod +x site/deploy
 printf 'call the bookkeeper\n' >notes/todo.txt
 
 a new help-pages --from ~/projects/help-pages >/dev/null
