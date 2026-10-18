@@ -15,7 +15,7 @@ from reference import ENTRIES, M_INFO, M_PRESSURE, PSS_WHY, TOL, TOOLKITS, toolk
 SECTION_OF = (('rt.', 'runtimes'), ('cell.py_', 'pycell'), ('cell.', 'cells'), ('mem.', 'memstate'),
               ('ram.', 'memstate'), ('heap.', 'heap'), ('search.', 'search'), ('code.', 'search'), ('boot.', 'boot'),
               ('storage.', 'storage'), ('tok.', 'transcripts'), ('fmt.', 'formats'), ('arbor.', 'arbor'),
-              ('screen.', 'screen'), ('ui.', 'toolkits'))
+              ('screen.', 'screen'), ('ui.mission', 'mission'), ('ui.', 'toolkits'))
 DP = {'%': 1, 'MiB': 1, 'GiB': 1, 'MB': 1, 's': 1, '×': 2, 'Mtok': 2, 'B': 0, 'tok': 0, '': 0}
 
 

@@ -3,7 +3,7 @@
 [Back to README](../README.md) · [Issue #6](https://github.com/NahuelGenchi/arbor/issues/6) · [M7 — Interface](https://github.com/NahuelGenchi/arbor/milestone/8)
 
 > [!NOTE]
-> **No interface exists yet.** This brief decides what Mission Control shows and how a person directs agents through it, before any code is written ([#9](https://github.com/NahuelGenchi/arbor/issues/9)). The pictures are wireframes with made-up data, and its targets are for later issues to measure: none of them is a result for the app. [#8](https://github.com/NahuelGenchi/arbor/issues/8) measured a small test program, not the app, in five toolkits, and GTK 4 was chosen ([The toolkits measured](#the-toolkits-measured)).
+> **Only the first, read-only app exists.** This brief decides what Mission Control shows and how a person directs agents through it. The first app ([#9](https://github.com/NahuelGenchi/arbor/issues/9), [`prototype/mission/`](../prototype/mission/README.md)) is one window in GTK 4. It shows the tries, the rooms working in them, the decisions waiting and the last steps of history, and it can answer nothing yet. The views below, Release and Refuse among them, are still plans, and the pictures are wireframes with made-up data. [#8](https://github.com/NahuelGenchi/arbor/issues/8) measured a small test program in five toolkits, and GTK 4 was chosen ([The toolkits measured](#the-toolkits-measured)). #9 measured the first app against the targets it can meet without input ([The first app, measured](#the-first-app-measured)).
 
 Mission Control is the screen where people direct agents. It shows what agents are changing, what they want to send out and what they have spent, and it asks for a person only when a person is needed. Today's desktops were built for one person and a handful of windows. Mission Control has to make hundreds of agents legible to one person at a glance, and spend that person's attention as carefully as money.
 
@@ -178,7 +178,7 @@ The one-second wait on Now is armed by a change, never by a clock, so a quiet sy
 
 ## Targets
 
-These are targets for the issues that build and measure Mission Control. **The app has not been measured against any of them yet**; #8's test program was ([The toolkits measured](#the-toolkits-measured)). Each issue records its numbers, marked **M**, with the machine and its conditions.
+These are targets for the issues that build and measure Mission Control. #8's test program was measured against them ([The toolkits measured](#the-toolkits-measured)), and so was the first, read-only app, except where a target needs input or views it does not have yet ([The first app, measured](#the-first-app-measured)). Each issue records its numbers, marked **M**, with the machine and its conditions.
 
 - **Missed frames.** *Target:* none with the machine idle, and at most 1 in 1,000 under load (300 agents in cells plus a memory spike), at 60 Hz and at 120 Hz. Checked by the frame-pacing rows of [#7](https://github.com/NahuelGenchi/arbor/issues/7), then by [#9](https://github.com/NahuelGenchi/arbor/issues/9) to [#12](https://github.com/NahuelGenchi/arbor/issues/12) with 300 agents.
 - **Work per frame.** *Target:* the app's own work for a frame takes at most 4 ms for 99% of frames: a quarter of a frame at 60 Hz (16.7 ms) and half of one at 120 Hz (8.3 ms), so the compositor and the GPU keep the rest. Checked by the test program of [#8](https://github.com/NahuelGenchi/arbor/issues/8), then by [#9](https://github.com/NahuelGenchi/arbor/issues/9).
@@ -186,7 +186,7 @@ These are targets for the issues that build and measure Mission Control. **The a
 - **Still screen.** *Target:* with nothing changing, 0 frames drawn, at most one wakeup every 10 s, and at most 0.1% of a core over 60 s. Today, gnome-shell alone uses 2.1% of a core on a still screen (M, [OPTIMIZATION.md §1](../OPTIMIZATION.md#1-ram-cpu-gpu)). Checked by the still-screen row of [#7](https://github.com/NahuelGenchi/arbor/issues/7), then by [#9](https://github.com/NahuelGenchi/arbor/issues/9).
 - **Busy but calm.** *Target:* with 300 agents working and nothing needing a person, at most 1 frame a second and 1% of a core. Checked with #7's method by [#9](https://github.com/NahuelGenchi/arbor/issues/9), [#11](https://github.com/NahuelGenchi/arbor/issues/11) and [#12](https://github.com/NahuelGenchi/arbor/issues/12).
 - **Memory.** *Target:* at most 128 MiB RSS and 64 MiB PSS with 300 agents and every view opened once, under a tenth of the Electron UI measured today (1,354 MiB RSS, M, [OPTIMIZATION.md §1](../OPTIMIZATION.md#1-ram-cpu-gpu)); within 10% of the same app with 3 agents; and no growth over an hour of updates. Checked by [#8](https://github.com/NahuelGenchi/arbor/issues/8) and [#9](https://github.com/NahuelGenchi/arbor/issues/9).
-- **First frame.** *Target:* at most 200 ms from launch to the first frame that shows real state, with warm caches. Checked by [#8](https://github.com/NahuelGenchi/arbor/issues/8).
+- **First frame.** *Target:* at most 200 ms from launch to the first frame that shows real state, with warm caches. Checked by [#8](https://github.com/NahuelGenchi/arbor/issues/8) and [#9](https://github.com/NahuelGenchi/arbor/issues/9).
 
 ## The toolkits measured
 
@@ -234,10 +234,7 @@ What the table shows:
 
 **Decided: GTK 4**, through the gtk4-rs bindings, since arbor's prototype is written in Rust. The owner chose it on 17 October 2026, from this table. GTK 4 is the only toolkit here that meets the still-screen target and also missed the fewest frames under load. Its support for AT-SPI is complete, its licence is the LGPL, and it is the desktop's own toolkit on GNOME.
 
-Two points stay open for [#9](https://github.com/NahuelGenchi/arbor/issues/9):
-
-- **Memory.** The test program alone uses 163 MiB of RSS and 140 MiB of PSS, above the target of 128 MiB and 64 MiB before any app code. #9 has to measure the app against that target.
-- **The bindings.** gtk4-rs was not measured: the test program is written in C. #9 measures what the bindings add.
+Two points stayed open: the test program alone used 163 MiB of RSS and 140 MiB of PSS, above the target of 128 MiB and 64 MiB before any app code, and gtk4-rs was not measured, since the test program is written in C. [#9](https://github.com/NahuelGenchi/arbor/issues/9) answers both ([The two points #8 left open](#the-two-points-8-left-open)).
 
 The alternatives, not chosen:
 
@@ -245,9 +242,82 @@ The alternatives, not chosen:
 - **Qt Quick** does the least work per frame and has the quietest still screen. It uses the most memory and missed 11% of frames under load.
 - **Flutter** came second under load. It wakes 0.3 times a second on a still screen and is at the limit for the first frame. It adds Dart and a GTK 3 runner.
 
+## The first app, measured
+
+[#9](https://github.com/NahuelGenchi/arbor/issues/9) built the first Mission Control app, [`arbor-mission`](../prototype/mission/README.md): one read-only window in GTK 4, through gtk4-rs. The suite's `mission` section (`ONLY=mission bench/run.sh`) measures it with the method used for the toolkits above, on arbor state that the section makes in its temp folder from made-up folders. It measures three cases:
+
+- **Nothing running:** 4 tries, 2 decisions waiting, a kept try and about 20 steps of history.
+- **Drawn by cairo:** the same state, drawn by GTK's cairo renderer (`GSK_RENDERER=cairo`). It draws on the CPU and loads no GPU driver; GTK's default on this PC is its OpenGL renderer.
+- **300 rooms:** the same state, plus 300 more tries with a room working in each. One more try runs a short command every 0.2 s, and each one records two steps, so the ledger keeps moving. Each room is a sealed cell under a memory limit, with a cgroup that the window reads. The rooms sleep, so what they use does not change. What changes on screen is the history and the try that keeps running commands.
+
+The window was not changed to suit the method. `--bench still` is the window as it is. `--bench animate` moves its first decision the way the test program moves its card, and reads arbor's state every 100 ms, ten times as often as the window does.
+
+**Conditions.** Same machine as above. One run, on 18 October 2026 at 13:02, from an ordinary process (a systemd user unit). Every row passed the section's checks, and no key or mouse was used during the still minutes. The run started at a load average of 0.15. The cairo rows began right after the loaded animation before them, while the 1-minute load average was still falling: it was 7.0 at their first launch and 1.5 to 2.1 for their animation. No other program used a CPU thread during them, and the section now waits for the load to settle at that point too. The first frame is the median of 5 launches; every other figure is one sample.
+
+| Measure (M: every number in the row) | Nothing running | Drawn by cairo | 300 rooms | Target |
+| :--- | ---: | ---: | ---: | :--- |
+| First frame, ms (M) | 174 (165–175) | 126 (126–127) | 201 (191–205) | at most 200 |
+| Memory 2.5 s after the start, RSS / PSS, MiB (M) | 141 / 60 | 54 / 24 | 163 / 82 | |
+| Memory after a minute of still screen, RSS / PSS, MiB (M) | 141 / 60 | 54 / 24 | 164 / 82 | at most 128 / 64 with 300 agents and every view |
+| Still screen: frames shown a second (M) | 0 | 0 | 1.0 | 0 with nothing changing; at most 1 busy |
+| Still screen: CPU, % of one core (M) | 0.00 | 0.00 | 2.37 | at most 0.1 with nothing changing; at most 1 busy |
+| Still screen: wakeups a second (M) | 0.10 | 0.03 | 32.3 | at most 0.1 with nothing changing |
+| Animation, machine idle: frames missed, % (M) | 0.42 | 0.42 | 0.25 | none |
+| Animation, machine idle: slowest 1% of frame times, ms (M) | 16.7 | 16.7 | 16.7 | |
+| Animation: work per frame, slowest 1%, ms (M) | 0.58 | 0.73 | 17.5 | at most 4 |
+| Animation under load: frames missed, % (M) | 15.1 | 13.1 | 3.8 | at most 0.1 |
+| Animation under load: slowest 1% of frame times, ms (M) | 33.3 | 33.3 | 33.3 | |
+| Objects on the accessibility bus (M) | 173 | 173 | 371 | |
+| The window's words found on AT-SPI (M) | 8 of 8 | 8 of 8 | 4 of 4 | every control |
+
+What the table shows:
+
+- **With nothing running, the window is still.** No frame in the minute, no CPU time counted, and one wakeup every 10 s, which is the target.
+- **With 300 rooms, it is calm but not cheap.** It showed one frame a second, the target, while the ledger moved. But it used 2.37% of a core, over the 1% target, and woke 32 times a second: 18.7 on its main thread, 9.5 on GLib's own thread (`gmain`) and 3.0 on the thread that reads. With nothing running, these were 0.1. Nearly all the CPU time is on the reading thread. At most once a second, it reads again all 305 tries and what changed in each, the 300 rooms and their cgroups, the outbox, and the ledger's new lines, though each step names what it changed. Reading only what the new steps name is the next piece of work.
+- **Work per frame is 0.58 ms with nothing running**, within 4 ms. With 300 rooms, the slowest 1% took 17.5 ms, but that is not the frame's own work: the probe counts the whole program's CPU time between two frames. In `--bench animate` the window reads arbor's state every 100 ms, and the reading thread used 19% of a core. The median was 0.41 ms, and frames were not missed more often than with nothing running. This run does not separate the main thread's time from the rest.
+- **The first frame** takes 174 ms with nothing running. With 300 rooms it takes 201 ms, 1 ms over the target. It was committed 26 ms later than with nothing running, the time that the first reading of 305 tries and 300 rooms adds, although that reading runs while GTK starts.
+- **Frames missed, machine idle:** 0.25 to 0.42%, as with the test programs above. None of them meets "none".
+- **Frames missed under load:** 3.8 to 15.1%, and 7.9 to 9.9% in the run before this one, of the same app (12:46). That is around the minimal client's 8.35% and far from 1 in 1,000. Keeping time and memory for the screen is [#10](https://github.com/NahuelGenchi/arbor/issues/10)'s work.
+- **Accessibility.** The suite looked for the window's own words on the bus, and every one was there: the heading, both decisions' commands and the tries' names. With 300 rooms, the bus holds 371 objects, not thousands, because only 12 tries and 3 rooms in each are shown, and the rest fold into one line.
+- **Cairo drew this window as well as the default renderer did.** Its first frame was 48 ms sooner and its work per frame was 0.73 ms against 0.58, with the same share of frames missed when idle. This window is small (960 × 640) and moves one line at a time. A larger window, a 4K panel or more motion would cost cairo more CPU time; that was not measured.
+
+### The two points #8 left open
+
+**Memory.** With GTK's default renderer, the window uses 141 MiB of RSS and 60 MiB of PSS with nothing running. With 300 rooms, after a minute, it uses 164 and 82 MiB. That is over the RSS target in both states, and over the PSS target with 300 rooms. It did not grow over the minute in either state.
+
+Most of that memory is the GPU driver. Drawn by cairo, which loads no driver, the same window uses 54 MiB of RSS and 24 MiB of PSS (M). With 300 rooms, the window's anonymous memory is 21 MiB larger, 59 MiB of PSS against 38 (M). Under cairo, that would make about 75 MiB of RSS (est.), within the target, but the 300-room state was not measured with cairo.
+
+PSS also moved more than RSS from one day to the next. GTK 4's test program had 118 MiB of PSS at its start on 17 October and 60 MiB on 18 October, with the same RSS (M, both). RSS is the steadier comparison.
+
+Which renderer Mission Control uses is not decided here. Cairo meets the memory target with this window. The GPU renderer may be needed for larger windows or more motion, and neither renderer was measured at that size.
+
+**The bindings.** gtk4-rs adds nothing the suite can measure. The same run (18 October 2026 at 12:07, load average 0.40 at the start) measured the C test program and the same program written in Rust through gtk4-rs, call for call ([`bench/toolkits/gtk4rs/`](../bench/toolkits/README.md)). Every row passed the section's checks. Each figure is one sample, and the first frame is the median of 5 launches:
+
+| Measure (M: every number in the row) | C | gtk4-rs |
+| :--- | ---: | ---: |
+| First frame, ms (M) | 175 (173–184) | 159 (158–175) |
+| Memory 2.5 s after the start, RSS / PSS, MiB (M) | 140 / 60 | 141 / 61 |
+| Memory after a minute of still screen, RSS / PSS, MiB (M) | 161 / 81 | 141 / 61 |
+| Still screen: CPU, % of one core / wakeups a second (M) | 0.02 / 0.10 | 0.02 / 0.10 |
+| Animation, machine idle: frames missed, % (M) | 0.25 | 0.33 |
+| Animation: work per frame, slowest 1%, ms (M) | 0.95 | 0.83 |
+| Animation under load: frames missed, % (M) | 14.3 | 10.3 |
+| Objects on the accessibility bus (M) | 127 | 127 |
+
+The C program's anonymous memory grew by 20 MiB over its still minute, and its RSS grew from 140 to 163 MiB on 17 October as well. The port's memory did not grow, and neither did Mission Control's. Why the C program grows was not found.
+
+### Not measured yet
+
+- **Input latency** needs a window that takes input. Release and Refuse will be the first.
+- **Memory with every view opened** waits for the other views.
+- **No growth over an hour of updates:** the longest window measured here is a minute.
+- **120 Hz:** this PC's panel runs at 60 Hz.
+- **The 300 rooms drawn by cairo.**
+- **Rooms that work:** the 300 rooms here sleep, because 300 working rooms would make the machine too busy for the still-screen rows to count. What a room uses is read every 10 s, so rooms that work would add at most one update every 10 s to the still screen (est.).
+
 ## Not decided here
 
-The app itself ([#9](https://github.com/NahuelGenchi/arbor/issues/9)), keeping the screen ahead of agents with reserved time and memory ([#10](https://github.com/NahuelGenchi/arbor/issues/10)), the code of the views ([#11](https://github.com/NahuelGenchi/arbor/issues/11), [#12](https://github.com/NahuelGenchi/arbor/issues/12)), arbor's own compositor ([#13](https://github.com/NahuelGenchi/arbor/issues/13)), and a visual brand. The wireframes borrow the README's paper, ink and typefaces so the pictures read as one family; that is not a chosen look.
+Keeping the screen ahead of agents with reserved time and memory ([#10](https://github.com/NahuelGenchi/arbor/issues/10)), the code of the views after the first window ([#11](https://github.com/NahuelGenchi/arbor/issues/11), [#12](https://github.com/NahuelGenchi/arbor/issues/12)), arbor's own compositor ([#13](https://github.com/NahuelGenchi/arbor/issues/13)), and a visual brand. The wireframes borrow the README's paper, ink and typefaces so the pictures read as one family; that is not a chosen look.
 
 ## Open questions
 
@@ -263,7 +333,7 @@ These are also listed in [issue #6](https://github.com/NahuelGenchi/arbor/issues
 8. **How far back can history show?** Scrubbing can show the list of steps as it was, or a try itself as it was at any step. The second needs the core to keep every version of a world.
 9. **More than one person, or away from the desk?** A team that shares decisions needs to say who may release what. A decision sent to a phone is itself a message leaving the machine, so it would go through the outbox too.
 10. **What is it called?** "Mission Control" is also the name of a macOS feature. A final name is needed before anything ships.
-11. **How is this tested with people before [#9](https://github.com/NahuelGenchi/arbor/issues/9)?** For example: five people who don't write code, each asked to find what needs them and to say what Release will do.
+11. **How is this tested with people before Release and Refuse are built?** For example: five people who don't write code, each asked to find what needs them in the first app ([#9](https://github.com/NahuelGenchi/arbor/issues/9)) and to say what Release will do.
 
 ## How the wireframes are made
 

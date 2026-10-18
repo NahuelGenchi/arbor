@@ -1,0 +1,72 @@
+/* Mission Control's look: the paper, ink and three colours of the brief's wireframes (docs/images/source/base.css and
+   mission.css), which meet WCAG 2.2 AA in both themes. Sizes are in em, so they follow the desktop's text size. The
+   light or dark look and higher contrast follow the desktop's settings (GTK 4.20 and later). */
+
+window.mission {
+  --paper: #fcfbf8; --wash: #f4f1ea; --rule: #e6e2d8;
+  --ink: #1c1b18; --ink-2: #4b4841; --ink-3: #6f6b61;
+  --green: #1d8a5a; --amber: #a86f0c; --amber-ink: #8a5a00; --amber-wash: #fbf0dc;
+  background-color: var(--wash);
+}
+/* The title bar keeps the desktop's own colours. */
+window.mission scrolledwindow { color: var(--ink); }
+
+@media (prefers-color-scheme: dark) {
+  window.mission {
+    --paper: #141917; --wash: #1b221f; --rule: #2a332e;
+    --ink: #ece9e1; --ink-2: #c0bcb1; --ink-3: #8f8b81;
+    --green: #2f9e6c; --amber: #c98500; --amber-ink: #e6ad45; --amber-wash: #2e2512;
+  }
+}
+
+/* More contrast: faint text and washes become full ink. */
+@media (prefers-contrast: more) {
+  window.mission { --ink-2: #1c1b18; --ink-3: #1c1b18; --rule: #6f6b61; --amber-wash: #fcfbf8; --amber-ink: #1c1b18; }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  window.mission { --ink-2: #ece9e1; --ink-3: #ece9e1; --rule: #8f8b81; --amber-wash: #141917; --amber-ink: #ece9e1; }
+}
+
+window.mission scrolledwindow, window.mission viewport { background: none; }
+
+.page { margin: 26px 32px 32px; }
+.heading { font-size: 1.75em; font-weight: 600; }
+.lead { color: var(--ink-2); }
+.problems { color: var(--ink); font-weight: 600; }
+
+.section {
+  font-size: 0.8em; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3);
+}
+
+list.lines { background: none; color: var(--ink); }
+list.lines > row {
+  background: none; padding: 9px 4px; min-height: 24px; border-bottom: 1px solid var(--rule); border-radius: 0;
+}
+list.lines > row:hover { background: none; }
+list.lines > row:focus-visible { outline: 2px solid var(--ink-2); outline-offset: -2px; border-radius: 6px; }
+list.lines > row.room { padding-top: 5px; padding-bottom: 5px; margin-left: 22px; }
+
+.title { font-weight: 600; }
+.code { font-family: monospace; }
+.title.code { font-weight: 500; }
+.detail { color: var(--ink-2); font-size: 0.93em; }
+.aside { color: var(--ink-3); font-size: 0.93em; font-feature-settings: "tnum"; }
+.note { color: var(--ink-2); font-size: 0.93em; font-style: italic; }
+row.room .title { font-weight: 500; }
+
+/* States: always a word, and a mark with a shape of its own. */
+.slot { min-width: 10px; margin-top: 6px; }
+.mark { min-width: 8px; min-height: 8px; border-radius: 99px; }
+.mark.work { background-color: var(--green); }
+.mark.idle { min-width: 5px; min-height: 5px; border: 1.5px solid var(--ink-3); }
+.mark.kept { background-color: var(--ink-3); border-radius: 2px; }
+.pill {
+  background-color: var(--amber-wash); color: var(--amber-ink); border-radius: 99px; padding: 2px 9px 2px 7px;
+  font-weight: 600; font-size: 0.85em; margin-top: -3px;
+}
+.pill .dot { min-width: 8px; min-height: 8px; border-radius: 99px; background-color: var(--amber); }
+
+.side {
+  background-color: var(--paper); border: 1px solid var(--rule); border-radius: 12px; padding: 16px 18px;
+}
+.newer { border: 1px dashed var(--ink-3); border-radius: 8px; padding: 6px 6px 6px 10px; margin: 4px 0; }

@@ -57,13 +57,19 @@ FRAMES_SPIKE_MIB="${FRAMES_SPIKE_MIB:-}"
 # loaded run, before the section waits for a 1-minute load average under 1. Their animation runs last FRAMES_S
 # seconds, under the load of FRAMES_CELLS and FRAMES_SPIKE_MIB. Empty FLUTTER: flutter on PATH; empty FLUTTER_PUB_CACHE:
 # PUB_CACHE, else ~/.pub-cache, where the packages Flutter pins already are (the build is offline).
-TOOLKITS="${TOOLKITS:-gtk4 qtquick slint iced flutter}"
+TOOLKITS="${TOOLKITS:-gtk4 gtk4rs qtquick slint iced flutter}"
 TOOLKITS_PREBUILT="${TOOLKITS_PREBUILT:-}"
 TOOLKITS_LAUNCHES="${TOOLKITS_LAUNCHES:-5}"
 TOOLKITS_STILL_S="${TOOLKITS_STILL_S:-60}"
 TOOLKITS_SETTLE_S="${TOOLKITS_SETTLE_S:-90}"
 FLUTTER="${FLUTTER:-}"
 FLUTTER_PUB_CACHE="${FLUTTER_PUB_CACHE:-}"
+
+# 11. Mission Control (prototype/mission), measured only with ONLY=mission, as the toolkits are: empty MISSION_BIN builds
+# it with arbor (release, offline) into the temp dir, a path measures that binary instead, with ARBOR_BIN; the rooms of
+# its busy state, each a sleeping cell under a memory limit.
+MISSION_BIN="${MISSION_BIN:-}"
+MISSION_ROOMS="${MISSION_ROOMS:-300}"
 
 # Where temp files go (removed at exit; tmpfs, as in the M run) and where reports are written.
 BENCH_TMP="${BENCH_TMP:-${TMPDIR:-/tmp}}"

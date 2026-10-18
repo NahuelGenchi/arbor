@@ -7,13 +7,18 @@ way: `ONLY=toolkits bench/run.sh` ([../README.md](../README.md)). The data is ma
 | Folder | Toolkit | Language | Licence |
 | :--- | :--- | :--- | :--- |
 | `gtk4/` | GTK 4.22.4, Ubuntu 26.04's packages | C | LGPL-2.1-or-later |
+| `gtk4rs/` | the same GTK 4, through gtk4-rs 0.11.5, the bindings Mission Control uses | Rust | MIT for the bindings, LGPL-2.1-or-later for GTK |
 | `qtquick/` | Qt Quick 6.10.2, Ubuntu 26.04's packages | C++ and QML | LGPL-3.0 or GPL-2.0, or Qt's commercial licence |
 | `slint/` | Slint 1.18.1 | Rust | GPL-3.0-only, or Slint's royalty-free or commercial licence |
 | `iced/` | iced 0.14.0 | Rust | MIT |
 | `flutter/` | Flutter 3.47.7, its stable release of 8 October 2026, with Dart 3.13.5 | Dart, and the C++ runner `flutter create` writes | BSD-3-Clause |
 
 The licences are the packages' own: Debian's `copyright` files for GTK 4 and Qt, the crates' `license` fields for
-Slint and iced, and the SDK's `LICENSE` for Flutter.
+gtk4-rs, Slint and iced, and the SDK's `LICENSE` for Flutter.
+
+`gtk4rs/` is not a sixth candidate. It is `gtk4/main.c` written again in Rust through gtk4-rs, call for call (the same
+list, factory and binding, and the card as a widget of its own that moves itself in its snapshot), so that the two
+measure what the bindings add to GTK ([#9](https://github.com/NahuelGenchi/arbor/issues/9)).
 
 ## The program
 
@@ -53,7 +58,7 @@ Wayland surface, and no EGL window), and from Flutter's engine as it starts ("Us
 
 ## Building
 
-`build.sh OUT [gtk4 qtquick slint iced flutter]` builds the programs into `OUT/<toolkit>/`, with `OUT/<toolkit>/bin` pointing
+`build.sh OUT [gtk4 gtk4rs qtquick slint iced flutter]` builds the programs into `OUT/<toolkit>/`, with `OUT/<toolkit>/bin` pointing
 at each, and prints `built <toolkit>` or `failed <toolkit>: <why>`. The section runs it with its temp folder, or
 `TOOLKITS_PREBUILT` names a folder it built them in before. It writes only in `OUT`; cargo's objects, about a gigabyte
 a program, are removed once each program is built. Flutter builds in a copy of `flutter/`, with a `HOME` of its own,
@@ -63,7 +68,7 @@ analytics off, and no network (`bwrap --unshare-net`).
 | :--- | :--- | :--- |
 | GTK 4 | gcc, pkg-config and `libgtk-4-dev` | GTK 4 |
 | Qt Quick | cmake (with ninja when there is one), g++, `qt6-base-dev` and `qt6-declarative-dev`, which on Ubuntu 26.04 brings the QML modules the program imports | `qt6-wayland`, for a Wayland window |
-| Slint, iced | Rust 1.99.0, the prototype's (`rust-toolchain.toml`), and the crates in each `Cargo.lock`, downloaded once with `cargo fetch` in `slint/` and in `iced/`, since the build is offline; Slint also links fontconfig, from `libfontconfig-dev` | Mesa's OpenGL (Slint) or Vulkan (iced) driver, which both load at run time, as they do Wayland's libraries |
+| gtk4-rs, Slint, iced | Rust 1.99.0, the prototype's (`rust-toolchain.toml`), and the crates in each `Cargo.lock`, downloaded once with `cargo fetch` in `gtk4rs/`, `slint/` and `iced/`, since the build is offline; gtk4-rs also needs `libgtk-4-dev`, and Slint links fontconfig, from `libfontconfig-dev` | GTK 4 (gtk4-rs); Mesa's OpenGL (Slint) or Vulkan (iced) driver, which both load at run time, as they do Wayland's libraries |
 | Flutter | the Flutter SDK (`FLUTTER`, else `flutter` on `PATH`), clang, cmake, ninja, pkg-config, `libgtk-3-dev` and `liblzma-dev`, and the packages Flutter pins (`pubspec.lock`) in a pub cache (`FLUTTER_PUB_CACHE`, else `PUB_CACHE`, else `~/.pub-cache`): the SDK's archive carries them, and its first `flutter pub get` installs them there | GTK 3 and Mesa's OpenGL driver; the bundle carries Flutter's engine |
 
 ## Accessibility

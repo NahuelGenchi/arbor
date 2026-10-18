@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Builds the test programs of issue #8 (README.md) into OUT, one folder per toolkit with its program at
 # OUT/<toolkit>/bin, and prints `built <toolkit>` or `failed <toolkit>: <why>` for each:
-#   toolkits/build.sh OUT [gtk4 qtquick slint iced flutter]     (all five when none is named)
+#   toolkits/build.sh OUT [gtk4 gtk4rs qtquick slint iced flutter]     (all six when none is named)
 # It writes only in OUT. Cargo gets a home of its own there, which reads the registry's index, the crates already
-# downloaded and cargo's config in ~/.cargo through links, offline (`cargo fetch` in slint/ and iced/ downloads them
-# once); its objects, about a gigabyte a program, are removed once the program is built, since OUT is often in memory
-# (tmpfs). Flutter gets a copy of the program, a HOME and a pub cache there, which reads the packages Flutter pins
-# from $FLUTTER_PUB_CACHE (else $PUB_CACHE, else ~/.pub-cache) through a link; the flutter command is $FLUTTER, else
-# flutter on PATH. It runs without a network (bwrap --unshare-net), so it can download nothing.
+# downloaded and cargo's config in ~/.cargo through links, offline (`cargo fetch` in gtk4rs/, slint/ and iced/
+# downloads them once); its objects, about a gigabyte a program, are removed once the program is built, since OUT is
+# often in memory (tmpfs). Flutter gets a copy of the program, a HOME and a pub cache there, which reads the packages
+# Flutter pins from $FLUTTER_PUB_CACHE (else $PUB_CACHE, else ~/.pub-cache) through a link; the flutter command is
+# $FLUTTER, else flutter on PATH. It runs without a network (bwrap --unshare-net), so it can download nothing.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT=${1:?usage: build.sh OUT [toolkit...]}
 shift
-[ $# -gt 0 ] || set -- gtk4 qtquick slint iced flutter
+[ $# -gt 0 ] || set -- gtk4 gtk4rs qtquick slint iced flutter
 mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd)" || exit 1
 JOBS=${CARGO_BUILD_JOBS:-8}
 
@@ -51,7 +51,7 @@ cargo_home() {  # a CARGO_HOME in OUT that reads ~/.cargo's index, downloaded cr
   done
 }
 
-build_rust() {  # slint or iced; the toolchain is the one ../rust-toolchain.toml names, found from the program's folder
+build_rust() {  # gtk4rs, slint or iced; the toolchain is the one ../rust-toolchain.toml names, found from the program's folder
   local cargo
   cargo=$(command -v cargo || echo "${CARGO_HOME:-$HOME/.cargo}/bin/cargo")
   [ -x "$cargo" ] || { failed "$1" 'cargo not found'; return; }
@@ -93,9 +93,9 @@ for t in "$@"; do
   case $t in
     gtk4) build_gtk4 ;;
     qtquick) build_qtquick ;;
-    slint|iced) build_rust "$t" ;;
+    gtk4rs|slint|iced) build_rust "$t" ;;
     flutter) build_flutter ;;
-    *) failed "$t" 'no such toolkit (gtk4 qtquick slint iced flutter)' ;;
+    *) failed "$t" 'no such toolkit (gtk4 gtk4rs qtquick slint iced flutter)' ;;
   esac
 done
 rm -rf "$OUT/cargo"  # the links, and the crates cargo unpacked

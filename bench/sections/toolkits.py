@@ -64,7 +64,8 @@ from common import BENCH_DIR, WORK, emit, env, fail, median, pct, run, smaps_rol
 from sysinfo import busiest, cpu_ticks  # noqa: E402
 import screen  # noqa: E402  the screen section: its cells, spike and frame-pacing maths
 
-NAMES = {'gtk4': 'GTK 4', 'qtquick': 'Qt Quick', 'slint': 'Slint', 'iced': 'iced', 'flutter': 'Flutter'}
+NAMES = {'gtk4': 'GTK 4', 'gtk4rs': 'GTK 4, gtk4-rs', 'qtquick': 'Qt Quick', 'slint': 'Slint', 'iced': 'iced',
+         'flutter': 'Flutter'}
 METRICS = ['first_frame_ms', 'rss_start_mib', 'pss_start_mib', 'still_cpu_pct', 'still_wakeups_s', 'rss_idle_mib',
            'pss_idle_mib', 'missed_idle_pct', 'frame_p99_idle_ms', 'frame_work_p99_ms', 'missed_load_pct',
            'frame_p99_load_ms', 'atspi_objects']
@@ -307,8 +308,11 @@ def first_frame(t, argv, n):
         **{f'{k}_ms': round(median(v), 2 if k == 'probe' else 1) for k, v in parts.items()}})
 
 
-def still(t, argv, comp, seconds):
-    p, t0 = launch(argv, 'still')
+def still(t, argv, comp, seconds, frames=False):
+    """The still screen. frames: also count the frames the compositor showed of the window in the window, through
+    the probe, as ui.T.still_frames_s (Mission Control's rows; the test programs' rows run without the probe)."""
+    path = os.path.join(D, f'{t}-still.txt')
+    p, t0 = launch(argv, 'still', probe=path if frames else None)
     try:
         sleep_until(t0 + START_S * 1e9)
         start = memory(p.pid)
@@ -316,8 +320,10 @@ def still(t, argv, comp, seconds):
         sleep_until(t0 + STILL_AT * 1e9)
         before = screen.load1()
         a, ca = reading(p.pid), screen.reading(comp[0])
+        t_a = time.monotonic_ns()
         time.sleep(seconds)
         b, cb = reading(p.pid), screen.reading(comp[0])
+        t_b = time.monotonic_ns()
         idle_ms = screen.idle_ms()
         end = memory(p.pid)
         if p.poll() is not None:
@@ -335,7 +341,7 @@ def still(t, argv, comp, seconds):
     comp_wakeups = sum(w - (ca['threads'][tid][1] if tid in ca['threads'] else 0) for tid, (_, w) in cb['threads'].items())
     rest = (cb['machine'] - ca['machine']) / HZ / dt * 100 - cpu - comp_cpu
     busy = busiest(ca['procs'], cb['procs'], dt, floor=10)
-    keys = rows(t, ['still_cpu_pct', 'still_wakeups_s'])
+    keys = rows(t, ['still_cpu_pct', 'still_wakeups_s'] + (['still_frames_s'] if frames else []))
     if idle_ms is not None and idle_ms < dt * 1000:
         return fail(keys, f'a key or the mouse was used {idle_ms / 1000:.0f} s before the end of the {dt:.0f} s window, '
                           'so the screen was not still: leave the PC alone during this section')
@@ -352,6 +358,9 @@ def still(t, argv, comp, seconds):
            'input': 'none in the window' if idle_ms is not None else 'not checked: no GNOME idle monitor'}
     emit(f'ui.{t}.still_cpu_pct', cpu, dict(ctx, by_thread=by_thread(a, b, 2, dt)))
     emit(f'ui.{t}.still_wakeups_s', wakeups / dt, dict(ctx, by_thread=by_thread(a, b, 1, dt)))
+    if frames:
+        shown = [s for s in probe_lines(path, p.pid).get('p', []) if t_a <= s[2] <= t_b]
+        emit(f'ui.{t}.still_frames_s', len(shown) / dt, dict(ctx, frames=len(shown)))
 
 
 def pacing(t, argv, seconds, loaded):
@@ -479,8 +488,9 @@ def bus_config(runtime):
     return config
 
 
-def atspi(t, argv):
-    """The program in a D-Bus session of its own, with accessibility turned on there: what it shows on AT-SPI."""
+def atspi(t, argv, expect=None):
+    """The program in a D-Bus session of its own, with accessibility turned on there: what it shows on AT-SPI.
+    expect: the words to look for, in place of the test program's heading, card and rows."""
     dbus = shutil.which('dbus-run-session')
     if not dbus:
         raise RuntimeError('dbus-run-session not found (the dbus package)')
@@ -498,8 +508,9 @@ def atspi(t, argv):
              WAYLAND_DISPLAY=wayland if wayland.startswith('/') else
              os.path.join(os.environ.get('XDG_RUNTIME_DIR', ''), wayland))
     e.pop('DISPLAY', None)
+    more = ['--expect', json.dumps(expect)] if expect else []
     r = run([dbus, f'--config-file={bus_config(runtime)}', '--', sys.executable, '-I', '-B',
-             os.path.abspath(__file__), '--atspi', *argv], timeout=120, env=e)
+             os.path.abspath(__file__), '--atspi', *more, *argv], timeout=120, env=e)
     lines = [x for x in r.stdout.decode(errors='replace').splitlines() if x.startswith('{')]
     if not lines:
         raise RuntimeError('the accessibility check printed nothing: ' + screen.last_line(r.stderr))
@@ -509,7 +520,7 @@ def atspi(t, argv):
     emit(f'ui.{t}.atspi_objects', got.pop('objects'), got)
 
 
-def atspi_inside(argv):
+def atspi_inside(argv, expect=None):
     """In the private session: turn accessibility on, start the program, and walk its accessible objects."""
     r = run(['gdbus', 'call', '--session', '--dest', 'org.a11y.Bus', '--object-path', '/org/a11y/bus', '--method',
              'org.freedesktop.DBus.Properties.Set', 'org.a11y.Status', 'IsEnabled', '<true>'], timeout=30)
@@ -558,6 +569,12 @@ def atspi_inside(argv):
                 if c is not None:
                     todo.append((c, depth + 1))
         joined = '\n'.join(words)
+        if expect:
+            missing = [w for w in expect if w not in joined]
+            return print(json.dumps({
+                'objects': n, 'registered': True, 'toolkit': app.get_toolkit_name(),
+                'expected_found': len(expect) - len(missing), 'expected': len(expect), 'missing': missing[:10],
+                'roles': ', '.join(f'{k} {v}' for k, v in sorted(roles.items(), key=lambda x: -x[1])[:8])}))
         print(json.dumps({
             'objects': n, 'registered': True, 'toolkit': app.get_toolkit_name(),
             'heading': '3 things need you' in joined, 'card': 'Payments, moved to version 2' in joined,
@@ -573,13 +590,17 @@ def atspi_inside(argv):
 
 # ---- building ----
 
-def build(names):
-    """The programs, {toolkit: argv}, and why the others could not be built, {toolkit: text}."""
+def build_probe():
     os.makedirs(os.path.dirname(PROBE), exist_ok=True)
     r = run([os.environ.get('CC') or 'gcc', '-O2', '-shared', '-fPIC', '-fvisibility=hidden', '-pthread', '-o', PROBE,
              os.path.join(BENCH_DIR, 'src', 'probe.c')])
     if r.returncode != 0:
         raise RuntimeError('cannot build src/probe.c: ' + screen.last_line(r.stderr))
+
+
+def build(names):
+    """The programs, {toolkit: argv}, and why the others could not be built, {toolkit: text}."""
+    build_probe()
     out, errors = env('TOOLKITS_PREBUILT'), {}
     if not out:
         out = os.path.join(D, 'build')
@@ -647,7 +668,9 @@ def main():
 
 
 if __name__ == '__main__':
-    if sys.argv[1:2] == ['--atspi']:
+    if sys.argv[1:3] == ['--atspi', '--expect']:
+        atspi_inside(sys.argv[4:], json.loads(sys.argv[3]))
+    elif sys.argv[1:2] == ['--atspi']:
         atspi_inside(sys.argv[2:])
     else:
         main()

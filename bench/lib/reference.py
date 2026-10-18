@@ -154,6 +154,9 @@ def toolkit_note(c, metric):
         drv = f"; drivers {', '.join(c['drivers'])}" if c.get('drivers') else ''
         return (f"{c.get('procs')} process{'es' if c.get('procs') != 1 else ''}; PSS {c.get('pss_anon_mib')} MiB "
                 f"anonymous, {c.get('pss_file_mib')} MiB file, {c.get('pss_shmem_mib')} MiB shared" + gpu + drv)
+    if metric == 'still_frames_s':
+        return (f"{c['frames']} frames shown in the {c.get('window_s')} s window; load average {c.get('load1')}"
+                if c.get('frames') is not None else '')
     if metric.startswith('still_'):
         gpu = c.get('gpu_ms')
         drew = ('' if gpu is None else '; it drew nothing (no GPU time)' if not gpu else
@@ -176,6 +179,10 @@ def toolkit_note(c, metric):
     if metric == 'atspi_objects':
         if not c.get('registered'):
             return 'not on the accessibility bus'
+        if c.get('expected'):
+            missing = f" (missing: {', '.join(c['missing'])})" if c.get('missing') else ''
+            return (f"{c.get('toolkit')}; readable: {c.get('expected_found')} of the {c.get('expected')} words looked "
+                    f"for{missing}; roles: {c.get('roles')}")
         seen = [w for w, ok in (('the heading', c.get('heading')), ('the card', c.get('card'))) if ok]
         return (f"{c.get('toolkit')}; readable: {', '.join(seen) or 'neither the heading nor the card'}, "
                 f"{c.get('row_titles')} row titles and {c.get('row_words')} rows' words of 300; roles: {c.get('roles')}")
@@ -510,10 +517,16 @@ ENTRIES = [
 # started at load averages 0.46, 0.52, 0.02 (ref_load: the run of 21:33, clean for every toolkit), 0.32 and 0.57.
 # Under load, the missed frames ranged from 1.3% to 10.8% for GTK 4 over its three samples, so that row moves well
 # beyond ±15% from run to run, as the screen section's does.
-TOOLKITS = (('gtk4', 'GTK 4'), ('qtquick', 'Qt Quick'), ('slint', 'Slint'), ('iced', 'iced'), ('flutter', 'Flutter'))
+# gtk4rs, the C program written again through gtk4-rs (#9), has its reference from the `ONLY="toolkits mission"` run
+# of GTK_RS_REF, its first, from an ordinary context, next to the C program measured again in that run: one sample a
+# row, the first frame a median of 5 launches.
+TOOLKITS = (('gtk4', 'GTK 4'), ('gtk4rs', 'GTK 4, gtk4-rs'), ('qtquick', 'Qt Quick'), ('slint', 'Slint'),
+            ('iced', 'iced'), ('flutter', 'Flutter'))
 TOOLKITS_REF = {'ref_date': '17 Oct 2026', 'ref_load': 0.02}
+GTK_RS_REF = {'ref_date': '18 Oct 2026', 'ref_load': 0.4}
 TOOLKIT_M = {  # in the order of TOOLKIT_ROWS
     'gtk4': (170, 139.9, 117.5, 0.0, 0.1, 162.7, 139.9, 0.25, 16.7, 0.97, 2.17, 33.3, 127),
+    'gtk4rs': (159, 140.9, 60.7, 0.02, 0.1, 140.9, 60.6, 0.33, 16.7, 0.83, 10.26, 33.3, 127),
     'qtquick': (147, 162.0, 138.1, 0.0, 0.05, 165.4, 141.5, 0.25, 16.7, 0.66, 11.43, 33.3, 109),
     'slint': (93, 93.8, 80.1, 0.02, 2.0, 93.8, 80.1, 0.33, 16.7, 0.92, 83.33, 133.3, 69),
     'iced': (99, 95.1, 83.9, 0.02, 4.0, 95.2, 84.0, 0.25, 16.7, 1.64, 16.35, 33.3, 0),
@@ -543,5 +556,26 @@ def toolkit_why(r, key):
 
 
 ENTRIES += [E(f'ui.{t}.{metric}', 'Toolkits', f'{name}: {label}', TOOLKIT_M[t][i], unit, 'state', 'suite', **kw,
-              **TOOLKITS_REF, why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
+              **(GTK_RS_REF if t == 'gtk4rs' else TOOLKITS_REF), why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
             for t, name in TOOLKITS for i, (metric, label, unit, kw) in enumerate(TOOLKIT_ROWS)]
+
+# 11. Mission Control, the first app of #9 (sections/mission.py, run only with ONLY=mission), measured as the toolkits
+# are, in two states of arbor made by the section: `mission`, four tries and two decisions with nothing running, also
+# drawn by GTK's cairo renderer (`mission_cairo`), and `mission_busy`, the same with 300 more tries, a sleeping room in
+# each, while the ledger moves. The reference is the suite's own, from the run of MISSION_REF (docs/INTERFACE.md, The
+# first app, measured), from an ordinary context: one sample a row, the first frame a median of 5 launches. Its cairo
+# rows began while the load average still fell from the loaded run before them (7.0 at the first launch), with no
+# other program using a CPU thread; the section has waited for the load to settle there since.
+MISSION = (('mission', 'Mission Control, nothing running'), ('mission_cairo', 'Mission Control, cairo renderer'),
+           ('mission_busy', 'Mission Control, 300 rooms'))
+MISSION_REF = {'ref_date': '18 Oct 2026', 'ref_load': 0.15}
+MISSION_ROWS = TOOLKIT_ROWS + (('still_frames_s', 'still screen, no input: frames shown', '/s',
+                                {'dp': 2, 'abs_tol': 0.05, 'abs_why': 'within 3 frames a minute of the reference'}),)
+MISSION_M = {  # in the order of MISSION_ROWS
+    'mission': (174, 140.6, 60.1, 0.0, 0.1, 140.6, 60.3, 0.42, 16.7, 0.58, 15.1, 33.3, 173, 0.0),
+    'mission_cairo': (126, 53.9, 23.7, 0.0, 0.03, 53.9, 23.7, 0.42, 16.7, 0.73, 13.09, 33.3, 173, 0.0),
+    'mission_busy': (201, 163.1, 81.8, 2.37, 32.3, 163.7, 82.4, 0.25, 16.7, 17.5, 3.84, 33.3, 371, 1.0),
+}
+ENTRIES += [E(f'ui.{t}.{metric}', 'Mission Control', f'{name}: {label}', MISSION_M[t][i], unit, 'state', 'suite',
+              **kw, **MISSION_REF, why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
+            for t, name in MISSION for i, (metric, label, unit, kw) in enumerate(MISSION_ROWS)]
