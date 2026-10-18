@@ -256,5 +256,16 @@ weighted tokens came out the same: 1.01 (0.85–1.15) over all tasks. No task's 
 checks. These are small tasks on one repository, with one agent and one model; what longer tasks, another agent or
 another model would show is not measured.
 
+**What a second run found on 17–18 October 2026: still no saving** (**M**: 156 of the 180 sessions of
+`--arms A,C,D --reps 10`. The free model's rate limit stopped the run there, and it was recorded without the other 24:
+round 9, and round 8's `fix-plural` and `fix-python`. `SESSIONS_REF` keeps C and D). Told to find with the grep tool
+first and then make every read in one call, the agent took as many steps as A: C/A 1.02 (0.89–1.14), D/A 0.98
+(0.87–1.12). But it no longer read less: tool text 1.10 (0.83–1.28) and 0.93 (0.75–1.13). It used `arbor look` in
+23 and 35 of 52 sessions, and otherwise the grep and read tools, as A did. Its weighted tokens came out 1.05
+(0.86–1.23) in C and 1.04 (0.84–1.19) in D, and the tool against the shell 0.99 (0.83–1.14). 47 of A's 52 sessions
+passed their checks, 50 of C's and 49 of D's. In D the agent never called `arbor_look` directly: all 92 of its calls
+went through Code Mode, as `tools.arbor.look`. So across the three forms tried, B read less but took more steps, and
+C and D took no more steps but read as much: none lowered the weighted tokens.
+
 **A free remote model's answers vary** from one session to the next, and the model behind the name can change, so a
 new run will not repeat the numbers exactly; compare the arms within one run.

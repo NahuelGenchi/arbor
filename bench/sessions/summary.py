@@ -76,7 +76,8 @@ def load(path):
 
 
 def load_avg(m):
-    return f"{m['load'][0]:.2f}" if m.get('load') else '?'
+    load = m.get('load')
+    return '?' if load is None else f"{load[0] if isinstance(load, list) else load:.2f}"
 
 
 def ratio(a, b):
@@ -117,12 +118,24 @@ def report(path):
     arms = meta.get('arms', ['A', 'B'])
     rng = random.Random(1)
     built = meta.get('arbor') or '?'
+    ran = {(r['rep'], r['task'], r['arm']) for r in recs + lost}
+    unrun = {}  # (round, task): the arms of its slots that never ran, as when a run is recorded before its end
+    for rep in range(meta.get('reps') or 0):
+        for t in meta.get('tasks', []):
+            for arm in arms:
+                if (rep, t, arm) not in ran:
+                    unrun.setdefault((rep, t), []).append(arm)
+    if end:
+        ended = f"{load_avg(end)} at the end ({end.get('date', '?')[11:16]})"
+    else:  # recorded before its end: the last session that counts
+        last = max(recs, key=lambda r: r['n'], default={})
+        ended = f"{load_avg(last)} at the last session that counts ({last.get('started', '?')[11:16]})"
     out = [f"# arbor look over whole sessions: {meta.get('date', '?')[:10]}", '',
            f"{meta.get('opencode', 'OpenCode ?')} on `{meta.get('model')}`, tasks on this repository at "
            f"{meta.get('commit', '?')[:7]}, arbor "
            f"{'from ARBOR_BIN' if built == 'ARBOR_BIN' else 'built at ' + built[:7]}, {len(recs)} sessions "
-           f"({meta.get('reps')} per task and arm). Load average {load_avg(meta)} at the start "
-           f"({meta.get('date', '?')[11:16]}), {load_avg(end)} at the end ({end.get('date', '?')[11:16]}). A free "
+           f"({meta.get('reps')} per task and arm{' planned, not all of which ran' if unrun else ''}). Load average "
+           f"{load_avg(meta)} at the start ({meta.get('date', '?')[11:16]}), {ended}. A free "
            "remote model's answers vary from run to run, and the model behind the name can change, so a new run will "
            "not repeat these numbers exactly." + ''.join(
                f" The run stopped after session {r['after']} and went on at {r['date'][11:16]} (load average "
@@ -191,6 +204,10 @@ def report(path):
         out.append(f"{len(lost)} {'session is' if len(lost) == 1 else 'sessions are'} left out: the provider ended "
                    "every attempt ("
                    + ', '.join(f"{r['task']} {r['arm']} round {r['rep']}" for r in lost) + ').')
+    if unrun:
+        count = sum(map(len, unrun.values()))
+        out.append(f"{count} {'session' if count == 1 else 'sessions'} of the plan never ran ("
+                   + ', '.join(f"{t} {''.join(a)} round {rep}" for (rep, t), a in unrun.items()) + ').')
     return '\n'.join(out) + '\n'
 
 
