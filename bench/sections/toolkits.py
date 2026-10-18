@@ -15,7 +15,9 @@ Each program takes one argument: `still` shows the window with its 300 rows, cha
                           its CPU time (all its threads, in % of one core) and its wakeups (voluntary context switches
                           summed over its threads) over TOOLKITS_STILL_S seconds of still screen that start 8 s after
                           it started, after the updates and the card. Both fail when a key or the mouse was used in
-                          the window (GNOME's idle monitor), as in the screen section
+                          the window (GNOME's idle monitor), as in the screen section, when the other programs used
+                          more than one CPU thread in all, or when the compositor woke more than 400 times a second,
+                          since then another window was drawing
   ui.T.rss_idle_mib, ui.T.pss_idle_mib
                           its memory at the end of that window
   ui.T.missed_idle_pct, ui.T.frame_p99_idle_ms
@@ -24,7 +26,8 @@ Each program takes one argument: `still` shows the window with its 300 rows, cha
                           window, which src/probe.c, loaded into the program (LD_PRELOAD), asks it for. 1 s of warm-up
                           after the first frame, then FRAMES_S seconds. The frame rows fail when a key or the mouse
                           was used, when the window lost the focus, or when the compositor showed it for less than
-                          90% of the refreshes, since then they would measure the person at the PC
+                          90% of the refreshes, since then they would measure the person at the PC, and the idle ones
+                          also when the other programs used more than one CPU thread in all
   ui.T.frame_work_p99_ms  the work of each frame in that run: the CPU time of the program, all its threads, from
                           committing one frame of the window to committing the next (the probe reads the program's
                           CPU clock at each commit), the slowest 1%; the note gives the mean
@@ -68,6 +71,8 @@ METRICS = ['first_frame_ms', 'rss_start_mib', 'pss_start_mib', 'still_cpu_pct', 
 HZ = os.sysconf('SC_CLK_TCK')
 START_S = 2.5   # memory after the start: the rows are there, the updates not begun
 STILL_AT = 8.0  # the still window and the accessibility check: after the updates (3–5 s) and the card's 200 ms
+BUSY_PCT = 100  # the CPU the other programs may use in a window, in % of one thread: the load average of 1 asked for
+BUSY_COMPOSITOR_S = 400  # compositor wakeups a second on a still screen above which another window is drawing
 D = os.path.join(WORK, 'toolkits')
 PROBE = os.path.join(WORK, 'bin', 'probe.so')
 DRIVERS = re.compile(r'/(libvulkan_\w+|libgallium[-\w.]*?|\w+_dri)\.so')
@@ -324,19 +329,26 @@ def still(t, argv, comp, seconds):
         emit(f'ui.{t}.rss_{when}_mib', m['rss'], dict(ctx, drivers=loaded))
         emit(f'ui.{t}.pss_{when}_mib', m['pss'], ctx)
     dt = b['t'] - a['t']
-    if idle_ms is not None and idle_ms < dt * 1000:
-        return fail(rows(t, ['still_cpu_pct', 'still_wakeups_s']),
-                    f'a key or the mouse was used {idle_ms / 1000:.0f} s before the end of the {dt:.0f} s window, so '
-                    'the screen was not still: leave the PC alone during this section')
     wakeups = sum(w - (a['threads'][tid][1] if tid in a['threads'] else 0) for tid, (_, w, _) in b['threads'].items())
     cpu = (b['ticks'] - a['ticks']) / HZ / dt * 100
     comp_cpu = (cb['ticks'] - ca['ticks']) / HZ / dt * 100
     comp_wakeups = sum(w - (ca['threads'][tid][1] if tid in ca['threads'] else 0) for tid, (_, w) in cb['threads'].items())
+    rest = (cb['machine'] - ca['machine']) / HZ / dt * 100 - cpu - comp_cpu
+    busy = busiest(ca['procs'], cb['procs'], dt, floor=10)
+    keys = rows(t, ['still_cpu_pct', 'still_wakeups_s'])
+    if idle_ms is not None and idle_ms < dt * 1000:
+        return fail(keys, f'a key or the mouse was used {idle_ms / 1000:.0f} s before the end of the {dt:.0f} s window, '
+                          'so the screen was not still: leave the PC alone during this section')
+    if rest > BUSY_PCT:
+        return fail(keys, f'the other programs used {rest:.0f}% of a CPU thread in the window ({busy}), so the machine '
+                          'was not quiet')
+    if comp_wakeups / dt > BUSY_COMPOSITOR_S:
+        return fail(keys, f'the compositor woke {comp_wakeups / dt:.0f} times a second, so another window was drawing '
+                          '(a game or a video, for one): close it, or leave it out of sight')
     gpu = None if a['gpu_ns'] is None or b['gpu_ns'] is None else round((b['gpu_ns'] - a['gpu_ns']) / 1e6, 1)
     ctx = {'window_s': round(dt, 1), 'threads': len(b['threads']), 'gpu_ms': gpu, 'compositor': comp[1],
            'compositor_cpu_pct': round(comp_cpu, 2), 'compositor_wakeups_s': round(comp_wakeups / dt, 1),
-           'rest_cpu_pct': round((cb['machine'] - ca['machine']) / HZ / dt * 100 - cpu - comp_cpu, 1),
-           'busy': busiest(ca['procs'], cb['procs'], dt, floor=10), 'load1': before,
+           'rest_cpu_pct': round(rest, 1), 'busy': busy, 'load1': before,
            'input': 'none in the window' if idle_ms is not None else 'not checked: no GNOME idle monitor'}
     emit(f'ui.{t}.still_cpu_pct', cpu, dict(ctx, by_thread=by_thread(a, b, 2, dt)))
     emit(f'ui.{t}.still_wakeups_s', wakeups / dt, dict(ctx, by_thread=by_thread(a, b, 1, dt)))
@@ -356,14 +368,14 @@ def pacing(t, argv, seconds, loaded):
         procs.append(p)
         first = first_shown(path, p)['p'][0][2]
         sleep_until(first + screen.WARMUP * 1e9)
-        a, procs_a = reading(p.pid), cpu_ticks()
+        a, procs_a, machine_a = reading(p.pid), cpu_ticks(), screen.machine_busy()
         if loaded:
             sleep_until(first + (screen.WARMUP + screen.SPIKE_AT) * 1e9)
             t_spike = time.monotonic_ns()
             spike = screen.start_spike(mib, seconds + 10)
             procs.append(spike)
         sleep_until(first + (screen.WARMUP + seconds) * 1e9)
-        b, procs_b = reading(p.pid), cpu_ticks()
+        b, procs_b, machine_b = reading(p.pid), cpu_ticks(), screen.machine_busy()
         idle = screen.idle_ms()
         time.sleep(0.5)  # the replies about the last frames
         if spike:
@@ -391,9 +403,15 @@ def pacing(t, argv, seconds, loaded):
         return fail(keys, f"the compositor showed the window for {res['ctx']['refreshes']:,} of the "
                           f"{expected:,.0f} refreshes of the animation, so it was covered for part of it")
     dt, frames = b['t'] - a['t'], res['ctx']['frames']
-    ctx = dict(res['ctx'], load1=before, busy=busiest(procs_a, procs_b, dt, floor=10),
-               window=f"{got['c'][-1][1]}×{got['c'][-1][2]}" if got['c'] else None,
-               cpu_pct=round((b['ticks'] - a['ticks']) / HZ / dt * 100, 1), threads=by_thread(a, b, 2, dt))
+    cpu, busy = (b['ticks'] - a['ticks']) / HZ / dt * 100, busiest(procs_a, procs_b, dt, floor=10)
+    rest = (machine_b - machine_a) / HZ / dt * 100 - cpu  # the compositor's too: it draws the animation
+    if not loaded and rest > BUSY_PCT:
+        return fail(keys, f'the other programs used {rest:.0f}% of a CPU thread during the animation ({busy}), so the '
+                          'machine was not idle')
+    ctx = dict(res['ctx'], load1=before, busy=busy, window=f"{got['c'][-1][1]}×{got['c'][-1][2]}" if got['c'] else None,
+               cpu_pct=round(cpu, 1), threads=by_thread(a, b, 2, dt))
+    if not loaded:
+        ctx['rest_cpu_pct'] = round(rest, 1)
     if a['gpu_ns'] is not None and b['gpu_ns'] is not None and frames:
         ctx['gpu_ms_per_frame'] = round((b['gpu_ns'] - a['gpu_ns']) / 1e6 / frames, 2)
     if loaded:
