@@ -486,14 +486,30 @@ ENTRIES = [
 ]
 
 # 10. The toolkits of issue #8 (sections/toolkits.py, run only with ONLY=toolkits): the same test program in each
-# candidate toolkit, measured the same way. The rows are new; they have no reference yet.
+# candidate toolkit, measured the same way. The reference is the suite's own (docs/INTERFACE.md, The toolkits
+# measured): each row's median over the clean samples of five `ONLY=toolkits` runs on 17 Oct 2026, from an ordinary
+# context (a systemd --user unit), 3 or 4 a row. A sample is clean when its rows passed the section's checks and began
+# at a load average under 1; memory and first frame count from the launches whose still screen was clean. The runs
+# started at load averages 0.46, 0.52, 0.02 (ref_load: the run of 21:33, clean for every toolkit), 0.32 and 0.57.
+# Under load, the missed frames ranged from 1.3% to 10.8% for GTK 4 over its three samples, so that row moves well
+# beyond ±15% from run to run, as the screen section's does.
 TOOLKITS = (('gtk4', 'GTK 4'), ('qtquick', 'Qt Quick'), ('slint', 'Slint'), ('iced', 'iced'), ('flutter', 'Flutter'))
+TOOLKITS_REF = {'ref_date': '17 Oct 2026', 'ref_load': 0.02}
+TOOLKIT_M = {  # in the order of TOOLKIT_ROWS
+    'gtk4': (170, 139.9, 117.5, 0.0, 0.1, 162.7, 139.9, 0.25, 16.7, 0.97, 2.17, 33.3, 127),
+    'qtquick': (147, 162.0, 138.1, 0.0, 0.05, 165.4, 141.5, 0.25, 16.7, 0.66, 11.43, 33.3, 109),
+    'slint': (93, 93.8, 80.1, 0.02, 2.0, 93.8, 80.1, 0.33, 16.7, 0.92, 83.33, 133.3, 69),
+    'iced': (99, 95.1, 83.9, 0.02, 4.0, 95.2, 84.0, 0.25, 16.7, 1.64, 16.35, 33.3, 0),
+    'flutter': (199, 174.1, 139.3, 0.0, 0.3, 154.6, 131.6, 0.25, 16.7, 2.59, 4.25, 33.3, 42),
+}
+STILL = {'abs_tol': 0.05, 'abs_why': 'within 3 clock ticks (10 ms each) of the reference over the 60 s window'}
 TOOLKIT_ROWS = (
     ('first_frame_ms', 'from its start to its first frame on screen', 'ms', {'dp': 0}),
     ('rss_start_mib', 'memory 2.5 s after its start: RSS', 'MiB', {}),
     ('pss_start_mib', 'memory 2.5 s after its start: PSS', 'MiB', {}),
-    ('still_cpu_pct', 'still screen, no input: CPU, share of one core', '%', {'dp': 2}),
-    ('still_wakeups_s', 'still screen, no input: wakeups', '/s', {'dp': 1}),
+    ('still_cpu_pct', 'still screen, no input: CPU, share of one core', '%', dict(STILL, dp=2)),
+    ('still_wakeups_s', 'still screen, no input: wakeups', '/s',
+     {'dp': 2, 'abs_tol': 0.1, 'abs_why': 'within 6 wakeups a minute of the reference'}),
     ('rss_idle_mib', 'memory after a minute of still screen: RSS', 'MiB', {}),
     ('pss_idle_mib', 'memory after a minute of still screen: PSS', 'MiB', {}),
     ('missed_idle_pct', 'animation: frames missed, machine idle', '%', MISSED),
@@ -501,7 +517,7 @@ TOOLKIT_ROWS = (
     ('frame_work_p99_ms', 'animation: work per frame (CPU time), slowest 1%', 'ms', {'dp': 2}),
     ('missed_load_pct', 'animation: frames missed, a busy cell per CPU thread and a memory spike', '%', MISSED),
     ('frame_p99_load_ms', 'animation: slowest 1% of frame times, under that load', 'ms', {'dp': 1}),
-    ('atspi_objects', 'objects on the accessibility bus (AT-SPI)', '', {}),
+    ('atspi_objects', 'objects on the accessibility bus (AT-SPI)', '', {'abs_tol': 0, 'abs_why': ''}),
 )
 
 
@@ -509,6 +525,6 @@ def toolkit_why(r, key):
     return toolkit_note((r.recs.get(key) or {}).get('ctx') or {}, key.rsplit('.', 1)[1])
 
 
-ENTRIES += [E(f'ui.{t}.{metric}', 'Toolkits', f'{name}: {label}', None, unit, 'state', 'suite', **kw,
-              why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
-            for t, name in TOOLKITS for metric, label, unit, kw in TOOLKIT_ROWS]
+ENTRIES += [E(f'ui.{t}.{metric}', 'Toolkits', f'{name}: {label}', TOOLKIT_M[t][i], unit, 'state', 'suite', **kw,
+              **TOOLKITS_REF, why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
+            for t, name in TOOLKITS for i, (metric, label, unit, kw) in enumerate(TOOLKIT_ROWS)]
