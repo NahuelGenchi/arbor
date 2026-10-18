@@ -75,8 +75,16 @@ for _ in $(seq 50); do
   sleep 0.1
 done
 
+# A made-up agent program where OpenCode's installer puts it, so Start an agent has one to list: it only says
+# what it is and waits. Only it is found: the window gets a PATH without the home folder's own programs.
+mkdir -p "$HOME/.opencode/bin"
+printf '#!/bin/sh\necho "a made-up agent, for the demo: it does nothing"\nsleep 3600\n' >"$HOME/.opencode/bin/opencode"
+chmod +x "$HOME/.opencode/bin/opencode"
+export PATH=/usr/local/bin:/usr/bin:/bin
 if [ "${1:-}" = shot ]; then
   shift
+  # A picture opens no terminal: the room runs without one.
+  export ARBOR_TERMINAL=env
   "$BIN/examples/shot" "$@"
 else
   "$BIN/arbor-mission"
