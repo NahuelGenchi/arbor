@@ -584,15 +584,18 @@ ENTRIES += [E(f'ui.{t}.{metric}', 'Mission Control', f'{name}: {label}', MISSION
             for t, name in MISSION for i, (metric, label, unit, kw) in enumerate(MISSION_ROWS)]
 
 # 12. The five goals of 18 Oct 2026 (sections/goals.py, run only with ONLY=goals, issue #85): today's Ubuntu against arbor
-# over a whole stretch of work. The reference is the suite's own, from an ordinary context: the session and power rows are
-# the medians of the 3 measured runs of each arm (after one warm-up) of the run at 19:59 (GOALS_REF), with the CPU under
-# 1% busy before every run; an earlier run at 18:52 read within 10% of it on every row but the memory and swap ones and
-# arbor's five tries (4.7 s there, 4.1 s here). The safety and ease rows are from that earlier run (GOALS_SAFE_REF), the still desktop
-# from the run in GOALS_STILL_REF. Package energy was read through RAPL, which the owner opened to ordinary users for
-# these runs only (the issue says why it is closed by default). Arbor's wall time is not its CPU time:
-# a diagnostic run with a timestamp after each step found the cells' first build after the edit taking 6.9-8.5 s, against
-# 2.6 s in a copy, on less CPU; two other runs of the arm took 5.0 and 5.1 s. The cause is not found.
+# over a whole stretch of work. The reference is the suite's own, from an ordinary context: the session rows are the
+# medians of the 3 measured runs of each arm (after one warm-up) of the run at 20:54 (GOALS_SESSION_REF, GOALS_PARTS=session,
+# issue #90), with the CPU under 1% busy before every run, but package energy, which comes with the power rows from the run
+# at 19:59 (GOALS_REF): energy was read through RAPL, which the owner opened to ordinary users for that run only (#85 says
+# why it is closed by default). An earlier run at 18:52 read within 10% of the 19:59 one on every row but the memory and
+# swap ones and arbor's five tries (4.7 s there, 4.1 s here). The safety and ease rows are from that earlier run
+# (GOALS_SAFE_REF), the still desktop from the run in GOALS_STILL_REF. Arbor's wall time swings between runs on the same
+# CPU time (4.9, 12.0 and 12.8 s): a build in a world links, renames and rewrites files of the folder below, and overlayfs
+# copies each one up and fsyncs it, about 1,640 disk cache flushes in a run against the copies' 30 (#90). They took 1.4 s
+# in the fast run and 5.2-5.5 s in the slow ones; every arbor run follows the copies' 4.4 GiB of writes. The rows' ctx has them.
 GOALS_REF = {'ref_date': '18 Oct 2026', 'ref_load': 3.5}
+GOALS_SESSION_REF = {'ref_date': '18 Oct 2026', 'ref_load': 0.57}
 GOALS_SAFE_REF = {'ref_date': '18 Oct 2026', 'ref_load': 3.3}
 # The still desktop's run started at a load average of 5.84, right after the mission section's, and its blocks at 0.41-0.53.
 # Someone used the PC during it: of the two blocks of today, the first saw input in all three attempts, so today has one
@@ -612,12 +615,12 @@ SESSION_ROWS = (  # metric, label, unit, kind, extra
     ('energy_j', 'package energy (RAPL)', 'J', 'perf', {}),
 )
 SESSION_M = {  # in the order of SESSION_ROWS
-    'worktree': (4454.0, 1744.4, 117.4, 3426.3, 3314.5, 32.53, 266.6, 4235.6),
-    'copy': (1182.3, 339.0, 9.5, 4567.3, 3358.0, 10.07, 44.74, 936.6),
-    'arbor': (436.4, 114.2, 0.0, 2207.7, 1296.6, 14.31, 16.45, 647.8),
+    'worktree': (4402.6, 1695.7, 8.1, 3312.6, 3314.6, 32.34, 267.8, 4235.6),
+    'copy': (1179.8, 364.3, 0.0, 4443.4, 3358.6, 8.61, 45.02, 936.6),
+    'arbor': (490.2, 107.6, 0.0, 2209.1, 1296.6, 11.99, 17.18, 647.8),
 }
 ENTRIES += [E(f'goal.session.{a}.{metric}', 'Goals', f'session, {name}: {label}', SESSION_M[a][i], unit, kind, 'suite',
-              **kw, **GOALS_REF, blocks_label='runs')
+              **kw, **(GOALS_REF if metric == 'energy_j' else GOALS_SESSION_REF), blocks_label='runs')
             for a, name in GOAL_ARMS for i, (metric, label, unit, kind, kw) in enumerate(SESSION_ROWS)]
 COUNT = {'abs_tol': 0, 'abs_why': ''}
 ENTRIES += [E(f'goal.power.{a}.tries5_s', 'Goals', f'power, {name}: 5 tries of a change at once, keep 1', m, 's',
