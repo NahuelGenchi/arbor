@@ -595,6 +595,7 @@ MISSION_ACTS = (  # metric, label, (nothing running, 300 rooms)
     ('changes_ms', 'See changes: from the press to the files and their lines on screen', (39, 34)),
     ('keep_ms', 'Keep: from the press to "Kept" on screen, once `arbor keep` has run', (35, 49)),
     ('undo_ms', 'Undo the keep: from the press to its line on screen, once `arbor undo` has run', (39, 47)),
+    ('start_ms', 'Start an agent: from the press to "Started" on screen, once its try and key are made', (45, 44)),
 )
 
 
