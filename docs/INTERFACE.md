@@ -336,6 +336,7 @@ The same run measured the rest of the window again, on this build, which has mor
 ### Not measured yet
 
 - **Input latency from the device**, and its 99th percentile. The presses above start at GTK's clicked signal, so the path from the keyboard or mouse to GTK is not in them, and 3 to 6 presses a state are too few for the slowest 1%.
+- **The still screen with 300 rooms, on the window with buttons** (#82 to #84): its frames, CPU and wakeups in the run of 18 October at 21:02 failed the section's checks, because another window was drawing during that minute. The 1.0 frame, 0.33% and 12.5 wakeups a second above are from #78's run, before the buttons.
 - **Memory with every view opened** waits for the other views.
 - **No growth over an hour of updates:** the longest window measured here is a minute.
 - **120 Hz:** this PC's panel runs at 60 Hz.

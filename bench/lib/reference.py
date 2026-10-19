@@ -586,6 +586,7 @@ ENTRIES += [E(f'ui.{t}.{metric}', 'Mission Control', f'{name}: {label}', MISSION
 # row is the median of its presses, from the press (the button's clicked signal) to the presentation time of the frame
 # that shows its result, from the run of MISSION_ACT_REF on the build with #82, #83 and #84, from an ordinary context.
 # A result shows on a refresh, so a press moves by up to a frame (16.7 ms at 60 Hz) from one run to the next.
+# That run's still-screen rows with 300 rooms failed (another window was drawing), so MISSION_M keeps #78's for them.
 MISSION_ACT_REF = {'mission': {'ref_date': '18 Oct 2026', 'ref_load': 0.28},
                    'mission_busy': {'ref_date': '18 Oct 2026', 'ref_load': 0.52}}
 MISSION_ACTS = (  # metric, label, (nothing running, 300 rooms)
