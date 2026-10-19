@@ -18,10 +18,22 @@ Each gets the toolkits section's rows (first frame, memory 2.5 s after the start
 and wakeups, frame pacing idle and under load, work per frame, AT-SPI objects), and:
   ui.T.still_frames_s     the frames the compositor showed of the window a second during the still minute, through
                           the probe (src/probe.c)
-The AT-SPI check looks for the window's own words: its heading, the two effects' commands and the tries' names. The
+The first and the last state also get, from `arbor-mission --bench answer answers` (#82): a try `answers` asks for
+MISSION_ANSWERS (6) effects that print a line, and the window answers them through its own buttons, releasing and
+refusing in turn (the button's clicked signal, as a press sends it), then closes. From GTK's frame timings, which hold
+the compositor's presentation time of each frame, in ms, the median of the presses:
+  ui.T.confirm_ms         from pressing Release or Refuse to the frame that shows its confirmation
+  ui.T.release_ms         from pressing Release now to the frame that shows the receipt: `arbor release` started,
+                          ran the effect's command and ended, and the window read the effect back and showed it
+  ui.T.refuse_ms          the same for Refuse and `arbor refuse`
+The input's way in, from the device through the compositor to the window, is not in them. The try is thrown away
+after, which refuses whatever it asked for that is still waiting.
+The AT-SPI check looks for the window's own words: its heading, the two effects' commands and the tries' names, and the
+names of the first decision's buttons. The
 cells need a systemd user manager for their cgroups: the section starts `arbor serve` if it is not running and stops it
 again, as the arbor section does. Every cell, window and spike ends with the section, also on a timeout or Ctrl-C.
 """
+import json
 import os
 import shutil
 import signal
@@ -32,7 +44,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'lib'))
 sys.path.insert(0, HERE)
-from common import BENCH_DIR, WORK, env, fail, run  # noqa: E402
+from common import BENCH_DIR, WORK, emit, env, fail, median, run  # noqa: E402
 import screen  # noqa: E402
 import toolkits  # noqa: E402
 
@@ -40,6 +52,8 @@ D = os.path.join(WORK, 'mission')
 ROOMS = int(env('MISSION_ROOMS', '300'))
 PAUSE_S = 0.2  # between the short commands of the busy state, each of which records two steps
 METRICS = toolkits.METRICS + ['still_frames_s']
+ANSWER_METRICS = ['confirm_ms', 'release_ms', 'refuse_ms']
+ANSWERS = int(env('MISSION_ANSWERS', '6'))
 
 
 def build():
@@ -112,7 +126,7 @@ def quiet_state(a):
     a('run', 'notes', '--', 'sh', '-c', 'echo "call the bookkeeper on Monday" > todo.txt')
     a('keep', 'notes')
     return ['2 things need you', 'Nothing is running', 'git push origin fix', './deploy --to test-site', 'help-pages',
-            'shop', 'site', 'notes']
+            'shop', 'site', 'notes', 'Release git push origin fix', 'Refuse git push origin fix']
 
 
 def busy_state(a, procs):
@@ -137,19 +151,46 @@ def busy_state(a, procs):
         ['sh', '-c', f'while :; do "$0" run ticker -- true >/dev/null 2>&1; sleep {PAUSE_S}; done', a.binary],
         env=a.env, stdin=subprocess.DEVNULL, preexec_fn=screen.die_with_us)
     procs.append(ticker)
-    return ['2 things need you', 'rooms are working', 'room-000', 'git push origin fix']
+    return ['2 things need you', 'rooms are working', 'room-000', 'git push origin fix', 'Release git push origin fix']
 
 
-def measure(t, argv, comp, expect):
+def answers(t, mission, a):
+    """The window answers ANSWERS effects of a try made for them, with its own buttons: confirm_ms, release_ms and
+    refuse_ms."""
+    a('new', 'answers', '--from', os.path.join(D, 'projects', 'help-pages'))
+    try:
+        for _ in range(ANSWERS):
+            a('run', 'answers', '--', 'arbor', 'effect', '--why', 'say it was published', '--', 'echo', 'published')
+        r = run([mission, '--bench', 'answer', 'answers'], timeout=120, env=toolkits.program_env(),
+                cwd=os.path.dirname(mission))
+        got = [json.loads(x) for x in r.stdout.decode(errors='replace').splitlines() if x.startswith('{')]
+    finally:
+        a('discard', 'answers')
+    if len(got) < ANSWERS:
+        raise RuntimeError(f'the window answered {len(got)} of {ANSWERS} effects: ' + screen.last_line(r.stderr))
+    failed = [g['effect'] for g in got if g['failed'] or g['confirm_ms'] is None or g['result_ms'] is None]
+    if failed:
+        raise RuntimeError(f'effects {failed} were not answered, or their frames were not shown')
+    load = screen.load1()
+    confirm = [g['confirm_ms'] for g in got]
+    emit(f'ui.{t}.confirm_ms', median(confirm), {'presses_ms': [round(x, 1) for x in confirm], 'load1': load})
+    for kind in ('release', 'refuse'):
+        ms = [g['result_ms'] for g in got if g['answer'] == kind]
+        emit(f'ui.{t}.{kind}_ms', median(ms), {'presses_ms': [round(x, 1) for x in ms], 'load1': load})
+
+
+def measure(t, argv, comp, expect, answer=None):
     seconds, launches = float(env('FRAMES_S', '20')), int(env('TOOLKITS_LAUNCHES', '5'))
     still_s = float(env('TOOLKITS_STILL_S', '60'))
-    steps = ((['first_frame_ms'], lambda: toolkits.first_frame(t, argv, launches)),
+    steps = [(['first_frame_ms'], lambda: toolkits.first_frame(t, argv, launches)),
              (['rss_start_mib', 'pss_start_mib', 'still_cpu_pct', 'still_wakeups_s', 'rss_idle_mib', 'pss_idle_mib',
                'still_frames_s'], lambda: toolkits.still(t, argv, comp, still_s, frames=True)),
              (['atspi_objects'], lambda: toolkits.atspi(t, argv, expect)),
              (['missed_idle_pct', 'frame_p99_idle_ms', 'frame_work_p99_ms'],
               lambda: toolkits.pacing(t, argv, seconds, False)),
-             (['missed_load_pct', 'frame_p99_load_ms'], lambda: toolkits.pacing(t, argv, seconds, True)))
+             (['missed_load_pct', 'frame_p99_load_ms'], lambda: toolkits.pacing(t, argv, seconds, True))]
+    if answer:  # before the loaded run, whose cells and spike leave the load average high
+        steps.insert(4, (ANSWER_METRICS, lambda: answers(t, argv[0], answer)))
     for metrics, step in steps:
         try:
             step()
@@ -166,6 +207,7 @@ def main():
     os.makedirs(D, exist_ok=True)
     os.makedirs(os.path.join(toolkits.D, 'logs'), exist_ok=True)
     keys = [k for t in ('mission', 'mission_cairo', 'mission_busy') for k in toolkits.rows(t, METRICS)]
+    keys += [k for t in ('mission', 'mission_busy') for k in toolkits.rows(t, ANSWER_METRICS)]
     try:
         comp = screen.compositor()
         binary, mission = build()
@@ -184,7 +226,7 @@ def main():
         except Exception as e:
             return fail(keys, e)
         toolkits.settle_down(settle)
-        measure('mission', argv, comp, expect)
+        measure('mission', argv, comp, expect, answer=a)
         toolkits.settle_down(settle)  # the loaded run's cells and spike: let the machine come back
         renderer = os.environ.get('GSK_RENDERER')
         os.environ['GSK_RENDERER'] = 'cairo'
@@ -198,9 +240,9 @@ def main():
         try:
             expect = busy_state(a, procs)
         except Exception as e:
-            return fail(toolkits.rows('mission_busy', METRICS), e)
+            return fail(toolkits.rows('mission_busy', METRICS + ANSWER_METRICS), e)
         toolkits.settle_down(settle)
-        measure('mission_busy', argv, comp, expect)
+        measure('mission_busy', argv, comp, expect, answer=a)
     finally:
         for p in procs:
             p.terminate()  # an arbor that runs a cell stops it and records how it ended

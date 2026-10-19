@@ -3,7 +3,7 @@
 [Back to README](../README.md) · [Issue #6](https://github.com/NahuelGenchi/arbor/issues/6) · [M7 — Interface](https://github.com/NahuelGenchi/arbor/milestone/8)
 
 > [!NOTE]
-> **Only the first, read-only app exists.** This brief decides what Mission Control shows and how a person directs agents through it. The first app ([#9](https://github.com/NahuelGenchi/arbor/issues/9), [`prototype/mission/`](../prototype/mission/README.md)) is one window in GTK 4. It shows the tries, the rooms working in them, the decisions waiting and the last steps of history, and it can answer nothing yet. The views below, Release and Refuse among them, are still plans, and the pictures are wireframes with made-up data. [#8](https://github.com/NahuelGenchi/arbor/issues/8) measured a small test program in five toolkits, and GTK 4 was chosen ([The toolkits measured](#the-toolkits-measured)). #9 measured the first app against the targets it can meet without input ([The first app, measured](#the-first-app-measured)).
+> **Only the first app exists.** This brief decides what Mission Control shows and how a person directs agents through it. The first app ([#9](https://github.com/NahuelGenchi/arbor/issues/9), [`prototype/mission/`](../prototype/mission/README.md)) is one window in GTK 4. It shows the tries, the rooms working in them, the decisions waiting and the last steps of history, and it answers decisions with Release and Refuse ([#82](https://github.com/NahuelGenchi/arbor/issues/82)). The other views below are still plans, and the pictures are wireframes with made-up data. [#8](https://github.com/NahuelGenchi/arbor/issues/8) measured a small test program in five toolkits, and GTK 4 was chosen ([The toolkits measured](#the-toolkits-measured)). #9 measured the first app against the targets it can meet without input ([The first app, measured](#the-first-app-measured)).
 
 Mission Control is the screen where people direct agents. It shows what agents are changing, what they want to send out and what they have spent, and it asks for a person only when a person is needed. Today's desktops were built for one person and a handful of windows. Mission Control has to make hundreds of agents legible to one person at a glance, and spend that person's attention as carefully as money.
 
@@ -65,6 +65,8 @@ One outbox item and everything needed to answer it, in one place:
 - **The steps behind it**: the ledger entries that produced it, oldest first, with a way to the whole history.
 
 **Release** and **Refuse** answer it in one gesture with all of this in view. An effect that cannot be undone, or that costs more than a limit the person sets, also asks for a second confirmation, such as a touch of a security key. A release goes through the outbox's own rules and leaves its receipt in the ledger; Mission Control has no other way to send anything off the machine ([#12](https://github.com/NahuelGenchi/arbor/issues/12)).
+
+*In the first app* ([#82](https://github.com/NahuelGenchi/arbor/issues/82)), the decision is a line of Now rather than a view of its own: its facts, the asker's words, and Release and Refuse. A press opens one confirmation in place, with the focus on Cancel, and the window then runs `arbor release` or `arbor refuse`, the command a person would type. The receipt replaces the decision in a list of answers. The second confirmation waits for the outbox to record whether an effect can be undone ([open question 3](#open-questions)).
 
 **Reads:** an outbox item (the effect, its target, its cost, waiting, released or refused, and the ledger steps behind it); those ledger entries; the world they worked in; budgets.
 
@@ -306,9 +308,22 @@ Which renderer Mission Control uses is not decided here. Cairo meets the memory 
 
 The C program's anonymous memory grew by 20 MiB over its still minute, and its RSS grew from 140 to 163 MiB on 17 October as well. The port's memory did not grow, and neither did Mission Control's. Why the C program grows was not found.
 
+### The buttons, measured
+
+Release and Refuse ([#82](https://github.com/NahuelGenchi/arbor/issues/82)) are the window's first input. The `mission` section times them in two of the states above, nothing running and 300 rooms. In each, a try asks for 6 effects, and the window answers them through its own buttons (`arbor-mission --bench answer`), releasing and refusing in turn. Each press is timed from the button's clicked signal, as a press sends it, to the compositor's presentation time of the frame that shows its result, read from GTK's frame timings. Each figure is the median of its presses, with their range. The numbers are from the run of 18 October 2026 at 21:02, from an ordinary process, on the build with #82, [#83](https://github.com/NahuelGenchi/arbor/issues/83) and [#84](https://github.com/NahuelGenchi/arbor/issues/84). The run started at a load average of 1.39, and was at 0.28 and 0.52 at these rows. Every row passed the section's checks.
+
+| From the press to the frame that shows (M: every number in the row) | Nothing running | 300 rooms | Target |
+| :--- | ---: | ---: | :--- |
+| Release or Refuse: the confirmation in place, ms (M) | 24 (21–30) | 25 (20–42) | at most 33, two refreshes |
+| Release now: the receipt, once `arbor release` has run, ms (M) | 39 (32–41) | 47 (35–51) | |
+| Refuse now: the receipt, once `arbor refuse` has run, ms (M) | 42 (38–44) | 45 (44–52) | |
+
+- **The window answers a press within two refreshes.** The confirmation is the window's own answer, with no command to wait for. Its median is 24 ms with nothing running and 25 ms with 300 rooms, within the 33 ms of the target. One press of 12 took 42 ms, with 300 rooms.
+- **A receipt waits for arbor.** Release now and Refuse now run `arbor release` or `arbor refuse` and show the receipt when the command ends: 39 to 47 ms. The receipt is the result, not the first answer to the press. That answer is the line saying it is releasing, which was not timed.
+
 ### Not measured yet
 
-- **Input latency** needs a window that takes input. Release and Refuse will be the first.
+- **Input latency from the device**, and its 99th percentile. The presses above start at GTK's clicked signal, so the path from the keyboard or mouse to GTK is not in them, and 6 presses a state are too few for the slowest 1%.
 - **Memory with every view opened** waits for the other views.
 - **No growth over an hour of updates:** the longest window measured here is a minute.
 - **120 Hz:** this PC's panel runs at 60 Hz.

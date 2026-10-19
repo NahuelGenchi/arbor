@@ -9,6 +9,10 @@
 //! reading runs off the main thread and reads only what the new steps name (`state`); the window then changes only
 //! the lines whose words changed, and GTK draws them on the next frame. What rooms use changes without a step, so
 //! while rooms run and the window is shown, it reads them again every 10 s. A still screen has no timer running.
+//!
+//! Each decision has Release and Refuse. A press asks for one confirmation in place, with the focus on Cancel so
+//! that a held or repeated Enter never confirms; confirmed, the window runs `arbor release` or `arbor refuse` off the
+//! main thread (`act`), and its receipt joins the *Answered* list.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -19,9 +23,12 @@ use std::time::{Duration, Instant};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use arbor::world;
+
+use crate::act::{self, Ask};
 use crate::shift::Shift;
 use crate::state::{self, Kind, Reader, Snapshot};
-use crate::words::{self, Line, Mark};
+use crate::words::{self, Act, Do, Line, Mark};
 
 /// How many steps of history the side column shows.
 const STEPS: usize = 8;
@@ -38,17 +45,48 @@ const NARROW: i32 = 820;
 const SIDE_CHARS: i32 = 34;
 /// More new lines than this at once appear without motion: nobody can follow them all.
 const MOVING: usize = 5;
+/// How many answers the *Answered* list keeps, newest first.
+const ANSWERS_SHOWN: usize = 10;
 
 const CSS: &str = include_str!("mission.css");
 
 /// The suite's modes (`--bench`), so that it can measure the window as the test programs of issue #8 are measured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bench {
     /// The window as it is: it shows arbor's state and sleeps.
     Still,
     /// The first line moves without end, and the window reads ten times as often as it would: the ledger every
     /// 100 ms, and the rooms every second.
     Animate,
+    /// Answers each decision that this try asked for, releasing and refusing in turn, through the window's own
+    /// buttons, and prints how long each took to show, from the press to the frame the compositor showed: the
+    /// confirmation, then the result. Then it closes.
+    Answer(String),
+}
+
+/// A state of the window for a picture (`examples/shot.rs`): what a person would see after pressing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scene {
+    /// The first decision's Release pressed: its confirmation.
+    Confirm,
+    /// The first decision's Refuse pressed, with a reason typed.
+    Refuse,
+    /// The last decision released, while its command runs.
+    Releasing,
+    /// The last decision released and the first refused, with their receipts.
+    Answered,
+}
+
+impl Scene {
+    pub fn named(name: &str) -> Option<Scene> {
+        Some(match name {
+            "confirm" => Scene::Confirm,
+            "refuse" => Scene::Refuse,
+            "releasing" => Scene::Releasing,
+            "answered" => Scene::Answered,
+            _ => return None,
+        })
+    }
 }
 
 /// How the window runs.
@@ -57,6 +95,8 @@ pub struct Options {
     pub bench: Option<Bench>,
     /// Draw the window into this PNG file once it shows arbor's state, then quit.
     pub png: Option<PathBuf>,
+    /// The state to draw it in.
+    pub scene: Option<Scene>,
     /// Dark (true) or light (false), instead of the desktop's setting.
     pub dark: Option<bool>,
     pub size: Option<(i32, i32)>,
@@ -88,13 +128,18 @@ pub fn run(options: Options) -> glib::ExitCode {
     app.run_with_args(&argv0)
 }
 
-/// One list of lines: needs you, tries or steps.
+/// What a confirmed button asks the window to do: the line's key, what, and the reason typed, if any.
+type Go = Rc<dyn Fn(&str, Do, String)>;
+
+/// One list of lines: needs you, answered, tries or steps.
 struct Section {
     root: gtk::Box,
     list: gtk::ListBox,
     rows: RefCell<Vec<Row>>,
     /// The side column's lines wrap at this many characters, so that it keeps its width; -1 for no limit.
     max_chars: i32,
+    /// What its lines' buttons do once confirmed.
+    go: Option<Go>,
 }
 
 /// The widgets of one line, and the words they show.
@@ -108,6 +153,24 @@ struct Row {
     detail: gtk::Label,
     aside: gtk::Label,
     note: gtk::Label,
+    output: gtk::Label,
+    acts: Option<Rc<Acts>>,
+}
+
+/// A line's buttons, and the confirmation that one of them opens in place, under the line.
+struct Acts {
+    key: String,
+    defs: Vec<Act>,
+    buttons: gtk::Box,
+    pressed: Vec<gtk::Button>,
+    strip: gtk::Box,
+    ask: gtk::Label,
+    says: gtk::Label,
+    reason: gtk::Entry,
+    cancel: gtk::Button,
+    go: gtk::Button,
+    open: Cell<Option<usize>>,
+    on_go: Go,
 }
 
 struct Ui {
@@ -119,6 +182,7 @@ struct Ui {
     columns: gtk::Box,
     side: gtk::Box,
     needs: Section,
+    answers: Section,
     tries: Section,
     steps: Section,
     newer: gtk::Box,
@@ -133,6 +197,19 @@ struct Ui {
     calm: RefCell<Option<glib::SourceId>>,
     sample: RefCell<Option<glib::SourceId>>,
     monitor: RefCell<Option<gio::FileMonitor>>,
+    /// The effects answered from this window, which Needs you no longer shows, and the answers' lines, newest
+    /// first.
+    hidden: RefCell<HashSet<u64>>,
+    answered: RefCell<Vec<Line>>,
+    /// For `--bench answer`: the frame that shows each effect's result.
+    result_frame: RefCell<HashMap<u64, i64>>,
+}
+
+/// Gives a button its own name on the accessibility bus. A button is labelled by its label child, which comes before
+/// a name it is given, so that relation goes.
+fn named(b: &gtk::Button, name: &str) {
+    b.reset_relation(gtk::AccessibleRelation::LabelledBy);
+    b.update_property(&[gtk::accessible::Property::Label(name)]);
 }
 
 fn label(classes: &[&str]) -> gtk::Label {
@@ -147,7 +224,7 @@ fn label(classes: &[&str]) -> gtk::Label {
 }
 
 impl Section {
-    fn new(title: &str, aside: Option<&str>, max_chars: i32) -> Section {
+    fn new(title: &str, aside: Option<&str>, max_chars: i32, go: Option<Go>) -> Section {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let t = gtk::Label::builder()
@@ -177,6 +254,23 @@ impl Section {
             list,
             rows: RefCell::new(Vec::new()),
             max_chars,
+            go,
+        }
+    }
+
+    /// The buttons of the line with this key.
+    fn acts(&self, key: &str) -> Option<Rc<Acts>> {
+        self.rows
+            .borrow()
+            .iter()
+            .find(|r| r.line.key == key)
+            .and_then(|r| r.acts.clone())
+    }
+
+    /// Moves the keyboard focus to the line with this key.
+    fn focus(&self, key: &str) {
+        if let Some(r) = self.rows.borrow().iter().find(|r| r.line.key == key) {
+            r.row.grab_focus();
         }
     }
 
@@ -212,7 +306,7 @@ impl Section {
                 }
                 None => {
                     new.push(line.key.clone());
-                    let r = Row::new(line, self.max_chars);
+                    let r = Row::new(line, self.max_chars, self.go.clone());
                     self.list.insert(&r.row, i as i32);
                     if arrive {
                         r.shift.arrive();
@@ -227,7 +321,7 @@ impl Section {
 }
 
 impl Row {
-    fn new(line: Line, max_chars: i32) -> Row {
+    fn new(line: Line, max_chars: i32, go: Option<Go>) -> Row {
         let mark: gtk::Widget = match &line.badge {
             Some(word) => {
                 let pill = gtk::Box::builder()
@@ -268,6 +362,15 @@ impl Row {
         aside.set_valign(gtk::Align::Start);
         aside.set_wrap_mode(gtk::pango::WrapMode::Word);
         let note = label(&["note"]);
+        // What a command printed: as it printed it, and selectable, so it can be copied.
+        let output = gtk::Label::builder()
+            .xalign(0.0)
+            .selectable(true)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::Char)
+            .css_classes(["output", "code"])
+            .visible(false)
+            .build();
         for l in [&title, &command, &detail, &note, &aside] {
             l.set_max_width_chars(max_chars);
         }
@@ -282,6 +385,16 @@ impl Row {
         text.append(&command);
         text.append(&detail);
         text.append(&note);
+        text.append(&output);
+        let acts = match go {
+            Some(go) if !line.acts.is_empty() => {
+                let acts = Acts::new(&line.key, line.acts.clone(), go);
+                text.append(&acts.buttons);
+                text.append(&acts.strip);
+                Some(acts)
+            }
+            _ => None,
+        };
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let slot = gtk::Box::builder()
             .css_classes(["slot"])
@@ -310,6 +423,8 @@ impl Row {
             detail,
             aside,
             note,
+            output,
+            acts,
         };
         r.update(line, true);
         r
@@ -343,14 +458,21 @@ impl Row {
             self.note.set_label(line.note.as_deref().unwrap_or(""));
             self.note.set_visible(line.note.is_some());
         }
+        if all || old.output != line.output {
+            self.output.set_label(line.output.as_deref().unwrap_or(""));
+            self.output.set_visible(line.output.is_some());
+        }
         if (all || old.mark != line.mark) && line.badge.is_none() {
-            for c in ["work", "idle", "kept", "none"] {
+            for c in ["work", "idle", "kept", "done", "no", "failed", "none"] {
                 self.mark.remove_css_class(c);
             }
             self.mark.add_css_class(match line.mark {
                 Mark::Work => "work",
                 Mark::Idle => "idle",
                 Mark::Kept => "kept",
+                Mark::Done => "done",
+                Mark::No => "no",
+                Mark::Failed => "failed",
                 Mark::Wait | Mark::None => "none",
             });
         }
@@ -362,6 +484,160 @@ impl Row {
                 .update_property(&[gtk::accessible::Property::Label(&line.said)]);
         }
         self.line = line;
+    }
+}
+
+impl Acts {
+    fn new(key: &str, defs: Vec<Act>, on_go: Go) -> Rc<Acts> {
+        let buttons = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .css_classes(["acts"])
+            .build();
+        let strip = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .css_classes(["confirm"])
+            .visible(false)
+            .build();
+        let ask = label(&["ask"]);
+        let says = label(&["detail"]);
+        let reason = gtk::Entry::builder().visible(false).build();
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let cancel = gtk::Button::with_label("Cancel");
+        let go = gtk::Button::builder().css_classes(["go"]).build();
+        row.append(&cancel);
+        row.append(&go);
+        strip.append(&ask);
+        strip.append(&says);
+        strip.append(&reason);
+        strip.append(&row);
+        // Whoever reaches the buttons by keyboard or screen reader hears what they would do.
+        cancel.update_relation(&[gtk::accessible::Relation::DescribedBy(&[
+            ask.upcast_ref(),
+            says.upcast_ref(),
+        ])]);
+        go.update_relation(&[gtk::accessible::Relation::DescribedBy(&[says.upcast_ref()])]);
+        let pressed = defs
+            .iter()
+            .map(|a| {
+                let b = gtk::Button::builder()
+                    .label(&a.label)
+                    .css_classes(["act"])
+                    .build();
+                named(&b, &a.name);
+                buttons.append(&b);
+                b
+            })
+            .collect();
+        let acts = Rc::new(Acts {
+            key: key.to_string(),
+            defs,
+            buttons,
+            pressed,
+            strip,
+            ask,
+            says,
+            reason,
+            cancel,
+            go,
+            open: Cell::new(None),
+            on_go,
+        });
+        for (i, b) in acts.pressed.iter().enumerate() {
+            let weak = Rc::downgrade(&acts);
+            b.connect_clicked(move |_| {
+                if let Some(a) = weak.upgrade() {
+                    a.confirm(i);
+                }
+            });
+        }
+        let weak = Rc::downgrade(&acts);
+        acts.cancel.connect_clicked(move |_| {
+            if let Some(a) = weak.upgrade() {
+                a.close();
+            }
+        });
+        let weak = Rc::downgrade(&acts);
+        acts.go.connect_clicked(move |_| {
+            if let Some(a) = weak.upgrade() {
+                a.confirmed();
+            }
+        });
+        let weak = Rc::downgrade(&acts);
+        acts.reason.connect_activate(move |_| {
+            if let Some(a) = weak.upgrade() {
+                a.confirmed();
+            }
+        });
+        // Escape goes back, and the focus returns to the button that opened the confirmation.
+        let keys = gtk::EventControllerKey::new();
+        let weak = Rc::downgrade(&acts);
+        keys.connect_key_pressed(move |_, key, _, _| match weak.upgrade() {
+            Some(a) if key == gdk::Key::Escape => {
+                a.close();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
+        acts.strip.add_controller(keys);
+        acts
+    }
+
+    /// Opens the confirmation of the `i`th button, with the focus on Cancel.
+    fn confirm(&self, i: usize) {
+        let Some(a) = self.defs.get(i) else { return };
+        self.open.set(Some(i));
+        self.ask.set_label(&a.ask);
+        self.says.set_label(&a.says);
+        self.go.set_label(&a.go);
+        for c in ["release", "refuse"] {
+            self.go.remove_css_class(c);
+        }
+        self.go.add_css_class(match a.what {
+            Do::Release => "release",
+            Do::Refuse => "refuse",
+        });
+        match &a.reason {
+            Some(hint) => {
+                self.reason.set_text("");
+                self.reason.set_placeholder_text(Some(hint));
+                self.reason
+                    .update_property(&[gtk::accessible::Property::Label(hint)]);
+                self.reason.set_visible(true);
+            }
+            None => self.reason.set_visible(false),
+        }
+        self.buttons.set_visible(false);
+        self.strip.set_visible(true);
+        self.cancel.grab_focus();
+    }
+
+    fn close(&self) {
+        let Some(i) = self.open.take() else { return };
+        self.strip.set_visible(false);
+        self.buttons.set_visible(true);
+        if let Some(b) = self.pressed.get(i) {
+            b.grab_focus();
+        }
+    }
+
+    fn confirmed(&self) {
+        let Some(i) = self.open.take() else { return };
+        let why = if WidgetExt::is_visible(&self.reason) {
+            self.reason.text().to_string()
+        } else {
+            String::new()
+        };
+        self.strip.set_visible(false);
+        self.buttons.set_visible(true);
+        (self.on_go)(&self.key, self.defs[i].what, why);
+    }
+
+    /// The button that does `what`, as a person would press it.
+    fn button(&self, what: Do) -> Option<&gtk::Button> {
+        let i = self.defs.iter().position(|a| a.what == what)?;
+        self.pressed.get(i)
     }
 }
 
@@ -400,9 +676,23 @@ impl Ui {
         let problems = label(&["problems"]);
         problems.set_visible(false);
 
-        let needs = Section::new("Needs you", Some("oldest first"), -1);
-        let tries = Section::new("Tries", Some("copies of your folders"), -1);
-        let steps = Section::new("Last steps", None, SIDE_CHARS);
+        // The buttons reach the window through this, once it is made.
+        let me: Rc<RefCell<std::rc::Weak<Ui>>> = Rc::default();
+        let go: Go = {
+            let me = me.clone();
+            Rc::new(move |key, what, why| {
+                let ui = me.borrow().upgrade();
+                if let Some(ui) = ui
+                    && let Some(id) = key.strip_prefix("effect ").and_then(|n| n.parse().ok())
+                {
+                    ui.answer(id, what, why);
+                }
+            })
+        };
+        let needs = Section::new("Needs you", Some("oldest first"), -1, Some(go));
+        let answers = Section::new("Answered", Some("newest first"), -1, None);
+        let tries = Section::new("Tries", Some("copies of your folders"), -1, None);
+        let steps = Section::new("Last steps", None, SIDE_CHARS, None);
         let newer = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
@@ -422,6 +712,7 @@ impl Ui {
         let main = gtk::Box::new(gtk::Orientation::Vertical, 24);
         main.set_hexpand(true);
         main.append(&needs.root);
+        main.append(&answers.root);
         main.append(&tries.root);
         let side = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -456,6 +747,7 @@ impl Ui {
             columns,
             side,
             needs,
+            answers,
             tries,
             steps,
             newer,
@@ -469,7 +761,11 @@ impl Ui {
             calm: RefCell::new(None),
             sample: RefCell::new(None),
             monitor: RefCell::new(None),
+            hidden: RefCell::new(HashSet::new()),
+            answered: RefCell::new(Vec::new()),
+            result_frame: RefCell::new(HashMap::new()),
         });
+        me.replace(Rc::downgrade(&ui));
 
         let weak = Rc::downgrade(&ui);
         show_newer.connect_clicked(move |_| {
@@ -528,10 +824,21 @@ impl Ui {
         }
         if let Some(path) = self.options.png.clone() {
             let ui = self.clone();
-            glib::timeout_add_local_once(Duration::from_millis(700), move || {
+            glib::spawn_future_local(async move {
+                glib::timeout_future(Duration::from_millis(700)).await;
+                if let Some(scene) = ui.options.scene {
+                    ui.scene(scene).await;
+                }
                 if let Err(e) = ui.save_png(&path) {
                     eprintln!("arbor-mission: {e}");
                 }
+                ui.window.close();
+            });
+        }
+        if let Some(Bench::Answer(world)) = self.options.bench.clone() {
+            let ui = self.clone();
+            glib::spawn_future_local(async move {
+                ui.bench_answers(&world).await;
                 ui.window.close();
             });
         }
@@ -687,8 +994,27 @@ impl Ui {
     /// Shows a reading: only the words that changed are set, so GTK lays out and draws only those lines.
     fn apply(self: &Rc<Ui>, snap: Snapshot) {
         let first = self.first.replace(false);
-        let arrive = !first;
-        set_text(&self.heading, &words::heading(snap.waiting.len()));
+        let rooms_read = snap
+            .rooms
+            .iter()
+            .any(|r| r.mem.is_some() || r.cpu_us.is_some());
+        self.latest.replace(snap);
+        self.show(!first);
+        if rooms_read {
+            self.arm_sample();
+        }
+    }
+
+    /// Shows the last reading, with the answers given here: what this window answered no longer needs you.
+    fn show(self: &Rc<Ui>, arrive: bool) {
+        let snap = self.latest.borrow();
+        let hidden = self.hidden.borrow();
+        let waiting: Vec<_> = snap
+            .waiting
+            .iter()
+            .filter(|e| !hidden.contains(&e.id))
+            .collect();
+        set_text(&self.heading, &words::heading(waiting.len()));
         set_text(&self.lead, &words::lead(&snap));
         let problems = match snap.problems.as_slice() {
             [] => String::new(),
@@ -700,11 +1026,11 @@ impl Ui {
         set_text(&self.problems, &problems);
         self.problems.set_visible(!problems.is_empty());
 
-        let decisions: Vec<Line> = snap
-            .waiting
+        let decisions: Vec<Line> = waiting
             .iter()
             .map(|e| words::decision(e, snap.now_ns))
             .collect();
+        drop(hidden);
         let new = self.needs.show(decisions, arrive);
         if arrive && !new.is_empty() {
             // Only what needs a person is announced, politely, and merged.
@@ -715,16 +1041,216 @@ impl Ui {
             self.window
                 .announce(&text, gtk::AccessibleAnnouncementPriority::Medium);
         }
+        // An answer is the person's own doing: it shows at once, without motion.
+        self.answers.show(self.answered.borrow().clone(), false);
         self.tries.show(try_lines(&snap), arrive);
         self.show_steps(&snap, false);
-        let rooms_read = snap
-            .rooms
+    }
+
+    /// Answers effect `id` as the person confirmed: it leaves Needs you at once, and its line in *Answered* says
+    /// that its command runs, then how it ended. A failure puts the decision back.
+    fn answer(self: &Rc<Ui>, id: u64, what: Do, why: String) {
+        let Some(e) = self
+            .latest
+            .borrow()
+            .waiting
             .iter()
-            .any(|r| r.mem.is_some() || r.cpu_us.is_some());
-        self.latest.replace(snap);
-        if rooms_read {
-            self.arm_sample();
+            .find(|e| e.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let ask = match what {
+            Do::Release => Ask::Release,
+            Do::Refuse => Ask::Refuse(why),
+        };
+        self.hidden.borrow_mut().insert(id);
+        self.put_answer(words::answering(&e, &ask, world::now_ns()));
+        let key = format!("answer {id}");
+        self.answers.focus(&key);
+        let ui = self.clone();
+        glib::spawn_future_local(async move {
+            let done = gio::spawn_blocking(move || act::answer(id, &ask)).await;
+            let line = match done {
+                Ok(a) => {
+                    if a.failed.is_some() {
+                        ui.hidden.borrow_mut().remove(&id);
+                    }
+                    words::answered(&e, &a, world::now_ns())
+                }
+                Err(_) => {
+                    ui.hidden.borrow_mut().remove(&id);
+                    let mut l = words::answering(&e, &Ask::Release, world::now_ns());
+                    (l.mark, l.title) =
+                        (Mark::Failed, "Not answered: the window lost track".into());
+                    l.said = l.title.clone();
+                    l
+                }
+            };
+            let news = words::answer_news(&line);
+            ui.put_answer(line);
+            if let Some(clock) = ui.window.frame_clock() {
+                ui.result_frame
+                    .borrow_mut()
+                    .insert(id, clock.frame_counter() + 1);
+            }
+            ui.window
+                .announce(&news, gtk::AccessibleAnnouncementPriority::Medium);
+            ui.request(Kind::LEDGER);
+        });
+    }
+
+    /// Puts an answer's line first in *Answered*, or in place of the one it had, and shows it.
+    fn put_answer(self: &Rc<Ui>, line: Line) {
+        {
+            let mut lines = self.answered.borrow_mut();
+            match lines.iter().position(|l| l.key == line.key) {
+                Some(i) => lines[i] = line,
+                None => {
+                    lines.insert(0, line);
+                    lines.truncate(ANSWERS_SHOWN);
+                }
+            }
         }
+        self.show(false);
+    }
+
+    /// When the compositor showed frame `counter`, in µs of the monotonic clock: GTK's own frame timings, which
+    /// it reads from the compositor's presentation feedback. `None` after 2 s without it.
+    async fn presented(&self, counter: i64) -> Option<i64> {
+        let clock = self.window.frame_clock()?;
+        for _ in 0..500 {
+            glib::timeout_future(Duration::from_millis(4)).await;
+            if let Some(t) = clock.timings(counter)
+                && t.is_complete()
+            {
+                return Some(match t.presentation_time() {
+                    0 => t.frame_time(),
+                    p => p,
+                });
+            }
+        }
+        None
+    }
+
+    /// `--bench answer WORLD`: answers the decisions that try WORLD asked for, releasing and refusing in turn,
+    /// with the window's own buttons, and prints one JSON line for each: from the press to the frame that shows
+    /// the confirmation, and from the confirmation to the frame that shows the result, in ms.
+    async fn bench_answers(self: &Rc<Ui>, world: &str) {
+        let ids: Vec<u64> = self
+            .latest
+            .borrow()
+            .waiting
+            .iter()
+            .filter(|e| e.world == world)
+            .map(|e| e.id)
+            .collect();
+        if ids.is_empty() {
+            eprintln!("arbor-mission: try {world} asked for nothing");
+        }
+        for (i, id) in ids.into_iter().enumerate() {
+            glib::timeout_future(Duration::from_millis(300)).await;
+            let what = if i % 2 == 0 { Do::Release } else { Do::Refuse };
+            let (Some(acts), Some(clock)) = (
+                self.needs.acts(&format!("effect {id}")),
+                self.window.frame_clock(),
+            ) else {
+                eprintln!("arbor-mission: effect {id} is not shown");
+                continue;
+            };
+            let Some(button) = acts.button(what) else {
+                continue;
+            };
+            let t0 = glib::monotonic_time();
+            button.emit_clicked();
+            let open = self.presented(clock.frame_counter() + 1).await;
+            glib::timeout_future(Duration::from_millis(200)).await;
+            let t1 = glib::monotonic_time();
+            acts.go.emit_clicked();
+            let mut frame = None;
+            for _ in 0..15_000 {
+                glib::timeout_future(Duration::from_millis(2)).await;
+                if let Some(f) = self.result_frame.borrow().get(&id) {
+                    frame = Some(*f);
+                    break;
+                }
+            }
+            let shown = match frame {
+                Some(f) => self.presented(f).await,
+                None => None,
+            };
+            let ms = |t: Option<i64>, from: i64| t.map(|t| (t - from) as f64 / 1000.0);
+            let failed = self
+                .answered
+                .borrow()
+                .iter()
+                .find(|l| l.key == format!("answer {id}"))
+                .is_some_and(|l| l.mark == Mark::Failed);
+            println!(
+                "{}",
+                serde_json::json!({
+                    "answer": match what { Do::Release => "release", Do::Refuse => "refuse" },
+                    "effect": id,
+                    "confirm_ms": ms(open, t0),
+                    "result_ms": ms(shown, t1),
+                    "failed": failed,
+                })
+            );
+        }
+    }
+
+    /// Puts the window in a state for a picture.
+    async fn scene(self: &Rc<Ui>, scene: Scene) {
+        let ids: Vec<u64> = self.latest.borrow().waiting.iter().map(|e| e.id).collect();
+        let (Some(&first), Some(&last)) = (ids.first(), ids.last()) else {
+            return eprintln!("arbor-mission: nothing waits, so there is nothing to answer");
+        };
+        let acts = |id: u64| self.needs.acts(&format!("effect {id}"));
+        let press = |id: u64, what: Do| {
+            if let Some(a) = acts(id)
+                && let Some(b) = a.button(what)
+            {
+                b.emit_clicked();
+            }
+        };
+        let done = |id: u64| {
+            self.answered
+                .borrow()
+                .iter()
+                .any(|l| l.key == format!("answer {id}") && l.mark != Mark::Work)
+        };
+        match scene {
+            Scene::Confirm => press(first, Do::Release),
+            Scene::Refuse => {
+                press(first, Do::Refuse);
+                if let Some(a) = acts(first) {
+                    a.reason.set_text("not yet: the tests come first");
+                    a.reason.grab_focus();
+                }
+            }
+            Scene::Releasing | Scene::Answered => {
+                press(last, Do::Release);
+                if let Some(a) = acts(last) {
+                    a.go.emit_clicked();
+                }
+                if scene == Scene::Answered {
+                    if first != last {
+                        press(first, Do::Refuse);
+                        if let Some(a) = acts(first) {
+                            a.reason.set_text("not yet: the tests come first");
+                            a.go.emit_clicked();
+                        }
+                    }
+                    for _ in 0..1500 {
+                        if done(first) && done(last) {
+                            break;
+                        }
+                        glib::timeout_future(Duration::from_millis(20)).await;
+                    }
+                }
+            }
+        }
+        glib::timeout_future(Duration::from_millis(400)).await;
     }
 
     fn decision_title(&self, key: &str) -> String {

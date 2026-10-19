@@ -582,6 +582,28 @@ MISSION_M = {  # in the order of MISSION_ROWS
 ENTRIES += [E(f'ui.{t}.{metric}', 'Mission Control', f'{name}: {label}', MISSION_M[t][i], unit, 'state', 'suite',
               **kw, **MISSION_REF[t], why=lambda r, k=f'ui.{t}.{metric}': toolkit_why(r, k))
             for t, name in MISSION for i, (metric, label, unit, kw) in enumerate(MISSION_ROWS)]
+# Its buttons, pressed by the window itself in two of those states (`arbor-mission --bench`, sections/mission.py): each
+# row is the median of its presses, from the press (the button's clicked signal) to the presentation time of the frame
+# that shows its result, from the run of MISSION_ACT_REF on the build with #82, #83 and #84, from an ordinary context.
+# A result shows on a refresh, so a press moves by up to a frame (16.7 ms at 60 Hz) from one run to the next.
+MISSION_ACT_REF = {'mission': {'ref_date': '18 Oct 2026', 'ref_load': 0.28},
+                   'mission_busy': {'ref_date': '18 Oct 2026', 'ref_load': 0.52}}
+MISSION_ACTS = (  # metric, label, (nothing running, 300 rooms)
+    ('confirm_ms', 'Release or Refuse: from the press to its confirmation on screen', (24, 25)),
+    ('release_ms', 'Release now: from the press to the receipt of `arbor release` on screen', (39, 47)),
+    ('refuse_ms', 'Refuse now: from the press to the receipt of `arbor refuse` on screen', (42, 45)),
+)
+
+
+def press_why(r, key):
+    ms, load = r.ctx(key, 'presses_ms'), r.ctx(key, 'load1')
+    return f"presses of {', '.join(f'{x:.0f}' for x in ms or [])} ms; load average {load}" if ms else ''
+
+
+ENTRIES += [E(f'ui.{t}.{metric}', 'Mission Control', f'{name}: {label}', ms[i], 'ms', 'perf', 'suite', dp=0,
+              abs_tol=16.7, abs_why='within one refresh at 60 Hz of the reference', **MISSION_ACT_REF[t],
+              why=lambda r, k=f'ui.{t}.{metric}': press_why(r, k))
+            for i, (t, name) in enumerate((MISSION[0], MISSION[2])) for metric, label, ms in MISSION_ACTS]
 
 # 12. The five goals of 18 Oct 2026 (sections/goals.py, run only with ONLY=goals, issue #85): today's Ubuntu against arbor
 # over a whole stretch of work. The reference is the suite's own, from an ordinary context: the session rows are the
