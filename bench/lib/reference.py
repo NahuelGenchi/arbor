@@ -592,6 +592,9 @@ MISSION_ACTS = (  # metric, label, (nothing running, 300 rooms)
     ('confirm_ms', 'Release or Refuse: from the press to its confirmation on screen', (24, 25)),
     ('release_ms', 'Release now: from the press to the receipt of `arbor release` on screen', (39, 47)),
     ('refuse_ms', 'Refuse now: from the press to the receipt of `arbor refuse` on screen', (42, 45)),
+    ('changes_ms', 'See changes: from the press to the files and their lines on screen', (39, 34)),
+    ('keep_ms', 'Keep: from the press to "Kept" on screen, once `arbor keep` has run', (35, 49)),
+    ('undo_ms', 'Undo the keep: from the press to its line on screen, once `arbor undo` has run', (39, 47)),
 )
 
 

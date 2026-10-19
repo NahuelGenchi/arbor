@@ -104,6 +104,7 @@ The site's decision runs a made-up `./deploy` that waits 2 s and prints a line; 
 | Work per frame, slowest 1%, ms (M) | 0.58 | 8.98, with a room sample every second | at most 4 |
 | Release or Refuse: from the press to its confirmation on screen, ms (M) | 24 | 25 | at most 33 |
 | Release now / Refuse now: from the press to the receipt, ms (M) | 39 / 42 | 47 / 45 | |
+| See changes / Keep / Undo the keep: from the press to the result, ms (M) | 39 / 35 / 39 | 34 / 49 / 47 | |
 
 With nothing running, the window meets the still-screen targets. With 300 rooms, it shows one frame a second and uses 0.33% of a core, within the "busy but calm" target of 1; before it read only what new steps name, it used 2.37% (M, #9's run). Most of the memory is the GPU driver. Drawn with GTK's cairo renderer (`GSK_RENDERER=cairo arbor-mission`), the same window with nothing running uses 54 MiB of RSS and 24 MiB of PSS (M).
 
