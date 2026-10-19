@@ -27,6 +27,8 @@ session  Three tries in parallel, each: 5 searches (grep -rn), an edit, `cargo b
   goal.session.ARM.wall_s         wall time of the window
   goal.session.ARM.cpu_s          CPU time of the whole system (all cores) over the window
   goal.session.ARM.energy_j       package energy (RAPL) over the window, where this user may read it
+         Each row's ctx also has the disks' cache flushes over each run and the seconds they took: in a world, every
+         file a build links, renames or rewrites from the folder below is copied up by overlayfs and fsynced (#90).
 power    Five tries of a change in parallel (an edit, then `cargo test -p arbor --lib`), keep one and throw four away,
          timed end to end (goal.power.ARM.tries5_s, GOALS_RUNS runs interleaved). Then undoing a kept try, in worktree
          and arbor: a try changes a tracked file, adds a file, deletes a tracked file, changes an ignored file (.env)
@@ -252,6 +254,15 @@ def sectors_written():
     names = set(disks())
     with open('/proc/diskstats') as f:
         return sum(int(p[9]) for p in (line.split() for line in f) if p[2] in names)
+
+
+def flushes():
+    """Cache flushes the disks completed and the seconds they took (/proc/diskstats, whole disks): each fsync ends in
+    one, and in a world each file overlayfs copies up is fsynced (#90)."""
+    names = set(disks())
+    with open('/proc/diskstats') as f:
+        ps = [p for p in (line.split() for line in f) if p[2] in names and len(p) >= 20]
+    return sum(int(p[18]) for p in ps), sum(int(p[19]) for p in ps) / 1000
 
 
 def cpu_busy_s():
@@ -526,7 +537,7 @@ def session_once(arm):
     busy = settle()
     base = statistics.mean(mem_used() for _ in range(20) if not time.sleep(0.1))
     e0, err = rapl()
-    swap0, disk0, (busy0, _) = vmstat('pswpout'), sectors_written(), cpu_busy_s()
+    swap0, disk0, (busy0, _), flush0 = vmstat('pswpout'), sectors_written(), cpu_busy_s(), flushes()
     s = Sampler()
     s.start()
     t0 = time.monotonic()
@@ -540,6 +551,7 @@ def session_once(arm):
         xs = s.stop()
     wall = time.monotonic() - t0
     e1, _ = rapl()
+    flush1 = flushes()
     energy = None
     if e0 is not None and e1 is not None:
         energy = e1 - e0 if e1 >= e0 else e1 + rapl_range() - e0
@@ -547,6 +559,7 @@ def session_once(arm):
             'swap_mib': (vmstat('pswpout') - swap0) * os.sysconf('SC_PAGE_SIZE') / MIB,
             'disk_mib': (sectors_written() - disk0) * 512 / MIB, 'taken_mib': taken / MIB, 'wall_s': wall,
             'cpu_s': cpu_busy_s()[0] - busy0, 'energy_j': energy, 'energy_err': err,
+            'flushes': flush1[0] - flush0[0], 'flush_s': round(flush1[1] - flush0[1], 2),
             'load1': float(open('/proc/loadavg').read().split()[0]), 'busy_before_pct': busy, 'phases': phases}
 
 
@@ -579,6 +592,8 @@ def session(lab, arms):
             emit(key, statistics.median(xs), {'blocks': [round(x, 2) for x in xs], 'runs': len(xs),
                                               'loads': [r['load1'] for r in rs], 'blocks_label': 'runs',
                                               'busy_before_pct': [r['busy_before_pct'] for r in rs],
+                                              'disk_flushes': [r['flushes'] for r in rs],
+                                              'disk_flush_s': [r['flush_s'] for r in rs],
                                               'phases_s': [r['phases'] for r in rs]})
 
 
