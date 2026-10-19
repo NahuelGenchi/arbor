@@ -33,6 +33,11 @@ another, and the window, three times, shows what it changed, keeps it and undoes
   ui.T.keep_ms            from pressing Keep in its confirmation to the frame that shows "Kept": `arbor keep` ran
                           and the window read the try back
   ui.T.undo_ms            the same for Undo the keep and `arbor undo`
+And from `arbor-mission --bench start FOLDER` (#84): with a made-up agent program where OpenCode's installer puts
+it, in a home folder of its own, the window starts it on a folder of its own three times, with its own buttons, the
+room running with no terminal (ARBOR_TERMINAL=env):
+  ui.T.start_ms           from pressing Start to the frame that shows "Started": `arbor new` and `arbor key new`
+                          ran, and the room's command was started; the room itself is not waited for
 The input's way in, from the device through the compositor to the window, is not in them. The tries are thrown away
 after, which refuses whatever they asked for that is still waiting.
 The AT-SPI check looks for the window's own words: its heading, the two effects' commands and the tries' names, and the
@@ -62,6 +67,7 @@ METRICS = toolkits.METRICS + ['still_frames_s']
 ANSWER_METRICS = ['confirm_ms', 'release_ms', 'refuse_ms']
 ANSWERS = int(env('MISSION_ANSWERS', '6'))
 KEEP_METRICS = ['changes_ms', 'keep_ms', 'undo_ms']
+START_METRICS = ['start_ms']
 
 
 def build():
@@ -214,6 +220,38 @@ def keeps(t, mission, a):
         emit(f'ui.{t}.{kind}_ms', median(ms), {'presses_ms': [round(x, 1) for x in ms], 'load1': load})
 
 
+def starts(t, mission, a):
+    """The window starts a made-up agent on a folder of its own three times, with its own buttons: start_ms."""
+    base, home = os.path.join(D, 'projects', 'starts'), os.path.join(D, 'agent-home')
+    os.makedirs(base, exist_ok=True)
+    program = os.path.join(home, '.opencode', 'bin', 'opencode')
+    os.makedirs(os.path.dirname(program), exist_ok=True)
+    with open(program, 'w') as f:
+        f.write('#!/bin/sh\nexit 0\n')
+    os.chmod(program, 0o755)
+    # The made-up agent is the only one found, and the room runs with no terminal.
+    run_env = dict(toolkits.program_env(), HOME=home, PATH='/usr/local/bin:/usr/bin:/bin', ARBOR_TERMINAL='env')
+    got = []
+    try:
+        r = run([mission, '--bench', 'start', base], timeout=120, env=run_env, cwd=os.path.dirname(mission))
+        got = [json.loads(x) for x in r.stdout.decode(errors='replace').splitlines() if x.startswith('{')]
+    finally:
+        time.sleep(1)  # the last room ends
+        for g in got:
+            for args in (('key', 'take-back', g['key']), ('discard', g['world'])):
+                try:
+                    a(*args)
+                except RuntimeError:
+                    pass
+    if len(got) < 3:
+        raise RuntimeError(f'the window started {len(got)} of 3 agents: ' + screen.last_line(r.stderr))
+    failed = [g['world'] for g in got if g['failed'] or g['result_ms'] is None]
+    if failed:
+        raise RuntimeError(f'{failed} were not started, or their frames were not shown')
+    ms = [g['result_ms'] for g in got]
+    emit(f'ui.{t}.start_ms', median(ms), {'presses_ms': [round(x, 1) for x in ms], 'load1': screen.load1()})
+
+
 def measure(t, argv, comp, expect, answer=None):
     seconds, launches = float(env('FRAMES_S', '20')), int(env('TOOLKITS_LAUNCHES', '5'))
     still_s = float(env('TOOLKITS_STILL_S', '60'))
@@ -227,6 +265,7 @@ def measure(t, argv, comp, expect, answer=None):
     if answer:  # before the loaded run, whose cells and spike leave the load average high
         steps.insert(4, (ANSWER_METRICS, lambda: answers(t, argv[0], answer)))
         steps.insert(5, (KEEP_METRICS, lambda: keeps(t, argv[0], answer)))
+        steps.insert(6, (START_METRICS, lambda: starts(t, argv[0], answer)))
     for metrics, step in steps:
         try:
             step()
@@ -243,7 +282,7 @@ def main():
     os.makedirs(D, exist_ok=True)
     os.makedirs(os.path.join(toolkits.D, 'logs'), exist_ok=True)
     keys = [k for t in ('mission', 'mission_cairo', 'mission_busy') for k in toolkits.rows(t, METRICS)]
-    keys += [k for t in ('mission', 'mission_busy') for k in toolkits.rows(t, ANSWER_METRICS + KEEP_METRICS)]
+    keys += [k for t in ('mission', 'mission_busy') for k in toolkits.rows(t, ANSWER_METRICS + KEEP_METRICS + START_METRICS)]
     try:
         comp = screen.compositor()
         binary, mission = build()
@@ -276,7 +315,7 @@ def main():
         try:
             expect = busy_state(a, procs)
         except Exception as e:
-            return fail(toolkits.rows('mission_busy', METRICS + ANSWER_METRICS + KEEP_METRICS), e)
+            return fail(toolkits.rows('mission_busy', METRICS + ANSWER_METRICS + KEEP_METRICS + START_METRICS), e)
         toolkits.settle_down(settle)
         measure('mission_busy', argv, comp, expect, answer=a)
     finally:

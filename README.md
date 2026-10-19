@@ -253,7 +253,7 @@ arbor is planned in steps. The first prototype is a layer on top of Linux, so to
 - 🟢 **[M4 · Agent layer](https://github.com/NahuelGenchi/arbor/milestone/5)** — agents that reread less: tools described on demand, short typed answers, one shared service. *In the prototype: `arbor look`, several reads in one call, each a short table*
 - ⚪ **[M5 · Lean system](https://github.com/NahuelGenchi/arbor/milestone/6)** — memory, starting up and energy: no swapping to disk, no waiting at boot, nothing that polls
 - 🟢 **[M6 · Outbox and ledger](https://github.com/NahuelGenchi/arbor/milestone/7)** — effects that wait for a yes, budgets, and the record of every step. *In the prototype: the outbox, budgets in money, and the ledger*
-- 🟢 **[M7 · Interface](https://github.com/NahuelGenchi/arbor/milestone/8)** — Mission Control, the screen where people direct agents ([the brief](docs/INTERFACE.md)). *In the prototype: a first window, in GTK 4, that shows the tries, the rooms working in them, the decisions waiting and the last steps, releases or refuses a decision once you confirm, and shows what a try changed, keeps it and undoes the keep*
+- 🟢 **[M7 · Interface](https://github.com/NahuelGenchi/arbor/milestone/8)** — Mission Control, the screen where people direct agents ([the brief](docs/INTERFACE.md)). *In the prototype: a first window, in GTK 4, that shows the tries, the rooms working in them, the decisions waiting and the last steps, releases or refuses a decision once you confirm, and shows what a try changed, keeps it and undoes the keep, and starts an agent in a try under a key for it alone*
 
 <sub>🟢 in progress &nbsp;·&nbsp; ⚪ planned</sub>
 

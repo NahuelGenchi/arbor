@@ -586,6 +586,7 @@ ENTRIES += [E(f'ui.{t}.{metric}', 'Mission Control', f'{name}: {label}', MISSION
 # row is the median of its presses, from the press (the button's clicked signal) to the presentation time of the frame
 # that shows its result, from the run of MISSION_ACT_REF on the build with #82, #83 and #84, from an ordinary context.
 # A result shows on a refresh, so a press moves by up to a frame (16.7 ms at 60 Hz) from one run to the next.
+# That run's still-screen rows with 300 rooms failed (another window was drawing), so MISSION_M keeps #78's for them.
 MISSION_ACT_REF = {'mission': {'ref_date': '18 Oct 2026', 'ref_load': 0.28},
                    'mission_busy': {'ref_date': '18 Oct 2026', 'ref_load': 0.52}}
 MISSION_ACTS = (  # metric, label, (nothing running, 300 rooms)
@@ -595,6 +596,7 @@ MISSION_ACTS = (  # metric, label, (nothing running, 300 rooms)
     ('changes_ms', 'See changes: from the press to the files and their lines on screen', (39, 34)),
     ('keep_ms', 'Keep: from the press to "Kept" on screen, once `arbor keep` has run', (35, 49)),
     ('undo_ms', 'Undo the keep: from the press to its line on screen, once `arbor undo` has run', (39, 47)),
+    ('start_ms', 'Start an agent: from the press to "Started" on screen, once its try and key are made', (45, 44)),
 )
 
 

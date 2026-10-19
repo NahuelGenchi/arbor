@@ -1,8 +1,8 @@
 # Mission Control
 
-The first Mission Control app ([#9](https://github.com/NahuelGenchi/arbor/issues/9)): one window on today's desktop that shows what arbor is doing, in the plain words of the design brief ([`docs/INTERFACE.md`](../../docs/INTERFACE.md)). It is written in Rust with GTK 4, through the gtk4-rs bindings, the toolkit [#8](https://github.com/NahuelGenchi/arbor/issues/8) chose. It answers decisions, with Release and Refuse ([#82](https://github.com/NahuelGenchi/arbor/issues/82)), and shows what a try changed, keeps it into your folder and undoes the keep ([#83](https://github.com/NahuelGenchi/arbor/issues/83)); everything else it only shows.
+The first Mission Control app ([#9](https://github.com/NahuelGenchi/arbor/issues/9)): one window on today's desktop that shows what arbor is doing, in the plain words of the design brief ([`docs/INTERFACE.md`](../../docs/INTERFACE.md)). It is written in Rust with GTK 4, through the gtk4-rs bindings, the toolkit [#8](https://github.com/NahuelGenchi/arbor/issues/8) chose. It answers decisions, with Release and Refuse ([#82](https://github.com/NahuelGenchi/arbor/issues/82)), and shows what a try changed, keeps it into your folder and undoes the keep ([#83](https://github.com/NahuelGenchi/arbor/issues/83)), and starts an agent on a folder with arbor's protections on ([#84](https://github.com/NahuelGenchi/arbor/issues/84)); everything else it only shows.
 
-![Mission Control on made-up worlds: two decisions wait, each with Release and Refuse, four rooms work in four of nine tries, and the last steps of history on the right](../../docs/images/mission-app.png)
+![Mission Control on made-up worlds: two decisions wait, each with Release and Refuse, a button starts an agent, four rooms work in four of nine tries, and the last steps of history on the right](../../docs/images/mission-app.png)
 
 The window shows, from arbor's own state folder:
 
@@ -63,19 +63,44 @@ An open try that changed something has **See changes** and **Keep…**; a kept t
 
 The buttons are named after their try on the accessibility bus (*Keep try shop*, *See what try shop changed*, *Show the change to tests/cart.rs*), and each result is announced politely (*Kept try shop: its changes are in ~/projects/shop*, or *2 files changed in try letters; keep would be refused*).
 
+## Start an agent
+
+**Start an agent…**, under the heading, opens its choices in place:
+
+1. **The folder**: *Choose a folder…* opens the desktop's folder chooser.
+2. **The agent**: the agent programs found on this computer, among OpenCode, Claude Code and Codex, each where its own installer puts it or on the `PATH`. Only the ones found are listed; arbor installs nothing and logs in for nobody.
+3. **What it means**, in one sentence, before anything happens: *OpenCode works on a copy of ~/projects/shop, in a terminal: your folder changes only when you keep it. It sees that copy, its own program in ~/.opencode/bin and this computer's programs, not your home folder, your other folders or your logins; a login made inside is kept apart, for this agent alone. It reaches only opencode.ai and models.opencode.ai over HTTPS, until 03:15, and anything it asks to send elsewhere waits for you here.*
+4. **Start** runs what a person would type: `arbor new` makes a try of the folder, named after it; `arbor key new NAME --world NAME --home --for 8h` makes a key for that try alone, with a home folder of its own, which reads the agent's program (`--read`, only when it lies in the home folder, which cells do not see) and reaches its hosts (`--net`); then a terminal opens with `arbor run NAME --key NAME -- AGENT` in it. A key that cannot be made leaves no try behind. *Done here* says *Started OpenCode in try shop: it works in a terminal window*, and the try appears in Tries, with its room.
+
+The hosts are OpenCode's two, the only ones it reached in #54's commands and the whole sessions of #69 and #74; Claude Code's API and sign-in hosts, `api.anthropic.com`, `claude.ai` and `platform.claude.com`, from its network requirements, without its optional telemetry, which arbor refuses and names; and Codex's API and ChatGPT sign-in hosts, `api.openai.com`, `auth.openai.com` and `chatgpt.com`, which are not checked by running it, since it is not on the PC this was built on. The terminal is `$ARBOR_TERMINAL` (a command and its options, before the command it runs), else the desktop's own (`xdg-terminal-exec`) or the first of the usual ones found.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../docs/images/mission-app-start-dark.webp">
+    <img src="../../docs/images/mission-app-start-light.webp" width="720" alt="Start an agent pressed: under the heading, a box with the folder ~/projects/help-pages and a Choose a folder button, OpenCode chosen, the sentence that says what it will see and reach until 03:13 tomorrow, and Cancel and Start.">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../docs/images/mission-app-started-dark.webp">
+    <img src="../../docs/images/mission-app-started-light.webp" width="720" alt="Under Done here, with a diamond: 'Started OpenCode in try help-pages-2: it works in a terminal window. On a copy of ~/projects/help-pages, reaches opencode.ai and models.opencode.ai until 19 Oct 03:13.' The heading now says 5 rooms are working, in 5 of 10 tries.">
+  </picture>
+</p>
+
 ## Try it
 
-To try it without your own folders, `mission/demo.sh` makes a home with five small projects and an arbor state folder in a temp folder: nine tries, four rooms working (each holds some memory and waits), two decisions waiting, a kept try, and a try whose own folder changed after it began, so that keeping it is refused. Then it opens the window there. Closing the window stops the rooms and removes the folder. It needs bubblewrap 0.10 or later and, for the rooms' memory and processor, a systemd user session; it starts `arbor serve` if it is not running, and stops it again.
+To try it without your own folders, `mission/demo.sh` makes a home with five small projects and an arbor state folder in a temp folder: nine tries, four rooms working (each holds some memory and waits), two decisions waiting, a kept try, and a try whose own folder changed after it began, so that keeping it is refused. A made-up agent program sits where OpenCode's installer puts it, so Start an agent lists it; it only says what it is and waits, and the window gets a `PATH` without the home folder's own programs. Then it opens the window there. Closing the window stops the rooms and removes the folder. It needs bubblewrap 0.10 or later and, for the rooms' memory and processor, a systemd user session; it starts `arbor serve` if it is not running, and stops it again.
 
 ```sh
 cargo build --release -p arbor -p mission --bins --example shot
 mission/demo.sh                              # the window
 mission/demo.sh shot demo.png dark 960x800   # or draw it into a picture, as the one above was
 mission/demo.sh shot answered.png light 960x800 answered   # after pressing: confirm, refuse, releasing, answered,
-                                                            # changes, keep, kept, refused
+                                                            # changes, keep, kept, refused, start, started
 ```
 
-The site's decision runs a made-up `./deploy` that waits 2 s and prints a line; nothing leaves the computer. The scenes press the window's own buttons: `releasing` and `answered` really run `arbor release`, and `answered` also refuses the shop's `git push` with a reason; `kept` really keeps try shop into the made-up folder, and `refused` presses Keep on try letters, which arbor refuses.
+The site's decision runs a made-up `./deploy` that waits 2 s and prints a line; nothing leaves the computer. The scenes press the window's own buttons: `releasing` and `answered` really run `arbor release`, and `answered` also refuses the shop's `git push` with a reason; `kept` really keeps try shop into the made-up folder, and `refused` presses Keep on try letters, which arbor refuses. `started` really starts the made-up agent, with no terminal.
 
 ## How it keeps still
 
@@ -105,6 +130,7 @@ The site's decision runs a made-up `./deploy` that waits 2 s and prints a line; 
 | Release or Refuse: from the press to its confirmation on screen, ms (M) | 24 | 25 | at most 33 |
 | Release now / Refuse now: from the press to the receipt, ms (M) | 39 / 42 | 47 / 45 | |
 | See changes / Keep / Undo the keep: from the press to the result, ms (M) | 39 / 35 / 39 | 34 / 49 / 47 | |
+| Start an agent: from the press to "Started", ms (M) | 45 | 44 | |
 
 With nothing running, the window meets the still-screen targets. With 300 rooms, it shows one frame a second and uses 0.33% of a core, within the "busy but calm" target of 1; before it read only what new steps name, it used 2.37% (M, #9's run). Most of the memory is the GPU driver. Drawn with GTK's cairo renderer (`GSK_RENDERER=cairo arbor-mission`), the same window with nothing running uses 54 MiB of RSS and 24 MiB of PSS (M).
 
@@ -114,12 +140,14 @@ With nothing running, the window meets the still-screen targets. With 300 rooms,
 | :--- | :--- |
 | `src/state.rs` | reading arbor's state: everything the first time, then only what the ledger's new steps name (worlds and their changes, the cells started or ended, the outbox's waiting effects), and every running cell with what each uses at the 10 s sample |
 | `src/words.rs` | the plain words of every line, its buttons and their confirmations, and what each line says on the accessibility bus |
+| `src/agents.rs` | Start an agent: the agent programs found, the hosts each needs, the try's name, the terminal, and what Start runs |
 | `src/act.rs` | what the buttons run: `arbor release`, `arbor refuse`, `arbor keep` and `arbor undo`, as processes of their own, and what they did read back: the effect with the start of what it printed, or the try; and a try's changes, conflicts and changed lines, for See changes |
 | `src/ui.rs` | the window: its sections, updating only the lines that changed, the file monitor, which rests while the ledger moves, and the calm second, the room sampling, the announcements, and the pictures `examples/shot.rs` draws |
 | `src/shift.rs` | the widget that moves and fades a line as it is drawn |
 | `src/mission.css` | the look: the brief's colours, light, dark and high contrast |
 | `demo.sh` | made-up worlds, rooms and decisions, and the window on them |
 | `tests/answer.rs` | Release and Refuse as the buttons run them, against an outbox of made-up effects |
+| `tests/start.rs` | Start as the button runs it, on a made-up agent: the try, the key's grants, and the room's write in the try |
 | `tests/keep.rs` | See changes, Keep and Undo as the buttons run them, on a made-up try, and a keep refused because the folder changed |
 
-`arbor-mission --bench still`, `--bench animate`, `--bench answer TRY` and `--bench keep TRY` are for the suite's `mission` section ([`bench/README.md`](../../bench/README.md)): `animate` moves the first decision without end, as #8's test program moves its card, and reads ten times as often as the window does: the ledger every 100 ms and the rooms every second. `answer` releases and refuses in turn every decision that try TRY asked for, with the window's own buttons, prints for each how long the confirmation and the result took to reach the screen, and closes. `keep` does the same three times with See changes, Keep and Undo the keep on try TRY. `../check.sh` lints and tests the app with arbor when GTK's development files are there.
+`arbor-mission --bench still`, `--bench animate`, `--bench answer TRY`, `--bench keep TRY` and `--bench start FOLDER` are for the suite's `mission` section ([`bench/README.md`](../../bench/README.md)): `animate` moves the first decision without end, as #8's test program moves its card, and reads ten times as often as the window does: the ledger every 100 ms and the rooms every second. `answer` releases and refuses in turn every decision that try TRY asked for, with the window's own buttons, prints for each how long the confirmation and the result took to reach the screen, and closes. `keep` does the same three times with See changes, Keep and Undo the keep on try TRY, and `start` with Start an agent on FOLDER, with the first agent found. `../check.sh` lints and tests the app with arbor when GTK's development files are there.

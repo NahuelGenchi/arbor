@@ -11,6 +11,7 @@ use arbor::outbox::{self, Effect};
 
 pub use crate::act::Do;
 use crate::act::{Answer, Ask, Done, Look};
+use crate::agents::{self, Harness, Started};
 use crate::state::{Room, Snapshot, Try, shown_path};
 
 /// The mark at the start of a line. Each state has a word and a shape of its own, never a colour alone.
@@ -588,6 +589,103 @@ pub fn more_tries(n: usize, working: usize) -> Line {
     line
 }
 
+/// `a, b and c`.
+fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// What Start will do, said before it does it: what the agent will see and reach, and until when.
+pub fn start_says(folder: Option<&Path>, harness: Option<&Harness>, now_ns: u64) -> String {
+    let (Some(folder), Some(h)) = (folder, harness) else {
+        return match (folder, harness) {
+            (None, _) => "Choose the folder the agent works on.".into(),
+            _ => "Choose the agent.".into(),
+        };
+    };
+    let until = clock(now_ns + agents::HOURS * 3600 * 1_000_000_000, now_ns);
+    let folder = shown_path(folder);
+    let own = match &h.read {
+        Some(r) => format!("its own program in {}", shown_path(r)),
+        None => "its own program".into(),
+    };
+    format!(
+        "{} works on a copy of {folder}, in a terminal: your folder changes only when you keep it. It sees that \
+         copy, {own} and this computer's programs, not your home folder, your other folders or your logins; a login \
+         made inside is kept apart, for this agent alone. It reaches only {} over HTTPS, until {until}, \
+         and anything it asks to send elsewhere waits for you here.",
+        h.name,
+        and_list(&h.hosts)
+    )
+}
+
+/// Start on its way.
+pub fn starting(h: &Harness, folder: &Path, now_ns: u64) -> Line {
+    let mut line = Line::new(
+        "start".into(),
+        Mark::Work,
+        format!("Starting {} on a copy of {}", h.name, shown_path(folder)),
+    );
+    line.aside = format!("at {}", clock(now_ns, now_ns));
+    line.said = format!("{}.", line.title);
+    line
+}
+
+/// Start, done, or why it was not.
+pub fn started(s: &Started, now_ns: u64) -> Line {
+    let h = &s.harness;
+    let folder = shown_path(&s.folder);
+    let mut line = match &s.failed {
+        None => {
+            let mut l = Line::new(
+                format!("start {}", s.world),
+                Mark::Done,
+                format!(
+                    "Started {} in try {}: it works in a terminal window",
+                    h.name, s.world
+                ),
+            );
+            l.detail = format!(
+                "On a copy of {folder} · reaches {} until {}",
+                and_list(&h.hosts),
+                clock(s.until_ns, now_ns)
+            );
+            l
+        }
+        Some(why) => Line::new(
+            format!("start {}", s.world),
+            Mark::Failed,
+            format!("Not started: {why}"),
+        ),
+    };
+    line.aside = format!("at {}", clock(now_ns, now_ns));
+    let mut tip = format!(
+        "`arbor new {w} --from {folder}`, `arbor key new {w} --world {w} --home --for {}h",
+        agents::HOURS,
+        w = s.world
+    );
+    if let Some(r) = &h.read {
+        tip += &format!(" --read {}", shown_path(r));
+    }
+    for host in &h.hosts {
+        tip += &format!(" --net {host}");
+    }
+    tip += &format!(
+        "`, then `arbor run {w} --key {w} -- {}`.",
+        h.id,
+        w = s.world
+    );
+    line.tip = tip;
+    line.said = match line.detail.as_str() {
+        "" => format!("{}.", line.title),
+        d => format!("{}. {}.", line.title, d.replace(" · ", ", ")),
+    };
+    line
+}
+
 /// An answer on its way: the command that answers it runs.
 pub fn answering(e: &Effect, ask: &Ask, now_ns: u64) -> Line {
     let cmd = e.shown();
@@ -966,6 +1064,57 @@ mod tests {
             (kept.len(), kept[0].what, kept[0].go.as_str()),
             (1, Do::Undo, "Undo the keep")
         );
+    }
+
+    #[test]
+    fn start_says_what_the_agent_sees_and_reaches() {
+        let h = Harness {
+            id: "opencode".into(),
+            name: "OpenCode".into(),
+            program: PathBuf::from("/nowhere/.opencode/bin/opencode"),
+            read: Some(PathBuf::from("/nowhere/.opencode/bin")),
+            hosts: vec!["opencode.ai".into(), "models.opencode.ai".into()],
+        };
+        let folder = Path::new("/nowhere/shop");
+        assert_eq!(
+            start_says(None, Some(&h), 0),
+            "Choose the folder the agent works on."
+        );
+        assert_eq!(start_says(Some(folder), None, 0), "Choose the agent.");
+        let says = start_says(Some(folder), Some(&h), 0);
+        assert!(
+            says.starts_with("OpenCode works on a copy of /nowhere/shop, in a terminal"),
+            "{says}"
+        );
+        assert!(says.contains("its own program in /nowhere/.opencode/bin"));
+        assert!(says.contains("not your home folder, your other folders or your logins"));
+        assert!(
+            says.contains("reaches only opencode.ai and models.opencode.ai over HTTPS, until ")
+        );
+        let s = Started {
+            world: "shop".into(),
+            key: "shop".into(),
+            harness: h.clone(),
+            folder: folder.into(),
+            until_ns: 0,
+            failed: None,
+            ms: 0,
+        };
+        let line = started(&s, 0);
+        assert_eq!(line.mark, Mark::Done);
+        assert!(
+            line.tip
+                .contains("--home --for 8h --read /nowhere/.opencode/bin --net opencode.ai")
+        );
+        assert!(
+            line.tip
+                .ends_with("`arbor run shop --key shop -- opencode`.")
+        );
+        let failed = Started {
+            failed: Some("'/nowhere/shop' is not a folder".into()),
+            ..s
+        };
+        assert_eq!(started(&failed, 0).mark, Mark::Failed);
     }
 
     #[test]

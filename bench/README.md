@@ -123,7 +123,8 @@ heap test loads the transcript of M's exact byte size. The files read in parts a
   a try of a made-up folder asks for `MISSION_ANSWERS` effects that run `echo published` there, and the window
   answers them with its own buttons; to time See changes, Keep and Undo, a try of another made-up folder changes
   one file there and adds one, and the window keeps it and undoes the keep three times with its own buttons, writing
-  only that folder; both tries are thrown away after. Its rooms, windows, cells and spike end with the
+  only that folder; to time Start an agent, the window starts a made-up agent program, in a home folder of its own,
+on a third made-up folder three times, with no terminal; the tries and keys are thrown away after. Its rooms, windows, cells and spike end with the
   section, also on a timeout or Ctrl-C.
 - **The five goals.** The `goals` section, only with `ONLY=goals`, makes one temp folder on disk, in `GOALS_TMP`
   (`bench/results/` unless set), so that builds write a real disk, and removes it at the end, also on a timeout or

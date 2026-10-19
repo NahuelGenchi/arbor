@@ -27,6 +27,7 @@ use gtk::{gdk, gio, glib};
 use arbor::world;
 
 use crate::act::{self, Ask};
+use crate::agents::{self, Harness};
 use crate::shift::Shift;
 use crate::state::{self, Kind, Reader, Snapshot};
 use crate::words::{self, Act, Do, Line, Mark};
@@ -71,6 +72,9 @@ pub enum Bench {
     /// On this try, three times: shows its changes, keeps it and undoes the keep, through the window's own buttons,
     /// and prints the same times for each. Then it closes.
     Keep(String),
+    /// Three times: opens Start an agent, picks this folder and the first agent found, and starts it, through the
+    /// window's own buttons, and prints the same times and the try and key it made. Then it closes.
+    Start(PathBuf),
 }
 
 /// A state of the window for a picture (`examples/shot.rs`): what a person would see after pressing.
@@ -92,6 +96,10 @@ pub enum Scene {
     Kept,
     /// Keep pressed and confirmed on a try whose real folder changed since it began: refused.
     Refused,
+    /// Start an agent pressed, with the first try's folder and the first agent found chosen: its confirmation.
+    Start,
+    /// Then Start pressed: the result, and the new try.
+    Started,
 }
 
 impl Scene {
@@ -105,6 +113,8 @@ impl Scene {
             "keep" => Scene::Keep,
             "kept" => Scene::Kept,
             "refused" => Scene::Refused,
+            "start" => Scene::Start,
+            "started" => Scene::Started,
             _ => return None,
         })
     }
@@ -199,6 +209,180 @@ struct Acts {
     on_go: Go,
 }
 
+/// Start an agent: its button, then, in place under it, the folder and the agent to choose, what the agent will see
+/// and reach, and Start.
+struct Starter {
+    button: gtk::Button,
+    strip: gtk::Box,
+    folder_label: gtk::Label,
+    choose: gtk::Button,
+    agents: gtk::Box,
+    says: gtk::Label,
+    cancel: gtk::Button,
+    go: gtk::Button,
+    folder: RefCell<Option<PathBuf>>,
+    found: RefCell<Vec<Harness>>,
+    checks: RefCell<Vec<gtk::CheckButton>>,
+    terminal: RefCell<Option<Vec<String>>>,
+}
+
+impl Starter {
+    fn new() -> Rc<Starter> {
+        let button = gtk::Button::builder()
+            .label("Start an agent…")
+            .halign(gtk::Align::Start)
+            .css_classes(["start"])
+            .build();
+        let strip = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .css_classes(["confirm", "starter"])
+            .visible(false)
+            .build();
+        let ask = label(&["ask"]);
+        ask.set_label("Start an agent");
+        ask.set_accessible_role(gtk::AccessibleRole::Heading);
+        let folder_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let folder_label = label(&["detail"]);
+        folder_label.set_hexpand(true);
+        folder_label.set_valign(gtk::Align::Center);
+        let choose = gtk::Button::with_label("Choose a folder…");
+        folder_row.append(&folder_label);
+        folder_row.append(&choose);
+        let agents = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+        let says = label(&["detail"]);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let cancel = gtk::Button::with_label("Cancel");
+        let go = gtk::Button::builder()
+            .label("Start")
+            .css_classes(["go", "release"])
+            .build();
+        row.append(&cancel);
+        row.append(&go);
+        for w in [
+            ask.upcast_ref::<gtk::Widget>(),
+            folder_row.upcast_ref(),
+            agents.upcast_ref(),
+            says.upcast_ref(),
+            row.upcast_ref(),
+        ] {
+            strip.append(w);
+        }
+        go.update_relation(&[gtk::accessible::Relation::DescribedBy(&[says.upcast_ref()])]);
+        cancel.update_relation(&[gtk::accessible::Relation::DescribedBy(&[says.upcast_ref()])]);
+        let s = Rc::new(Starter {
+            button,
+            strip,
+            folder_label,
+            choose,
+            agents,
+            says,
+            cancel,
+            go,
+            folder: RefCell::new(None),
+            found: RefCell::new(Vec::new()),
+            checks: RefCell::new(Vec::new()),
+            terminal: RefCell::new(None),
+        });
+        let keys = gtk::EventControllerKey::new();
+        let weak = Rc::downgrade(&s);
+        keys.connect_key_pressed(move |_, key, _, _| match (key, weak.upgrade()) {
+            (gdk::Key::Escape, Some(s)) => {
+                s.close();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
+        s.strip.add_controller(keys);
+        let weak = Rc::downgrade(&s);
+        s.cancel.connect_clicked(move |_| {
+            if let Some(s) = weak.upgrade() {
+                s.close();
+            }
+        });
+        s
+    }
+
+    /// Opens it: the agents found now, and the terminal that will open the room.
+    fn open(self: &Rc<Starter>) {
+        let home = arbor::paths::resolved_home();
+        let path = std::env::var_os("PATH");
+        let found = agents::found(home.as_deref(), path.as_deref());
+        self.terminal.replace(agents::terminal(path.as_deref()));
+        while let Some(c) = self.agents.first_child() {
+            self.agents.remove(&c);
+        }
+        let mut checks: Vec<gtk::CheckButton> = Vec::new();
+        for h in &found {
+            let c = gtk::CheckButton::with_label(&h.name);
+            if let Some(first) = checks.first() {
+                c.set_group(Some(first));
+            }
+            let weak = Rc::downgrade(self);
+            c.connect_toggled(move |_| {
+                if let Some(s) = weak.upgrade() {
+                    s.update();
+                }
+            });
+            self.agents.append(&c);
+            checks.push(c);
+        }
+        if let Some(first) = checks.first() {
+            first.set_active(true);
+        }
+        if found.is_empty() {
+            let none = label(&["detail"]);
+            none.set_label(
+                "No agent program was found on this computer: OpenCode, Claude Code or Codex.",
+            );
+            self.agents.append(&none);
+        }
+        self.found.replace(found);
+        self.checks.replace(checks);
+        self.update();
+        self.button.set_visible(false);
+        self.strip.set_visible(true);
+        if self.folder.borrow().is_none() {
+            self.choose.grab_focus();
+        } else {
+            self.cancel.grab_focus();
+        }
+    }
+
+    fn close(&self) {
+        self.strip.set_visible(false);
+        self.button.set_visible(true);
+        self.button.grab_focus();
+    }
+
+    fn chosen(&self) -> Option<Harness> {
+        let i = self.checks.borrow().iter().position(|c| c.is_active())?;
+        self.found.borrow().get(i).cloned()
+    }
+
+    fn set_folder(self: &Rc<Starter>, folder: PathBuf) {
+        self.folder.replace(Some(folder));
+        self.update();
+    }
+
+    /// The words and Start, for what is chosen.
+    fn update(&self) {
+        let folder = self.folder.borrow().clone();
+        self.folder_label.set_label(&match &folder {
+            Some(f) => format!("Folder: {}", crate::state::shown_path(f)),
+            None => "No folder chosen yet".into(),
+        });
+        let h = self.chosen();
+        let says = match (self.terminal.borrow().is_some(), &h) {
+            (false, Some(_)) => "No terminal program was found to open the agent in.".to_string(),
+            _ => words::start_says(folder.as_deref(), h.as_ref(), world::now_ns()),
+        };
+        self.says.set_label(&says);
+        self.go
+            .set_sensitive(folder.is_some() && h.is_some() && self.terminal.borrow().is_some());
+    }
+}
+
 struct Ui {
     window: gtk::ApplicationWindow,
     options: Options,
@@ -231,6 +415,7 @@ struct Ui {
     result_frame: RefCell<HashMap<String, i64>>,
     /// The tries acted on from this window, which Tries shows first.
     pinned: RefCell<HashSet<String>>,
+    starter: Rc<Starter>,
 }
 
 /// Gives a button its own name on the accessibility bus. A button is labelled by its label child, which comes before
@@ -808,9 +993,14 @@ impl Ui {
             .spacing(6)
             .css_classes(["page"])
             .build();
+        let starter = Starter::new();
+        starter.button.set_margin_top(10);
+        starter.strip.set_margin_top(10);
         page.append(&heading);
         page.append(&lead);
         page.append(&problems);
+        page.append(&starter.button);
+        page.append(&starter.strip);
         columns.set_margin_top(22);
         page.append(&columns);
         let scrolled = gtk::ScrolledWindow::builder()
@@ -846,8 +1036,33 @@ impl Ui {
             answered: RefCell::new(Vec::new()),
             result_frame: RefCell::new(HashMap::new()),
             pinned: RefCell::new(HashSet::new()),
+            starter,
         });
         me.replace(Rc::downgrade(&ui));
+
+        let s = ui.starter.clone();
+        ui.starter.button.connect_clicked(move |_| s.open());
+        let weak = Rc::downgrade(&ui);
+        ui.starter.choose.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
+            let dialog = gtk::FileDialog::builder()
+                .title("The folder the agent works on")
+                .modal(true)
+                .build();
+            let s = ui.starter.clone();
+            dialog.select_folder(Some(&ui.window), gio::Cancellable::NONE, move |r| {
+                if let Some(path) = r.ok().and_then(|f| f.path()) {
+                    s.set_folder(path);
+                    s.go.grab_focus();
+                }
+            });
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.starter.go.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.start_agent();
+            }
+        });
 
         let weak = Rc::downgrade(&ui);
         show_newer.connect_clicked(move |_| {
@@ -921,6 +1136,13 @@ impl Ui {
             let ui = self.clone();
             glib::spawn_future_local(async move {
                 ui.bench_answers(&world).await;
+                ui.window.close();
+            });
+        }
+        if let Some(Bench::Start(folder)) = self.options.bench.clone() {
+            let ui = self.clone();
+            glib::spawn_future_local(async move {
+                ui.bench_starts(&folder).await;
                 ui.window.close();
             });
         }
@@ -1270,6 +1492,53 @@ impl Ui {
         });
     }
 
+    /// Start: makes the try and the key, and opens the terminal, off the main thread.
+    fn start_agent(self: &Rc<Ui>) {
+        let s = &self.starter;
+        let (Some(folder), Some(h), Some(term)) = (
+            s.folder.borrow().clone(),
+            s.chosen(),
+            s.terminal.borrow().clone(),
+        ) else {
+            return;
+        };
+        let name = agents::next_name(&folder);
+        let key = format!("start {name}");
+        self.pinned.borrow_mut().insert(name.clone());
+        s.strip.set_visible(false);
+        s.button.set_visible(true);
+        let mut line = words::starting(&h, &folder, world::now_ns());
+        line.key = key.clone();
+        self.put_answer(line);
+        self.answers.focus(&key);
+        let ui = self.clone();
+        glib::spawn_future_local(async move {
+            let done = {
+                let (name, folder, h) = (name.clone(), folder.clone(), h.clone());
+                gio::spawn_blocking(move || agents::start(&name, &folder, &h, &term)).await
+            };
+            let line = match done {
+                Ok(d) => words::started(&d, world::now_ns()),
+                Err(_) => {
+                    let mut l = words::starting(&h, &folder, world::now_ns());
+                    (l.key, l.mark, l.title) = (
+                        key.clone(),
+                        Mark::Failed,
+                        "The window lost track of it".into(),
+                    );
+                    l.said = l.title.clone();
+                    l
+                }
+            };
+            let news = line.title.clone();
+            ui.put_answer(line);
+            ui.mark_frame(key);
+            ui.window
+                .announce(&news, gtk::AccessibleAnnouncementPriority::Medium);
+            ui.request(Kind::LEDGER);
+        });
+    }
+
     /// Puts an answer's line first in *Done here*, or in place of the one it had, and shows it.
     fn put_answer(self: &Rc<Ui>, line: Line) {
         {
@@ -1362,6 +1631,78 @@ impl Ui {
                     "answer": if what == Do::Release { "release" } else { "refuse" },
                     "effect": id,
                     "confirm_ms": ms(open, t0),
+                    "result_ms": ms(shown, t1),
+                    "failed": failed,
+                })
+            );
+        }
+    }
+
+    /// Start an agent on the first try's folder, with the first agent found.
+    async fn start_scene(self: &Rc<Ui>, scene: Scene) {
+        let folder = self.latest.borrow().tries.first().map(|t| t.base.clone());
+        let Some(folder) = folder else {
+            return eprintln!("arbor-mission: no try, so no folder for the scene {scene:?}");
+        };
+        self.starter.set_folder(folder);
+        self.starter.button.emit_clicked();
+        if scene == Scene::Started {
+            glib::timeout_future(Duration::from_millis(200)).await;
+            self.starter.go.emit_clicked();
+            let key = format!("start {}", self.starting_name());
+            let _ = self.result_shown(&key).await;
+        }
+        glib::timeout_future(Duration::from_millis(400)).await;
+    }
+
+    /// The key of the last start's line.
+    fn starting_name(&self) -> String {
+        self.answered
+            .borrow()
+            .iter()
+            .find_map(|l| l.key.strip_prefix("start ").map(String::from))
+            .unwrap_or_default()
+    }
+
+    /// `--bench start FOLDER`: three times, opens Start an agent, picks FOLDER and the first agent found, and
+    /// starts it, with the window's own buttons, and prints one JSON line for each: from the press to the frame that
+    /// shows the choices, and from Start to the frame that shows the result, in ms, with the try and the key made.
+    async fn bench_starts(self: &Rc<Ui>, folder: &std::path::Path) {
+        let ms = |t: Option<i64>, from: i64| t.map(|t| (t - from) as f64 / 1000.0);
+        self.starter.set_folder(folder.to_path_buf());
+        for _ in 0..3 {
+            glib::timeout_future(Duration::from_millis(300)).await;
+            let Some(clock) = self.window.frame_clock() else {
+                return;
+            };
+            let t0 = glib::monotonic_time();
+            self.starter.button.emit_clicked();
+            let open = self.presented(clock.frame_counter() + 1).await;
+            glib::timeout_future(Duration::from_millis(200)).await;
+            if !self.starter.go.is_sensitive() {
+                eprintln!(
+                    "arbor-mission: Start cannot be pressed: {}",
+                    self.starter.says.label()
+                );
+                return;
+            }
+            let t1 = glib::monotonic_time();
+            self.starter.go.emit_clicked();
+            let name = self.starting_name();
+            let shown = self.result_shown(&format!("start {name}")).await;
+            let failed = self
+                .answered
+                .borrow()
+                .iter()
+                .find(|l| l.key == format!("start {name}"))
+                .is_none_or(|l| l.mark == Mark::Failed);
+            println!(
+                "{}",
+                serde_json::json!({
+                    "act": "start",
+                    "world": name,
+                    "key": name,
+                    "open_ms": ms(open, t0),
                     "result_ms": ms(shown, t1),
                     "failed": failed,
                 })
@@ -1512,6 +1853,9 @@ impl Ui {
         ) {
             return self.try_scene(scene).await;
         }
+        if matches!(scene, Scene::Start | Scene::Started) {
+            return self.start_scene(scene).await;
+        }
         let ids: Vec<u64> = self.latest.borrow().waiting.iter().map(|e| e.id).collect();
         let (Some(&first), Some(&last)) = (ids.first(), ids.last()) else {
             return eprintln!("arbor-mission: nothing waits, so there is nothing to answer");
@@ -1540,6 +1884,7 @@ impl Ui {
                 }
             }
             Scene::Changes | Scene::Keep | Scene::Kept | Scene::Refused => {}
+            Scene::Start | Scene::Started => {}
             Scene::Releasing | Scene::Answered => {
                 press(last, Do::Release);
                 if let Some(a) = acts(last) {
