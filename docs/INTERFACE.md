@@ -3,7 +3,7 @@
 [Back to README](../README.md) · [Issue #6](https://github.com/NahuelGenchi/arbor/issues/6) · [M7 — Interface](https://github.com/NahuelGenchi/arbor/milestone/8)
 
 > [!NOTE]
-> **Only the first app exists.** This brief decides what Mission Control shows and how a person directs agents through it. The first app ([#9](https://github.com/NahuelGenchi/arbor/issues/9), [`prototype/mission/`](../prototype/mission/README.md)) is one window in GTK 4. It shows the tries, the rooms working in them, the decisions waiting and the last steps of history, and it answers decisions with Release and Refuse ([#82](https://github.com/NahuelGenchi/arbor/issues/82)). The other views below are still plans, and the pictures are wireframes with made-up data. [#8](https://github.com/NahuelGenchi/arbor/issues/8) measured a small test program in five toolkits, and GTK 4 was chosen ([The toolkits measured](#the-toolkits-measured)). #9 measured the first app against the targets it can meet without input ([The first app, measured](#the-first-app-measured)).
+> **Only the first app exists.** This brief decides what Mission Control shows and how a person directs agents through it. The first app ([#9](https://github.com/NahuelGenchi/arbor/issues/9), [`prototype/mission/`](../prototype/mission/README.md)) is one window in GTK 4. It shows the tries, the rooms working in them, the decisions waiting and the last steps of history, and it answers decisions with Release and Refuse ([#82](https://github.com/NahuelGenchi/arbor/issues/82)) and keeps a try or undoes the keep ([#83](https://github.com/NahuelGenchi/arbor/issues/83)). The other views below are still plans, and the pictures are wireframes with made-up data. [#8](https://github.com/NahuelGenchi/arbor/issues/8) measured a small test program in five toolkits, and GTK 4 was chosen ([The toolkits measured](#the-toolkits-measured)). #9 measured the first app against the targets it can meet without input ([The first app, measured](#the-first-app-measured)).
 
 Mission Control is the screen where people direct agents. It shows what agents are changing, what they want to send out and what they have spent, and it asks for a person only when a person is needed. Today's desktops were built for one person and a handful of windows. Mission Control has to make hundreds of agents legible to one person at a glance, and spend that person's attention as carefully as money.
 
@@ -86,6 +86,8 @@ What a task is changing, try by try ([#11](https://github.com/NahuelGenchi/arbor
 - **Keep** and **Throw away** act on the whole try, never on part of it. Keep is refused if your own files changed since the try began: the view lists those files and offers a new try from your current files instead. A kept try can be undone.
 
 **Reads:** a world (its name, the folder it was copied from, the files changed, and whether it is open or kept), and the ledger for the tries thrown away and why. The outline needs the outline-first code objects of M2; until they exist, the view shows the files added, changed and deleted, and their changed lines, as `arbor diff` and `arbor diff --patch` give them ([#14](https://github.com/NahuelGenchi/arbor/issues/14)).
+
+*In the first app* ([#83](https://github.com/NahuelGenchi/arbor/issues/83)), a try's changes open under its line in Now: its files in words, by folder, each text file with up to 40 of its changed lines one click down. Keep asks one confirmation in place, as Release does, then runs `arbor keep`; a kept try has Undo the keep, which runs `arbor undo`. When your own files changed since the try began, the view says first that a keep would be refused, and a keep that arbor refuses names those files in plain words. A new try from your current files, and Throw away, are not there yet.
 
 ### 4. Room and keys
 
@@ -310,20 +312,24 @@ The C program's anonymous memory grew by 20 MiB over its still minute, and its R
 
 ### The buttons, measured
 
-Release and Refuse ([#82](https://github.com/NahuelGenchi/arbor/issues/82)) are the window's first input. The `mission` section times them in two of the states above, nothing running and 300 rooms. In each, a try asks for 6 effects, and the window answers them through its own buttons (`arbor-mission --bench answer`), releasing and refusing in turn. Each press is timed from the button's clicked signal, as a press sends it, to the compositor's presentation time of the frame that shows its result, read from GTK's frame timings. Each figure is the median of its presses, with their range. The numbers are from the run of 18 October 2026 at 21:02, from an ordinary process, on the build with #82, [#83](https://github.com/NahuelGenchi/arbor/issues/83) and [#84](https://github.com/NahuelGenchi/arbor/issues/84). The run started at a load average of 1.39, and was at 0.28 and 0.52 at these rows. Every row passed the section's checks.
+Release and Refuse ([#82](https://github.com/NahuelGenchi/arbor/issues/82)) are the window's first input. The `mission` section times them in two of the states above, nothing running and 300 rooms. In each, a try asks for 6 effects, and the window answers them through its own buttons (`arbor-mission --bench answer`), releasing and refusing in turn. Each press is timed from the button's clicked signal, as a press sends it, to the compositor's presentation time of the frame that shows its result, read from GTK's frame timings. See changes, Keep and Undo the keep ([#83](https://github.com/NahuelGenchi/arbor/issues/83)) are timed the same way, in the same two states (`arbor-mission --bench keep`): a try of a made-up folder changes one file and adds another, and the window, three times, shows its changes, keeps it and undoes the keep. Each figure is the median of its presses, with their range. The numbers are from the run of 18 October 2026 at 21:02, from an ordinary process, on the build with #82, [#83](https://github.com/NahuelGenchi/arbor/issues/83) and [#84](https://github.com/NahuelGenchi/arbor/issues/84). The run started at a load average of 1.39, and was at 0.28 and 0.52 at these rows. Every row passed the section's checks.
 
 | From the press to the frame that shows (M: every number in the row) | Nothing running | 300 rooms | Target |
 | :--- | ---: | ---: | :--- |
 | Release or Refuse: the confirmation in place, ms (M) | 24 (21–30) | 25 (20–42) | at most 33, two refreshes |
 | Release now: the receipt, once `arbor release` has run, ms (M) | 39 (32–41) | 47 (35–51) | |
 | Refuse now: the receipt, once `arbor refuse` has run, ms (M) | 42 (38–44) | 45 (44–52) | |
+| See changes: the files and their lines, once `arbor diff --patch` has run, ms (M) | 39 (31–54) | 34 (34–42) | |
+| Keep: "Kept", once `arbor keep` has run, ms (M) | 35 (26–39) | 49 (40–51) | |
+| Undo the keep: its line, once `arbor undo` has run, ms (M) | 39 (33–45) | 47 (35–50) | |
 
 - **The window answers a press within two refreshes.** The confirmation is the window's own answer, with no command to wait for. Its median is 24 ms with nothing running and 25 ms with 300 rooms, within the 33 ms of the target. One press of 12 took 42 ms, with 300 rooms.
 - **A receipt waits for arbor.** Release now and Refuse now run `arbor release` or `arbor refuse` and show the receipt when the command ends: 39 to 47 ms. The receipt is the result, not the first answer to the press. That answer is the line saying it is releasing, which was not timed.
+- **So do See changes, Keep and Undo.** Each runs an `arbor` command and reads the try back before it shows the result: 34 to 49 ms. With 300 rooms, Keep and Undo took 8 to 14 ms longer than with nothing running; See changes did not. Three presses a state cannot tell whether that is the rooms.
 
 ### Not measured yet
 
-- **Input latency from the device**, and its 99th percentile. The presses above start at GTK's clicked signal, so the path from the keyboard or mouse to GTK is not in them, and 6 presses a state are too few for the slowest 1%.
+- **Input latency from the device**, and its 99th percentile. The presses above start at GTK's clicked signal, so the path from the keyboard or mouse to GTK is not in them, and 3 to 6 presses a state are too few for the slowest 1%.
 - **Memory with every view opened** waits for the other views.
 - **No growth over an hour of updates:** the longest window measured here is a minute.
 - **120 Hz:** this PC's panel runs at 60 Hz.

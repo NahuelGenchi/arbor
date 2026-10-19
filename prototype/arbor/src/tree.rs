@@ -600,24 +600,20 @@ pub fn undo(world: &mut World, force: bool) -> Result<usize> {
     undo_until(world, force, &mut || interrupts.interrupted())
 }
 
-/// Undo, asking `stop` before each step whether to stop there.
-fn undo_until(world: &mut World, force: bool, stop: &mut dyn FnMut() -> bool) -> Result<usize> {
+/// What undo must refuse: base paths that no longer match what keep left, as `path: why`. With `force`, later
+/// edits of a kept file are not a problem: undo moves them into the world.
+pub fn undo_conflicts(world: &World, force: bool) -> Result<Vec<String>> {
     if world.state != State::Kept {
-        return Err(Error::refused(format!(
-            "world '{}' has not been kept; there is nothing to undo",
-            world.name
-        )));
+        return Ok(Vec::new());
     }
-    let steps = read_journal(world)?;
+    undo_problems(world, &read_journal(world)?, force)
+}
+
+fn undo_problems(world: &World, steps: &[(u64, Step)], force: bool) -> Result<Vec<String>> {
     let since = world.kept_ns.unwrap_or(0);
-    let (up, base, files) = (
-        world.up(),
-        world.base.clone(),
-        world.undo_dir().join("files"),
-    );
     let mut problems = Vec::new();
-    for (_, s) in &steps {
-        let b = base.join(&s.path);
+    for (_, s) in steps {
+        let b = world.base.join(&s.path);
         let present = lstat(&b)?.is_some();
         let why = match s.op {
             Op::Remove if present => Some("made again in the base since the keep"),
@@ -632,6 +628,24 @@ fn undo_until(world: &mut World, force: bool, stop: &mut dyn FnMut() -> bool) ->
             problems.push(format!("{}: {why}", s.path.display()));
         }
     }
+    Ok(problems)
+}
+
+/// Undo, asking `stop` before each step whether to stop there.
+fn undo_until(world: &mut World, force: bool, stop: &mut dyn FnMut() -> bool) -> Result<usize> {
+    if world.state != State::Kept {
+        return Err(Error::refused(format!(
+            "world '{}' has not been kept; there is nothing to undo",
+            world.name
+        )));
+    }
+    let steps = read_journal(world)?;
+    let (up, base, files) = (
+        world.up(),
+        world.base.clone(),
+        world.undo_dir().join("files"),
+    );
+    let problems = undo_problems(world, &steps, force)?;
     if !problems.is_empty() {
         return Err(Error::refused(format!(
             "nothing was undone: {} path(s) in {} no longer match what keep left:\n  {}{}",

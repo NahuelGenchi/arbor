@@ -10,9 +10,10 @@
 //! the lines whose words changed, and GTK draws them on the next frame. What rooms use changes without a step, so
 //! while rooms run and the window is shown, it reads them again every 10 s. A still screen has no timer running.
 //!
-//! Each decision has Release and Refuse. A press asks for one confirmation in place, with the focus on Cancel so
-//! that a held or repeated Enter never confirms; confirmed, the window runs `arbor release` or `arbor refuse` off the
-//! main thread (`act`), and its receipt joins the *Answered* list.
+//! Each decision has Release and Refuse, and each try See changes and Keep, or Undo the keep once kept. A press asks
+//! for one confirmation in place, with the focus on Cancel so that a held or repeated Enter never confirms;
+//! confirmed, the window runs `arbor release`, `arbor refuse`, `arbor keep` or `arbor undo` off the main thread
+//! (`act`), and the result joins the *Done here* list.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -43,9 +44,14 @@ const SAMPLE_S: u32 = 10;
 const NARROW: i32 = 820;
 /// The side column's lines wrap at this many characters.
 const SIDE_CHARS: i32 = 34;
+/// The first column's lines ask for no more than this many characters, so a long one wraps instead of squeezing the
+/// side column; a wider window still widens them.
+const MAIN_CHARS: i32 = 52;
+/// The side column's least width, in px: about SIDE_CHARS characters and its padding.
+const SIDE_PX: i32 = 258;
 /// More new lines than this at once appear without motion: nobody can follow them all.
 const MOVING: usize = 5;
-/// How many answers the *Answered* list keeps, newest first.
+/// How many results the *Done here* list keeps, newest first.
 const ANSWERS_SHOWN: usize = 10;
 
 const CSS: &str = include_str!("mission.css");
@@ -62,6 +68,9 @@ pub enum Bench {
     /// buttons, and prints how long each took to show, from the press to the frame the compositor showed: the
     /// confirmation, then the result. Then it closes.
     Answer(String),
+    /// On this try, three times: shows its changes, keeps it and undoes the keep, through the window's own buttons,
+    /// and prints the same times for each. Then it closes.
+    Keep(String),
 }
 
 /// A state of the window for a picture (`examples/shot.rs`): what a person would see after pressing.
@@ -75,6 +84,14 @@ pub enum Scene {
     Releasing,
     /// The last decision released and the first refused, with their receipts.
     Answered,
+    /// See changes pressed on the first try that has some, with its first file's lines shown.
+    Changes,
+    /// Then its Keep pressed: the confirmation.
+    Keep,
+    /// The first try with changes kept: the result, and Undo the keep on it.
+    Kept,
+    /// Keep pressed and confirmed on a try whose real folder changed since it began: refused.
+    Refused,
 }
 
 impl Scene {
@@ -84,6 +101,10 @@ impl Scene {
             "refuse" => Scene::Refuse,
             "releasing" => Scene::Releasing,
             "answered" => Scene::Answered,
+            "changes" => Scene::Changes,
+            "keep" => Scene::Keep,
+            "kept" => Scene::Kept,
+            "refused" => Scene::Refused,
             _ => return None,
         })
     }
@@ -154,7 +175,12 @@ struct Row {
     aside: gtk::Label,
     note: gtk::Label,
     output: gtk::Label,
+    /// The column the buttons are in, to make them again when they change, and what they do.
+    text: gtk::Box,
+    go: Option<Go>,
     acts: Option<Rc<Acts>>,
+    /// What a try changed, shown under it on request.
+    panel: gtk::Box,
 }
 
 /// A line's buttons, and the confirmation that one of them opens in place, under the line.
@@ -201,8 +227,10 @@ struct Ui {
     /// first.
     hidden: RefCell<HashSet<u64>>,
     answered: RefCell<Vec<Line>>,
-    /// For `--bench answer`: the frame that shows each effect's result.
-    result_frame: RefCell<HashMap<u64, i64>>,
+    /// For the suite's `--bench answer` and `--bench keep`: the frame that shows each result, by its line's key.
+    result_frame: RefCell<HashMap<String, i64>>,
+    /// The tries acted on from this window, which Tries shows first.
+    pinned: RefCell<HashSet<String>>,
 }
 
 /// Gives a button its own name on the accessibility bus. A button is labelled by its label child, which comes before
@@ -256,6 +284,15 @@ impl Section {
             max_chars,
             go,
         }
+    }
+
+    /// The view under the line with this key.
+    fn panel(&self, key: &str) -> Option<gtk::Box> {
+        self.rows
+            .borrow()
+            .iter()
+            .find(|r| r.line.key == key)
+            .map(|r| r.panel.clone())
     }
 
     /// The buttons of the line with this key.
@@ -386,15 +423,22 @@ impl Row {
         text.append(&detail);
         text.append(&note);
         text.append(&output);
-        let acts = match go {
+        let acts = match &go {
             Some(go) if !line.acts.is_empty() => {
-                let acts = Acts::new(&line.key, line.acts.clone(), go);
+                let acts = Acts::new(&line.key, line.acts.clone(), go.clone());
                 text.append(&acts.buttons);
                 text.append(&acts.strip);
                 Some(acts)
             }
             _ => None,
         };
+        let panel = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .css_classes(["changes"])
+            .visible(false)
+            .build();
+        text.append(&panel);
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let slot = gtk::Box::builder()
             .css_classes(["slot"])
@@ -424,7 +468,10 @@ impl Row {
             aside,
             note,
             output,
+            text,
+            go,
             acts,
+            panel,
         };
         r.update(line, true);
         r
@@ -461,6 +508,22 @@ impl Row {
         if all || old.output != line.output {
             self.output.set_label(line.output.as_deref().unwrap_or(""));
             self.output.set_visible(line.output.is_some());
+        }
+        if !all && old.acts != line.acts {
+            // A try kept or undone has other buttons: they are made again, under the words.
+            if let Some(a) = self.acts.take() {
+                self.text.remove(&a.buttons);
+                self.text.remove(&a.strip);
+            }
+            if let Some(go) = &self.go
+                && !line.acts.is_empty()
+            {
+                let a = Acts::new(&line.key, line.acts.clone(), go.clone());
+                self.text.insert_child_after(&a.buttons, Some(&self.output));
+                self.text.insert_child_after(&a.strip, Some(&a.buttons));
+                self.acts = Some(a);
+            }
+            self.panel.set_visible(false);
         }
         if (all || old.mark != line.mark) && line.badge.is_none() {
             for c in ["work", "idle", "kept", "done", "no", "failed", "none"] {
@@ -548,7 +611,12 @@ impl Acts {
             let weak = Rc::downgrade(&acts);
             b.connect_clicked(move |_| {
                 if let Some(a) = weak.upgrade() {
-                    a.confirm(i);
+                    // What changes nothing needs no confirmation.
+                    if a.defs[i].ask.is_empty() {
+                        (a.on_go)(&a.key, a.defs[i].what, String::new());
+                    } else {
+                        a.confirm(i);
+                    }
                 }
             });
         }
@@ -595,8 +663,8 @@ impl Acts {
             self.go.remove_css_class(c);
         }
         self.go.add_css_class(match a.what {
-            Do::Release => "release",
             Do::Refuse => "refuse",
+            _ => "release",
         });
         match &a.reason {
             Some(hint) => {
@@ -682,16 +750,27 @@ impl Ui {
             let me = me.clone();
             Rc::new(move |key, what, why| {
                 let ui = me.borrow().upgrade();
-                if let Some(ui) = ui
-                    && let Some(id) = key.strip_prefix("effect ").and_then(|n| n.parse().ok())
-                {
+                let Some(ui) = ui else { return };
+                if let Some(id) = key.strip_prefix("effect ").and_then(|n| n.parse().ok()) {
                     ui.answer(id, what, why);
+                } else if let Some(name) = key.strip_prefix("world ") {
+                    ui.try_act(name, what);
                 }
             })
         };
-        let needs = Section::new("Needs you", Some("oldest first"), -1, Some(go));
-        let answers = Section::new("Answered", Some("newest first"), -1, None);
-        let tries = Section::new("Tries", Some("copies of your folders"), -1, None);
+        let needs = Section::new(
+            "Needs you",
+            Some("oldest first"),
+            MAIN_CHARS,
+            Some(go.clone()),
+        );
+        let answers = Section::new("Done here", Some("newest first"), MAIN_CHARS, None);
+        let tries = Section::new(
+            "Tries",
+            Some("copies of your folders"),
+            MAIN_CHARS,
+            Some(go),
+        );
         let steps = Section::new("Last steps", None, SIDE_CHARS, None);
         let newer = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -718,6 +797,8 @@ impl Ui {
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["side"])
             .build();
+        // Never narrower than its lines' own width: a long line in the first column wraps instead.
+        side.set_width_request(SIDE_PX);
         side.append(&steps.root);
         let columns = gtk::Box::new(gtk::Orientation::Horizontal, 28);
         columns.append(&main);
@@ -764,6 +845,7 @@ impl Ui {
             hidden: RefCell::new(HashSet::new()),
             answered: RefCell::new(Vec::new()),
             result_frame: RefCell::new(HashMap::new()),
+            pinned: RefCell::new(HashSet::new()),
         });
         me.replace(Rc::downgrade(&ui));
 
@@ -839,6 +921,13 @@ impl Ui {
             let ui = self.clone();
             glib::spawn_future_local(async move {
                 ui.bench_answers(&world).await;
+                ui.window.close();
+            });
+        }
+        if let Some(Bench::Keep(world)) = self.options.bench.clone() {
+            let ui = self.clone();
+            glib::spawn_future_local(async move {
+                ui.bench_keeps(&world).await;
                 ui.window.close();
             });
         }
@@ -1043,7 +1132,8 @@ impl Ui {
         }
         // An answer is the person's own doing: it shows at once, without motion.
         self.answers.show(self.answered.borrow().clone(), false);
-        self.tries.show(try_lines(&snap), arrive);
+        let lines = try_lines(&snap, &self.pinned.borrow());
+        self.tries.show(lines, arrive);
         self.show_steps(&snap, false);
     }
 
@@ -1063,6 +1153,7 @@ impl Ui {
         let ask = match what {
             Do::Release => Ask::Release,
             Do::Refuse => Ask::Refuse(why),
+            _ => return,
         };
         self.hidden.borrow_mut().insert(id);
         self.put_answer(words::answering(&e, &ask, world::now_ns()));
@@ -1089,18 +1180,97 @@ impl Ui {
             };
             let news = words::answer_news(&line);
             ui.put_answer(line);
-            if let Some(clock) = ui.window.frame_clock() {
-                ui.result_frame
-                    .borrow_mut()
-                    .insert(id, clock.frame_counter() + 1);
-            }
+            ui.mark_frame(format!("answer {id}"));
             ui.window
                 .announce(&news, gtk::AccessibleAnnouncementPriority::Medium);
             ui.request(Kind::LEDGER);
         });
     }
 
-    /// Puts an answer's line first in *Answered*, or in place of the one it had, and shows it.
+    /// Notes the frame that will show what just changed, for the suite.
+    fn mark_frame(&self, key: String) {
+        if let Some(clock) = self.window.frame_clock() {
+            self.result_frame
+                .borrow_mut()
+                .insert(key, clock.frame_counter() + 1);
+        }
+    }
+
+    /// A try's button: shows or hides what it changed, or keeps it or undoes the keep, as confirmed.
+    fn try_act(self: &Rc<Ui>, name: &str, what: Do) {
+        let key = format!("world {name}");
+        let (Some(panel), Some(t)) = (
+            self.tries.panel(&key),
+            self.latest
+                .borrow()
+                .tries
+                .iter()
+                .find(|t| t.name == name)
+                .cloned(),
+        ) else {
+            return;
+        };
+        let name = name.to_string();
+        let ui = self.clone();
+        if what == Do::Changes {
+            let button = self
+                .tries
+                .acts(&key)
+                .and_then(|a| a.button(Do::Changes).cloned());
+            if panel.is_visible() {
+                panel.set_visible(false);
+                if let Some(b) = button {
+                    b.set_label("See changes");
+                }
+                return;
+            }
+            glib::spawn_future_local(async move {
+                let look = {
+                    let name = name.clone();
+                    gio::spawn_blocking(move || act::look(&name)).await
+                };
+                let Ok(look) = look else { return };
+                let view = words::changes(&name, &t.base, &look);
+                fill(&panel, &view);
+                panel.set_visible(true);
+                if let Some(b) = button {
+                    b.set_label("Hide changes");
+                }
+                ui.mark_frame(format!("look {name}"));
+                ui.window
+                    .announce(&view.news, gtk::AccessibleAnnouncementPriority::Medium);
+            });
+            return;
+        }
+        panel.set_visible(false);
+        self.pinned.borrow_mut().insert(name.clone());
+        let done_key = format!("try {name}");
+        self.put_answer(words::keeping(&name, what, world::now_ns()));
+        self.answers.focus(&done_key);
+        glib::spawn_future_local(async move {
+            let done = {
+                let name = name.clone();
+                gio::spawn_blocking(move || act::keep_or_undo(&name, what)).await
+            };
+            let line = match done {
+                Ok(d) => words::kept(&d, world::now_ns()),
+                Err(_) => {
+                    let mut l = words::keeping(&name, what, world::now_ns());
+                    (l.mark, l.title) = (Mark::Failed, "The window lost track of it".into());
+                    l.said = l.title.clone();
+                    l
+                }
+            };
+            let news = words::answer_news(&line);
+            ui.put_answer(line);
+            ui.mark_frame(done_key);
+            ui.window
+                .announce(&news, gtk::AccessibleAnnouncementPriority::Medium);
+            ui.request(Kind::LEDGER);
+        });
+    }
+
+    /// Puts an answer's line first in *Done here*, or in place of the one it had, and shows it.
     fn put_answer(self: &Rc<Ui>, line: Line) {
         {
             let mut lines = self.answered.borrow_mut();
@@ -1170,7 +1340,7 @@ impl Ui {
             let mut frame = None;
             for _ in 0..15_000 {
                 glib::timeout_future(Duration::from_millis(2)).await;
-                if let Some(f) = self.result_frame.borrow().get(&id) {
+                if let Some(f) = self.result_frame.borrow().get(&format!("answer {id}")) {
                     frame = Some(*f);
                     break;
                 }
@@ -1189,7 +1359,7 @@ impl Ui {
             println!(
                 "{}",
                 serde_json::json!({
-                    "answer": match what { Do::Release => "release", Do::Refuse => "refuse" },
+                    "answer": if what == Do::Release { "release" } else { "refuse" },
                     "effect": id,
                     "confirm_ms": ms(open, t0),
                     "result_ms": ms(shown, t1),
@@ -1199,8 +1369,149 @@ impl Ui {
         }
     }
 
+    /// A try's scene: on the first open try with changes whose real folder has not changed, or, for `Refused`, the
+    /// first one whose has.
+    async fn try_scene(self: &Rc<Ui>, scene: Scene) {
+        let open: Vec<String> = self
+            .latest
+            .borrow()
+            .tries
+            .iter()
+            .filter(|t| t.kept_ns.is_none() && t.changes.unwrap_or(0) > 0)
+            .map(|t| t.name.clone())
+            .collect();
+        let mut chosen = None;
+        for name in open {
+            let n = name.clone();
+            let Ok(look) = gio::spawn_blocking(move || act::look(&n)).await else {
+                continue;
+            };
+            if look.conflicts.is_empty() != (scene == Scene::Refused) {
+                chosen = Some(name);
+                break;
+            }
+        }
+        let Some(name) = chosen else {
+            return eprintln!("arbor-mission: no try fits the scene {scene:?}");
+        };
+        let press = async |what: Do| {
+            if let Some((_, b)) = self.try_button(&name, what).await {
+                // Focused first, so the window scrolls to it, as when it is reached by keyboard.
+                b.grab_focus();
+                b.emit_clicked();
+            }
+        };
+        match scene {
+            Scene::Changes | Scene::Keep => {
+                press(Do::Changes).await;
+                let _ = self.result_shown(&format!("look {name}")).await;
+                if let Some(panel) = self.tries.panel(&format!("world {name}")) {
+                    open_first_change(&panel);
+                }
+                if scene == Scene::Keep {
+                    press(Do::Keep).await;
+                }
+                // The view opens under the last try: the picture shows the bottom of the window.
+                glib::timeout_future(Duration::from_millis(200)).await;
+                if let Some(s) = self.window.child().and_downcast::<gtk::ScrolledWindow>() {
+                    let v = s.vadjustment();
+                    v.set_value(v.upper() - v.page_size());
+                }
+            }
+            _ => {
+                press(Do::Keep).await;
+                if let Some(a) = self.tries.acts(&format!("world {name}")) {
+                    a.go.emit_clicked();
+                }
+                let _ = self.result_shown(&format!("try {name}")).await;
+                if scene == Scene::Kept {
+                    let _ = self.try_button(&name, Do::Undo).await;
+                }
+            }
+        }
+        glib::timeout_future(Duration::from_millis(400)).await;
+    }
+
+    /// Waits until the frame that shows the result with this key is noted, then for the compositor to show it.
+    async fn result_shown(&self, key: &str) -> Option<i64> {
+        for _ in 0..15_000 {
+            let frame = self.result_frame.borrow_mut().remove(key);
+            if let Some(f) = frame {
+                return self.presented(f).await;
+            }
+            glib::timeout_future(Duration::from_millis(2)).await;
+        }
+        None
+    }
+
+    /// Waits until try `name` has a button that does `what`, as the reading after a keep or an undo gives it.
+    async fn try_button(&self, name: &str, what: Do) -> Option<(Rc<Acts>, gtk::Button)> {
+        for _ in 0..2500 {
+            if let Some(a) = self.tries.acts(&format!("world {name}"))
+                && let Some(b) = a.button(what).cloned()
+            {
+                return Some((a, b));
+            }
+            glib::timeout_future(Duration::from_millis(2)).await;
+        }
+        None
+    }
+
+    /// `--bench keep WORLD`: three times, shows what try WORLD changed, keeps it and undoes the keep, with the
+    /// window's own buttons, and prints one JSON line for each: from the press to the frame that shows the view or
+    /// the confirmation, and from the confirmation to the frame that shows the result, in ms.
+    async fn bench_keeps(self: &Rc<Ui>, world: &str) {
+        let ms = |t: Option<i64>, from: i64| t.map(|t| (t - from) as f64 / 1000.0);
+        let failed = |ui: &Ui| {
+            ui.answered
+                .borrow()
+                .iter()
+                .find(|l| l.key == format!("try {world}"))
+                .is_some_and(|l| l.mark == Mark::Failed)
+        };
+        for _ in 0..3 {
+            for what in [Do::Changes, Do::Keep, Do::Undo] {
+                glib::timeout_future(Duration::from_millis(300)).await;
+                let (Some((acts, button)), Some(clock)) = (
+                    self.try_button(world, what).await,
+                    self.window.frame_clock(),
+                ) else {
+                    eprintln!("arbor-mission: try {world} has no button for {what:?}");
+                    return;
+                };
+                let t0 = glib::monotonic_time();
+                button.emit_clicked();
+                let (open, shown) = if what == Do::Changes {
+                    (self.result_shown(&format!("look {world}")).await, None)
+                } else {
+                    let open = self.presented(clock.frame_counter() + 1).await;
+                    glib::timeout_future(Duration::from_millis(200)).await;
+                    let t1 = glib::monotonic_time();
+                    acts.go.emit_clicked();
+                    let shown = self.result_shown(&format!("try {world}")).await;
+                    (open, ms(shown, t1))
+                };
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "act": format!("{what:?}").to_lowercase(),
+                        "open_ms": ms(open, t0),
+                        "result_ms": shown,
+                        "failed": what != Do::Changes && failed(self),
+                    })
+                );
+            }
+        }
+    }
+
     /// Puts the window in a state for a picture.
     async fn scene(self: &Rc<Ui>, scene: Scene) {
+        if matches!(
+            scene,
+            Scene::Changes | Scene::Keep | Scene::Kept | Scene::Refused
+        ) {
+            return self.try_scene(scene).await;
+        }
         let ids: Vec<u64> = self.latest.borrow().waiting.iter().map(|e| e.id).collect();
         let (Some(&first), Some(&last)) = (ids.first(), ids.last()) else {
             return eprintln!("arbor-mission: nothing waits, so there is nothing to answer");
@@ -1228,6 +1539,7 @@ impl Ui {
                     a.reason.grab_focus();
                 }
             }
+            Scene::Changes | Scene::Keep | Scene::Kept | Scene::Refused => {}
             Scene::Releasing | Scene::Answered => {
                 press(last, Do::Release);
                 if let Some(a) = acts(last) {
@@ -1326,10 +1638,89 @@ impl Ui {
     }
 }
 
-/// The tries, with what is working first: tries with rooms running, then open ones, then kept ones, each band by
-/// name. Each try is followed by its first rooms, oldest first, and one line for the rest; past `TRIES_SHOWN`, the
-/// tries fold into one line that counts them.
-fn try_lines(snap: &Snapshot) -> Vec<Line> {
+/// Fills the view of what a try changed: a note when a keep would be refused, then each folder's files, each with
+/// a button that shows its lines.
+fn fill(panel: &gtk::Box, view: &words::Changes) {
+    while let Some(child) = panel.first_child() {
+        panel.remove(&child);
+    }
+    if let Some(note) = &view.note {
+        let l = label(&["warn"]);
+        l.set_label(note);
+        panel.append(&l);
+    }
+    for (dir, files) in &view.groups {
+        let head = label(&["folder"]);
+        head.set_label(dir);
+        panel.append(&head);
+        for f in files {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            let word = label(&["word"]);
+            word.set_label(&f.word);
+            word.set_hexpand(false);
+            let name = label(&["code"]);
+            name.set_label(&f.name);
+            name.set_hexpand(true);
+            line.append(&word);
+            line.append(&name);
+            let file = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            file.append(&line);
+            if let Some(patch) = &f.patch {
+                let lines = gtk::Label::builder()
+                    .xalign(0.0)
+                    .selectable(true)
+                    .wrap(true)
+                    .wrap_mode(gtk::pango::WrapMode::Char)
+                    .css_classes(["output", "code", "patch"])
+                    .label(patch)
+                    .visible(false)
+                    .build();
+                let show = gtk::Button::builder()
+                    .label("Show the change")
+                    .css_classes(["act", "small"])
+                    .build();
+                named(&show, &f.show);
+                let shown = lines.clone();
+                show.connect_clicked(move |b| {
+                    let open = !shown.is_visible();
+                    shown.set_visible(open);
+                    b.set_label(if open {
+                        "Hide the change"
+                    } else {
+                        "Show the change"
+                    });
+                });
+                line.append(&show);
+                file.append(&lines);
+            }
+            panel.append(&file);
+        }
+    }
+}
+
+/// Presses the first "Show the change" in a view of changes, for a picture.
+fn open_first_change(panel: &gtk::Box) {
+    let mut todo = vec![panel.clone().upcast::<gtk::Widget>()];
+    while let Some(w) = todo.pop() {
+        if let Some(b) = w.downcast_ref::<gtk::Button>() {
+            b.grab_focus();
+            b.emit_clicked();
+            return;
+        }
+        let mut child = w.last_child();
+        while let Some(c) = child {
+            child = c.prev_sibling();
+            todo.push(c);
+        }
+    }
+}
+
+/// The tries, with what a person may act on first: the ones acted on from this window (`pinned`), then open ones with
+/// changes and no room running, which wait for a keep, then tries with rooms running, then the other open ones, then
+/// kept ones, each band by name. So a try that can be kept, or was just kept, never folds away behind hundreds of
+/// working ones. Each try is followed by its first rooms, oldest first, and one line for the rest; past
+/// `TRIES_SHOWN`, the tries fold into one line that counts them.
+fn try_lines(snap: &Snapshot, pinned: &HashSet<String>) -> Vec<Line> {
     // Each try's rooms, gathered once: hundreds of tries and rooms would otherwise be compared pair by pair.
     let mut rooms_in: HashMap<&str, Vec<&state::Room>> = HashMap::new();
     for r in &snap.rooms {
@@ -1337,9 +1728,11 @@ fn try_lines(snap: &Snapshot) -> Vec<Line> {
     }
     let working = |t: &state::Try| rooms_in.contains_key(t.name.as_str());
     let band = |t: &state::Try| match (t.kept_ns, working(t)) {
-        (None, true) => 0,
-        (None, false) => 1,
-        (Some(_), _) => 2,
+        _ if pinned.contains(&t.name) => 0,
+        (None, false) if t.changes.unwrap_or(0) > 0 => 1,
+        (None, true) => 2,
+        (None, false) => 3,
+        (Some(_), _) => 4,
     };
     let mut tries: Vec<&state::Try> = snap.tries.iter().collect();
     tries.sort_by(|a, b| band(a).cmp(&band(b)).then(a.name.cmp(&b.name)));
