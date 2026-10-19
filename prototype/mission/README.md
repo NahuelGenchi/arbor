@@ -66,7 +66,7 @@ The site's decision runs a made-up `./deploy` that waits 2 s and prints a line; 
 
 ## Measured
 
-`ONLY=mission bench/run.sh` measures the window as the suite measured #8's test programs, on arbor state that it makes in its temp folder ([`bench/README.md`](../../bench/README.md)). The section is about fifteen minutes long, and the PC has to be left alone while it runs. The measurements below come from two runs on 18 October 2026, from an ordinary process: nothing running from #9's run at 13:02, and 300 rooms from #78's run at 14:17, after the window was changed to read only what new steps name, on the PC of [the toolkits measured](../../docs/INTERFACE.md#the-toolkits-measured). Each figure is one sample, and each first frame is the median of 5 launches. [*The first app, measured*](../../docs/INTERFACE.md#the-first-app-measured) has every row, the conditions, and what the numbers mean.
+`ONLY=mission bench/run.sh` measures the window as the suite measured #8's test programs, on arbor state that it makes in its temp folder ([`bench/README.md`](../../bench/README.md)). The section is about fifteen minutes long, and the PC has to be left alone while it runs. The measurements below come from runs on 18 October 2026, from an ordinary process: nothing running from #9's run at 13:02, 300 rooms from #78's run at 14:17, after the window was changed to read only what new steps name, and the buttons from the run at 21:02, on the PC of [the toolkits measured](../../docs/INTERFACE.md#the-toolkits-measured). Each figure is one sample, and each first frame is the median of 5 launches. [*The first app, measured*](../../docs/INTERFACE.md#the-first-app-measured) has every row, the conditions, and what the numbers mean.
 
 | Measure (M: every number in the row) | Nothing running | 300 rooms | Target |
 | :--- | ---: | ---: | :--- |
@@ -75,6 +75,8 @@ The site's decision runs a made-up `./deploy` that waits 2 s and prints a line; 
 | Still screen: frames a second / CPU, % of a core / wakeups a second (M) | 0 / 0.00 / 0.10 | 1.0 / 0.33 / 12.5 | 0 / 0.1 / 0.1 still; 1 / 1 busy |
 | Animation: frames missed idle / under load, % (M) | 0.42 / 15.1 | 0.17 / 4.9 | none / 0.1 |
 | Work per frame, slowest 1%, ms (M) | 0.58 | 8.98, with a room sample every second | at most 4 |
+| Release or Refuse: from the press to its confirmation on screen, ms (M) | 24 | 25 | at most 33 |
+| Release now / Refuse now: from the press to the receipt, ms (M) | 39 / 42 | 47 / 45 | |
 
 With nothing running, the window meets the still-screen targets. With 300 rooms, it shows one frame a second and uses 0.33% of a core, within the "busy but calm" target of 1; before it read only what new steps name, it used 2.37% (M, #9's run). Most of the memory is the GPU driver. Drawn with GTK's cairo renderer (`GSK_RENDERER=cairo arbor-mission`), the same window with nothing running uses 54 MiB of RSS and 24 MiB of PSS (M).
 

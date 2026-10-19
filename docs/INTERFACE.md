@@ -308,9 +308,22 @@ Which renderer Mission Control uses is not decided here. Cairo meets the memory 
 
 The C program's anonymous memory grew by 20 MiB over its still minute, and its RSS grew from 140 to 163 MiB on 17 October as well. The port's memory did not grow, and neither did Mission Control's. Why the C program grows was not found.
 
+### The buttons, measured
+
+Release and Refuse ([#82](https://github.com/NahuelGenchi/arbor/issues/82)) are the window's first input. The `mission` section times them in two of the states above, nothing running and 300 rooms. In each, a try asks for 6 effects, and the window answers them through its own buttons (`arbor-mission --bench answer`), releasing and refusing in turn. Each press is timed from the button's clicked signal, as a press sends it, to the compositor's presentation time of the frame that shows its result, read from GTK's frame timings. Each figure is the median of its presses, with their range. The numbers are from the run of 18 October 2026 at 21:02, from an ordinary process, on the build with #82, [#83](https://github.com/NahuelGenchi/arbor/issues/83) and [#84](https://github.com/NahuelGenchi/arbor/issues/84). The run started at a load average of 1.39, and was at 0.28 and 0.52 at these rows. Every row passed the section's checks.
+
+| From the press to the frame that shows (M: every number in the row) | Nothing running | 300 rooms | Target |
+| :--- | ---: | ---: | :--- |
+| Release or Refuse: the confirmation in place, ms (M) | 24 (21–30) | 25 (20–42) | at most 33, two refreshes |
+| Release now: the receipt, once `arbor release` has run, ms (M) | 39 (32–41) | 47 (35–51) | |
+| Refuse now: the receipt, once `arbor refuse` has run, ms (M) | 42 (38–44) | 45 (44–52) | |
+
+- **The window answers a press within two refreshes.** The confirmation is the window's own answer, with no command to wait for. Its median is 24 ms with nothing running and 25 ms with 300 rooms, within the 33 ms of the target. One press of 12 took 42 ms, with 300 rooms.
+- **A receipt waits for arbor.** Release now and Refuse now run `arbor release` or `arbor refuse` and show the receipt when the command ends: 39 to 47 ms. The receipt is the result, not the first answer to the press. That answer is the line saying it is releasing, which was not timed.
+
 ### Not measured yet
 
-- **Input latency** needs a window that takes input. Release and Refuse will be the first.
+- **Input latency from the device**, and its 99th percentile. The presses above start at GTK's clicked signal, so the path from the keyboard or mouse to GTK is not in them, and 6 presses a state are too few for the slowest 1%.
 - **Memory with every view opened** waits for the other views.
 - **No growth over an hour of updates:** the longest window measured here is a minute.
 - **120 Hz:** this PC's panel runs at 60 Hz.
